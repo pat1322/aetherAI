@@ -85,6 +85,7 @@ async def root():
 async def health():
     return {
         "status": "healthy",
+        "task_stats": memory.get_task_stats(),
         "timestamp": datetime.utcnow().isoformat(),
         "devices_connected": ws_manager.device_count(),
     }

@@ -38,5 +38,8 @@ class Settings:
     MAX_STEPS_PER_TASK: int = 10
     STEP_TIMEOUT_SECONDS: int = 60
 
+    TASK_RETENTION_DAYS: int = field(
+        default_factory=lambda: int(os.getenv("TASK_RETENTION_DAYS", "30"))
+    )
 
 settings = Settings()
