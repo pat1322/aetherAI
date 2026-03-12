@@ -101,9 +101,7 @@ async def receive_command(req: CommandRequest):
     memory.create_task(task_id, req.command, req.source)
 
     # Kick off orchestration (non-blocking)
-    asyncio.create_task(
-        orchestrator.run_task(task_id, req.command)
-    )
+    orchestrator.start_task(task_id, req.command)
 
     return CommandResponse(
         task_id=task_id,
