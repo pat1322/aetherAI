@@ -1,5 +1,5 @@
 """
-AetherAI — Qwen API Client
+AetherAI -- Qwen API Client
 Uses Qwen (Alibaba DashScope) via the OpenAI-compatible endpoint.
 """
 
@@ -17,8 +17,8 @@ class QwenClient:
     def __init__(self):
         if not settings.QWEN_API_KEY:
             raise ValueError(
-                "QWEN_API_KEY is not set in environment variables.\n"
-                "Open your .env file and make sure it has: QWEN_API_KEY=sk-..."
+                "QWEN_API_KEY is not set. "
+                "Open your .env file and add: QWEN_API_KEY=sk-..."
             )
         self._client = AsyncOpenAI(
             api_key=settings.QWEN_API_KEY,
@@ -27,10 +27,6 @@ class QwenClient:
         self.model = settings.QWEN_MODEL
 
     async def chat(self, system_prompt: str, user_message: str, temperature: float = 0.7) -> str:
-        """
-        Simple chat completion using Qwen.
-        Returns the assistant's reply as a string.
-        """
         response = await self._client.chat.completions.create(
             model=self.model,
             messages=[
@@ -42,87 +38,70 @@ class QwenClient:
         return response.choices[0].message.content.strip()
 
     async def classify_command(self, command: str) -> str:
-        """
-        Classify whether a command is a simple question (answer directly)
-        or a real task (needs agents). Returns "chat" or "task".
-        """
-        system = """You are a command classifier for AetherAI, a personal AI agent owned by Patrick Perez.
-Classify the user input as either "chat" or "task".
-
-"chat" = simple questions, greetings, factual queries, math, definitions, personal questions about AetherAI.
-Examples of CHAT:
-- "who are you", "what is AetherAI", "hello", "who made you"
-- "what is the capital of France", "what is 2+2"
-- "local holidays in the Philippines", "what time is it in Tokyo"
-- "how are you", "what can you do"
-- Any question that can be answered with a short text response
-
-"task" = commands that require creating files, doing research and saving results, controlling the computer, or multi-step work.
-Examples of TASK:
-- "create a presentation about X", "make a report on Y"
-- "research X and save the findings", "build me a spreadsheet"
-- "open Chrome and go to...", "write a Python script"
-
-Return ONLY the single word: chat
-Or the single word: task
-Nothing else."""
+        """Classify command as 'chat' (answer directly) or 'task' (use agents)."""
+        system = (
+            "You are a command classifier for AetherAI. "
+            "Classify the user input as either 'chat' or 'task'.\n\n"
+            "'chat' = simple questions, greetings, factual queries, math, definitions.\n"
+            "Examples of CHAT: 'who are you', 'what is the capital of France', "
+            "'hello', 'what is 2+2', 'local holidays in Philippines'\n\n"
+            "'task' = commands that require creating files, doing research and saving results, "
+            "controlling the computer, or multi-step work.\n"
+            "Examples of TASK: 'create a presentation about X', 'research X and save findings', "
+            "'open Chrome and go to youtube', 'open notepad and type hello'\n\n"
+            "Return ONLY the single word: chat\n"
+            "Or the single word: task\n"
+            "Nothing else."
+        )
         result = await self.chat(system, command, temperature=0.0)
-        result = result.strip().lower()
-        return "chat" if "chat" in result else "task"
+        return "chat" if "chat" in result.strip().lower() else "task"
 
     async def plan_task(self, command: str) -> list[dict]:
-        """
-        Ask Qwen to break a command into an ordered execution plan.
-        Returns a list of step dicts: [{step, agent, description, parameters}]
-        """
-        system_prompt = """You are AetherAI's task planner. AetherAI is a personal AI agent built by Patrick Perez, a 26-year-old software engineer from the Philippines.
-Your job is to break a user's command into a clear step-by-step execution plan.
+        """Ask Qwen to break a command into an ordered execution plan."""
+        system_prompt = (
+            "You are AetherAI's task planner. "
+            "AetherAI is a personal AI agent built by Patrick Perez, "
+            "a 26-year-old software engineer from the Philippines.\n"
+            "Break the user's command into a clear step-by-step execution plan.\n\n"
+            "For each step output a JSON object with:\n"
+            "- step: integer (1, 2, 3...)\n"
+            "- agent: one of [research_agent, document_agent, browser_agent, coding_agent, automation_agent]\n"
+            "- description: what this step does (one sentence)\n"
+            "- parameters: a dict of relevant inputs for this step\n\n"
+            "Return ONLY a valid JSON array of steps. No explanation. No markdown. No extra text.\n\n"
+            "Available agents:\n\n"
+            "- research_agent: searches the web and summarizes information\n"
+            '  parameters: {"query": "search query"}\n\n'
+            "- document_agent: creates files. ALWAYS include 'type' in parameters.\n"
+            '  parameters: {"type": "presentation", "topic": "..."} <- for PowerPoint (.pptx)\n'
+            '  parameters: {"type": "document", "topic": "..."}     <- for Word (.docx)\n'
+            '  parameters: {"type": "spreadsheet", "topic": "..."}  <- for Excel (.xlsx)\n'
+            "  RULES:\n"
+            "  - ONLY use document_agent if the user explicitly asks to CREATE, MAKE, GENERATE, or WRITE a file\n"
+            '  - If the user says "presentation", "slides", "PowerPoint", "deck" -> type MUST be "presentation"\n'
+            '  - If the user says "spreadsheet", "excel", "data table" -> type MUST be "spreadsheet"\n'
+            '  - Otherwise -> type is "document"\n'
+            "  - NEVER omit the 'type' field for document_agent\n"
+            "  - NEVER call document_agent more than ONCE per task\n"
+            "  - Do NOT split file creation into multiple steps\n"
+            "  - If research is needed: do research_agent FIRST, then ONE document_agent call\n\n"
+            "- browser_agent: controls a real browser (Chrome)\n\n"
+            "- coding_agent: writes and runs code\n\n"
+            "- automation_agent: controls mouse and keyboard on the connected PC\n"
+            '  parameters: {"action": "open_app", "app": "notepad"}          <- open an app\n'
+            '  parameters: {"action": "type", "text": "hello"}               <- type text\n'
+            '  parameters: {"action": "hotkey", "keys": ["ctrl", "s"]}       <- press keys\n'
+            '  parameters: {"action": "click", "x": 500, "y": 300}           <- click position\n'
+            '  parameters: {"action": "run_command", "command": "dir"}       <- run command\n'
+            "  IMPORTANT: action name MUST be one of:\n"
+            "  open_app, type, hotkey, click, double_click, right_click,\n"
+            "  scroll, move, run_command, wait, screenshot_and_return\n"
+            "  NEVER use 'open' -- always use 'open_app'\n"
+            "  NEVER use 'press' -- always use 'hotkey'\n"
+            "  NEVER use 'write' -- always use 'type'\n"
+        )
 
-For each step, output a JSON object with:
-- step: integer (1, 2, 3...)
-- agent: one of [research_agent, document_agent, browser_agent, coding_agent, automation_agent]
-- description: what this step does (one sentence)
-- parameters: a dict of relevant inputs for this step
-
-Return ONLY a valid JSON array of steps. No explanation. No markdown. No extra text.
-
-Available agents:
-- research_agent: searches the web and summarizes information
-  parameters: {"query": "search query"}
-
-- document_agent: creates files. ALWAYS include "type" in parameters.
-  parameters: {"type": "presentation", "topic": "..."}  ← for PowerPoint (.pptx)
-  parameters: {"type": "document", "topic": "..."}      ← for Word (.docx)
-  parameters: {"type": "spreadsheet", "topic": "..."}   ← for Excel (.xlsx)
-  RULES:
-  - ONLY use document_agent if the user explicitly asks to CREATE, MAKE, GENERATE, or WRITE a file
-  - If the user says "presentation", "slides", "PowerPoint", "deck" → type MUST be "presentation"
-  - If the user says "spreadsheet", "excel", "data table" → type MUST be "spreadsheet"
-  - Otherwise → type is "document"
-  - NEVER omit the "type" field for document_agent
-  - NEVER create a document just because the topic could be a document — user must explicitly ask
-  - NEVER call document_agent more than ONCE per task — one call creates the complete final file
-  - Do NOT split file creation into multiple steps like "create then format" or "create then add data"
-  - If research is needed: do research_agent FIRST, then ONE document_agent call with that context
-
-- browser_agent: controls a real browser (Chrome)
-- coding_agent: writes and runs code
-- automation_agent: controls mouse and keyboard on a connected PC
-  parameters: {"action": "open_app", "app": "notepad"}     ← open an application
-  parameters: {"action": "type", "text": "hello"}          ← type text
-  parameters: {"action": "hotkey", "keys": ["ctrl","s"]}   ← press key combo
-  parameters: {"action": "click", "x": 500, "y": 300}      ← click position
-  parameters: {"action": "run_command", "command": "dir"}  ← run terminal command
-  IMPORTANT: action name MUST be one of: open_app, type, hotkey, click, double_click,
-  right_click, scroll, move, run_command, wait, screenshot_and_return
-  NEVER use "open" — always use "open_app"
-  NEVER use "press" — always use "hotkey"
-  NEVER use "write" — always use "type"
-
-        user_message = f'Plan this task: "{command}"'
-        raw = await self.chat(system_prompt, user_message, temperature=0.3)
-
-        # Strip markdown fences if model wraps output
+        raw = await self.chat(system_prompt, f'Plan this task: "{command}"', temperature=0.3)
         raw = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
 
         try:
@@ -136,20 +115,23 @@ Available agents:
                 "agent": "research_agent",
                 "description": f"Process command: {command}",
                 "parameters": {"query": command},
-                "raw_response": raw,
             }]
 
     async def summarize(self, content: str, context: str = "") -> str:
-        """Summarize a block of text."""
         system = "You are a concise summarizer. Summarize the provided content clearly and briefly."
         user = f"{context}\n\nContent to summarize:\n{content}" if context else content
         return await self.chat(system, user, temperature=0.5)
 
     async def answer(self, question: str, context: str = "") -> str:
-        """Answer a question, optionally with context."""
-        system = """You are AetherAI, a personal AI agent assistant built by Patrick Perez — a 26-year-old software engineer living in the Philippines. 
-You are NOT a medical AI. You are a personal productivity and automation assistant.
-You help Patrick and his team with research, creating documents, automating tasks, and controlling computers.
-Answer questions clearly and directly. If asked who you are or who made you, always say Patrick Perez built you."""
+        system = (
+            "You are AetherAI, a personal AI agent assistant built by Patrick Perez, "
+            "a 26-year-old software engineer living in the Philippines. "
+            "You are NOT a medical AI. You are a personal productivity and automation assistant. "
+            "You help Patrick and his team with research, creating documents, automating tasks, "
+            "and controlling computers. "
+            "Answer clearly and directly. If asked who you are or who made you, "
+            "always say Patrick Perez built you."
+        )
         user = f"Context:\n{context}\n\nQuestion: {question}" if context else question
         return await self.chat(system, user)
+        
