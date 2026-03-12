@@ -2,11 +2,13 @@
 AetherAI -- Qwen API Client
 Uses Qwen (Alibaba DashScope) via the OpenAI-compatible endpoint.
 
-BROWSER AGENT FIX:
-  Added hard pre-routing for browser tasks — same pattern as coding tasks.
-  If the command contains browser keywords (youtube, google, go to, visit, open chrome,
-  search youtube, wikipedia, etc.) the planner is forced to use browser_agent.
-  This prevents Qwen from falling back to research_agent for browser tasks.
+FIXES:
+  - "open chrome and go to X" now routes to automation_agent (not browser_agent)
+  - "open chrome/browser/firefox/launch chrome" removed from BROWSER_KEYWORDS
+    because those are PC control commands, not browser-agent tasks
+  - Added _is_open_chrome_command() hard route → automation plan
+  - Cleaner separation: browser_agent = headless Playwright tasks,
+    automation_agent = controlling the real visible PC
 """
 
 import json
@@ -40,18 +42,14 @@ class QwenClient:
 
     # ── Keyword sets ──────────────────────────────────────────────────────────
 
+    # These are headless/cloud browser tasks — no need to open a real browser on the PC
     BROWSER_KEYWORDS = [
-        # explicit browser agent mentions
-        "using browser agent", "use browser agent", "browser agent",
         # YouTube
         "search youtube", "on youtube", "youtube for", "find on youtube",
         "youtube search", "youtube video", "youtube channel",
         # Wikipedia
         "wikipedia", "wiki/",
-        # Chrome / browser actions
-        "open chrome", "open browser", "open firefox",
-        "open chrome and", "launch chrome",
-        # URL navigation
+        # URL navigation (without "open chrome" prefix — that's automation territory)
         "go to http", "go to www", "go to reddit", "go to twitter",
         "go to facebook", "go to instagram", "go to hacker news",
         "go to github", "go to stackoverflow", "visit http",
@@ -65,6 +63,14 @@ class QwenClient:
         "summarize the article at",
     ]
 
+    # These mean "open a real app on the PC" → automation_agent
+    OPEN_CHROME_KEYWORDS = [
+        "open chrome", "launch chrome", "start chrome",
+        "open browser", "launch browser",
+        "open firefox", "launch firefox",
+        "open edge", "launch edge",
+    ]
+
     CODE_KEYWORDS = [
         "write a program", "create a program", "make a program",
         "write a script", "create a script",
@@ -76,7 +82,12 @@ class QwenClient:
     ]
 
     def _is_browser_task(self, cmd_lc: str) -> bool:
+        # Pure YouTube/Wikipedia/URL/search — no "open chrome" prefix
         return any(k in cmd_lc for k in self.BROWSER_KEYWORDS)
+
+    def _is_open_chrome_command(self, cmd_lc: str) -> bool:
+        """User wants to open Chrome/browser on their actual PC."""
+        return any(k in cmd_lc for k in self.OPEN_CHROME_KEYWORDS)
 
     def _is_open_app_command(self, cmd_lc: str) -> bool:
         OPEN_VERBS = ["open ", "launch ", "start "]
@@ -92,6 +103,8 @@ class QwenClient:
         if any(k in cmd_lc for k in self.CODE_KEYWORDS):
             return "task"
         if self._is_browser_task(cmd_lc):
+            return "task"
+        if self._is_open_chrome_command(cmd_lc):
             return "task"
         system = (
             "You are a command classifier for AetherAI. "
@@ -109,14 +122,20 @@ class QwenClient:
     async def plan_task(self, command: str) -> list[dict]:
         cmd_lc = command.lower()
         is_open_app    = self._is_open_app_command(cmd_lc)
+        is_open_chrome = self._is_open_chrome_command(cmd_lc)
         is_browser     = self._is_browser_task(cmd_lc)
         is_coding      = any(k in cmd_lc for k in self.CODE_KEYWORDS)
 
-        # ── Hard-route browser tasks directly — never let Qwen second-guess ──
+        # ── Hard-route: "open chrome and go to X" → automation_agent ─────────
+        # This opens the real Chrome on the PC, then navigates
+        if is_open_chrome:
+            return self._build_open_chrome_plan(command, cmd_lc)
+
+        # ── Hard-route browser tasks (no open chrome prefix) ─────────────────
         if is_browser:
             return self._build_browser_plan(command, cmd_lc)
 
-        # ── Hard override for open [app] commands ────────────────────────────
+        # ── Hard override for open [Office app] commands ─────────────────────
         no_doc_agent_rule = ""
         if is_open_app:
             no_doc_agent_rule = (
@@ -138,12 +157,13 @@ class QwenClient:
             "  Use for: general research, factual questions, news summaries.\n"
             "  Do NOT use for: YouTube, Wikipedia URLs, Chrome, browser navigation.\n\n"
 
-            "browser_agent — real Chromium browser (Playwright)\n"
+            "browser_agent — headless Chromium (Playwright) running in the cloud\n"
             '  Search:   {"action":"search","query":"...","engine":"google|bing|duckduckgo"}\n'
             '  YouTube:  {"action":"youtube","query":"..."}\n'
             '  Scrape:   {"action":"scrape","url":"https://..."}\n'
             '  Workflow: {"action":"workflow","goal":"...","url":"https://..."}\n'
-            "  Use for: YouTube, Wikipedia, Chrome, any URL navigation, web scraping.\n\n"
+            "  Use for: YouTube, Wikipedia, any URL scraping, web search.\n"
+            "  Do NOT use for: 'open chrome' — that's automation_agent.\n\n"
 
             "document_agent — create DOWNLOADABLE .pptx/.docx/.xlsx files\n"
             '  {"type": "presentation"|"document"|"spreadsheet", "topic": "..."}\n'
@@ -152,19 +172,22 @@ class QwenClient:
             "coding_agent — write and save code\n"
             '  {"task": "...", "language": "python|c|c++|javascript|..."}\n\n'
 
-            "automation_agent — control the PC\n"
-            '  new_file: {"action":"new_file","parameters":{"app":"notepad|word|excel|powerpoint|notepad++"}}\n'
+            "automation_agent — control the real PC (mouse, keyboard, apps)\n"
+            '  open_app: {"action":"open_app","parameters":{"app":"chrome|notepad|word|excel|powerpoint"}}\n'
+            '  new_file: {"action":"new_file","parameters":{"app":"notepad|word|excel|powerpoint"}}\n'
             '  type:     {"action":"type","parameters":{"text":"__GENERATED_CONTENT__"}}\n'
             '  hotkey:   {"action":"hotkey","parameters":{"keys":["ctrl","s"]}}\n'
-            '  wait:     {"action":"wait","parameters":{"ms":2000}}\n\n'
+            '  wait:     {"action":"wait","parameters":{"ms":2000}}\n'
+            '  run_cmd:  {"action":"run_command","parameters":{"command":"start https://youtube.com"}}\n\n'
 
             "ROUTING RULES:\n"
-            "1. YouTube/Wikipedia/Chrome/URLs → browser_agent\n"
-            "2. 'open word/excel/ppt and write X' → automation_agent ONLY\n"
-            "3. 'create/make a presentation/doc/spreadsheet' → document_agent\n"
-            "4. 'write a python/C program' (no app) → coding_agent\n"
-            "5. General research/news → research_agent\n"
-            "6. NEVER write long content inline in JSON — use __GENERATED_CONTENT__\n"
+            "1. 'open chrome/browser/firefox' → automation_agent (open_app + run_command to navigate)\n"
+            "2. YouTube/Wikipedia/URLs (no open chrome) → browser_agent\n"
+            "3. 'open word/excel/ppt and write X' → automation_agent ONLY\n"
+            "4. 'create/make a presentation/doc/spreadsheet' → document_agent\n"
+            "5. 'write a python/C program' (no app) → coding_agent\n"
+            "6. General research/news → research_agent\n"
+            "7. NEVER write long content inline in JSON — use __GENERATED_CONTENT__\n"
         )
 
         raw = await self.chat(system_prompt, f'Plan this task: "{command}"', temperature=0.2)
@@ -189,6 +212,71 @@ class QwenClient:
                 "parameters": {"query": command},
             }]
 
+    def _build_open_chrome_plan(self, command: str, cmd_lc: str) -> list[dict]:
+        """
+        "open chrome and go to X" → automation_agent:
+         Step 1: open Chrome
+         Step 2: wait for it to load
+         Step 3: run_command to navigate to the URL
+        """
+        # Try to find a destination URL/site
+        dest = None
+
+        # Look for explicit URL
+        url_match = re.search(r"https?://[^\s]+", command)
+        if url_match:
+            dest = url_match.group(0)
+
+        # Look for "go to X" pattern
+        if not dest:
+            go_match = re.search(
+                r"(?:go to|open|visit|navigate to|and (?:open|go to|visit))\s+"
+                r"((?:www\.)?[\w\-]+\.[\w]{2,}[^\s]*|youtube|reddit|github|google|twitter|instagram|facebook)",
+                cmd_lc
+            )
+            if go_match:
+                dest = go_match.group(1).strip()
+                if "." not in dest:
+                    # bare name like "youtube" → youtube.com
+                    dest = f"{dest}.com"
+                if not dest.startswith("http"):
+                    dest = f"https://{dest}"
+
+        # Build the plan
+        plan = [
+            {
+                "step": 1,
+                "agent": "automation_agent",
+                "description": "Open Chrome browser",
+                "parameters": {
+                    "action": "open_app",
+                    "parameters": {"app": "chrome"}
+                }
+            },
+            {
+                "step": 2,
+                "agent": "automation_agent",
+                "description": "Wait for Chrome to load",
+                "parameters": {
+                    "action": "wait",
+                    "parameters": {"ms": 2000}
+                }
+            },
+        ]
+
+        if dest:
+            plan.append({
+                "step": 3,
+                "agent": "automation_agent",
+                "description": f"Navigate to {dest}",
+                "parameters": {
+                    "action": "run_command",
+                    "parameters": {"command": f'start "" "{dest}"'}
+                }
+            })
+
+        return plan
+
     def _build_browser_plan(self, command: str, cmd_lc: str) -> list[dict]:
         """
         Build a browser_agent plan directly without calling Qwen,
@@ -209,7 +297,6 @@ class QwenClient:
 
         # Wikipedia
         if "wikipedia" in cmd_lc or "wiki/" in cmd_lc:
-            # Extract URL if present
             url_match = re.search(r"(https?://[^\s]+|wikipedia\.org/wiki/[^\s]+)", cmd_lc)
             if url_match:
                 url = url_match.group(1)
@@ -255,8 +342,7 @@ class QwenClient:
                 "parameters": {"action": "search", "query": query, "engine": engine},
             }]
 
-        # Multi-step workflow (go to site, open chrome, navigate, etc.)
-        # Extract destination if possible
+        # Multi-step workflow (go to site, navigate, etc.)
         dest_match = re.search(
             r"(?:go to|open|visit|navigate to)\s+([\w\-\.]+\.[\w]{2,}[^\s]*)",
             cmd_lc

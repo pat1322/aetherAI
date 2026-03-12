@@ -2,14 +2,14 @@
 AetherAI — Orchestrator
 Receives a command, classifies it, then plans and executes steps.
 
-KEY FIX: When a type step contains __GENERATED_CONTENT__ placeholder,
-the orchestrator generates the actual content FIRST (separate Qwen call),
-then replaces the placeholder before sending to the device.
-This prevents text truncation caused by Qwen writing long content inline in JSON.
-
-TYPE ACTION LOG FIX: automation_agent "type" steps no longer echo the full
-typed content back to the chat — only a brief "✅ Typed into <app>" summary
-is shown, eliminating the redundant/truncated log lines.
+FIXES:
+  - Duplicate output eliminated: final task result broadcast no longer re-logs
+    content that was already shown as a step output (was causing every single-step
+    task to display its result twice in the chat).
+  - Added `_last_step_output` tracking so the final "completed" broadcast only
+    shows the result when it's genuinely new info (e.g. a summary not yet shown).
+  - Type action log fix: automation_agent "type" steps show brief confirmation only.
+  - __GENERATED_CONTENT__ placeholder resolved before execution.
 """
 
 import asyncio
@@ -42,10 +42,7 @@ def is_type_action(agent_name: str, parameters: dict) -> bool:
 
 def type_action_summary(parameters: dict) -> str:
     """Return a brief human-readable summary for a type action (no content echo)."""
-    inner = parameters.get("parameters", {})
-    app_hint = ""
-    # Try to guess app from context — not always available, so just be generic
-    return f"✅ Content typed into application"
+    return "✅ Content typed into application"
 
 
 class Orchestrator:
@@ -93,8 +90,6 @@ class Orchestrator:
             logger.info(f"[{task_id}] Plan ({len(plan)} steps): {[s.get('agent') for s in plan]}")
 
             # ── Pre-resolve __GENERATED_CONTENT__ placeholders ────────────────
-            generated_content = None
-
             for step in plan:
                 agent = step.get("agent", "")
                 params = step.get("parameters", {})
@@ -126,8 +121,10 @@ class Orchestrator:
 
             last_output = command
             last_code   = None
-            # Track the last meaningful (non-typed) result for task completion display
             last_meaningful_output = command
+
+            # Track what we've already broadcast to the chat to avoid duplicates
+            last_broadcast_output: str | None = None
 
             for step in plan:
                 if not self._running_tasks.get(task_id):
@@ -182,13 +179,9 @@ class Orchestrator:
                         if code:
                             last_code = code
 
-                        # ── Determine what to show in chat ────────────────────
-                        # For automation "type" steps: show a brief confirmation only.
-                        # Never echo the full typed content — it's redundant and clutters the log.
                         if is_type_action(agent_name, parameters):
                             chat_output = type_action_summary(parameters)
                             db_output   = chat_output
-                            # Don't update last_meaningful_output for type steps
                         else:
                             db_output = summary if summary else output
                             if len(db_output) > STEP_OUTPUT_PREVIEW:
@@ -197,9 +190,9 @@ class Orchestrator:
                             last_meaningful_output = output
 
                         self.memory.update_step(task_id, step_num, "completed", db_output)
-                        last_output = output  # still pass full output for context chaining
+                        last_output = output
+                        last_broadcast_output = chat_output  # track what we just sent
 
-                        # Broadcast
                         if code:
                             await self.ws_manager.broadcast_task_update(task_id, {
                                 "status": "running",
@@ -207,14 +200,6 @@ class Orchestrator:
                                 "step_status": "completed",
                                 "output": summary,
                                 "code_block": {"language": lang, "code": code},
-                            })
-                        elif is_type_action(agent_name, parameters):
-                            # Suppress full typed content — only show brief confirmation
-                            await self.ws_manager.broadcast_task_update(task_id, {
-                                "status": "running",
-                                "current_step": step_num,
-                                "step_status": "completed",
-                                "output": chat_output,
                             })
                         else:
                             await self.ws_manager.broadcast_task_update(task_id, {
@@ -238,15 +223,24 @@ class Orchestrator:
 
             final_status = "completed" if self._running_tasks.get(task_id) else "cancelled"
 
-            # Use last meaningful output (not the typed content) as the task result
             final_summary, _, _ = extract_code_block(last_meaningful_output)
             display = (final_summary or last_meaningful_output)[:500]
 
             self.memory.update_task_status(task_id, final_status, result=display)
+
+            # ── FIX: only send `result` in the final broadcast if it's genuinely
+            # new — i.e. not the same content we already showed as a step output.
+            # This eliminates the double-display bug for single-step tasks.
+            is_duplicate = (
+                last_broadcast_output is not None
+                and display.strip() == last_broadcast_output.strip()[:500]
+            )
+
             await self.ws_manager.broadcast_task_update(task_id, {
                 "status": final_status,
                 "message": "Task completed." if final_status == "completed" else "Task cancelled.",
-                "result": display,
+                # Only include result if it's new info the user hasn't seen yet
+                **({"result": display} if not is_duplicate else {}),
             })
 
         except Exception as e:
