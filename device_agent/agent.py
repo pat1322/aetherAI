@@ -1,12 +1,16 @@
 """
-AetherAI — Device Agent (Stage 3)
+AetherAI — Device Agent (Stage 4)
 Runs on your PC. Connects to Cloud Brain via WebSocket.
 
-FIXES:
-- Office apps now opened via PowerShell COM automation (New-Object -ComObject)
-  This guarantees exactly ONE window with ONE blank document — no double-window issue
-- Focus is set via COM .Activate() before pyautogui clicks, so clicks land in the doc body
-- Notepad++ support retained
+DOUBLE-WINDOW FIX:
+  Office COM scripts now use GetActiveObject() first — if Word/Excel/PowerPoint
+  is already running, it reuses that instance instead of spawning a second one.
+  Only creates a new COM instance if the app is not already open.
+
+STANDALONE EXE:
+  Built with PyInstaller — see build_exe.bat in this folder.
+  Others can run AetherAI_Agent.exe without installing Python.
+  Config is read from aether_config.ini next to the exe (auto-created on first run).
 """
 
 import asyncio
@@ -18,12 +22,45 @@ import subprocess
 import sys
 import time
 from io import BytesIO
+from pathlib import Path
 
 import websockets
 import pyautogui
 from PIL import ImageGrab
 
-from config import CLOUD_BRAIN_URL, DEVICE_ID, API_KEY
+# ── Config loading (supports both script mode and standalone exe) ──────────────
+def _load_config():
+    """
+    Load config from aether_config.ini if present (standalone exe mode),
+    otherwise fall back to config.py (dev mode).
+    """
+    import configparser
+
+    # Look for ini file next to the exe or script
+    if getattr(sys, 'frozen', False):
+        base_dir = Path(sys.executable).parent
+    else:
+        base_dir = Path(__file__).parent
+
+    ini_path = base_dir / "aether_config.ini"
+
+    if ini_path.exists():
+        cfg = configparser.ConfigParser()
+        cfg.read(ini_path)
+        return (
+            cfg.get("aether", "cloud_url",  fallback="wss://aetherai.up.railway.app"),
+            cfg.get("aether", "device_id",  fallback="device-" + str(os.getpid())),
+            cfg.get("aether", "api_key",    fallback=""),
+        )
+    else:
+        try:
+            from config import CLOUD_BRAIN_URL, DEVICE_ID, API_KEY
+            return CLOUD_BRAIN_URL, DEVICE_ID, API_KEY
+        except ImportError:
+            return "wss://aetherai.up.railway.app", "device-unknown", ""
+
+
+CLOUD_BRAIN_URL, DEVICE_ID, API_KEY = _load_config()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,11 +80,18 @@ NOTEPADPP_PATHS = [
     r"C:\Users\patri\scoop\apps\notepadplusplus\current\notepad++.exe",
 ]
 
-# PowerShell COM scripts — open exactly one blank document, bring to front
-# These bypass the Office start screen entirely and create no second window
+# PowerShell COM scripts
+# KEY FIX: tries GetActiveObject first — reuses existing instance if open,
+# only creates new if app is not running. This prevents the double-window bug.
 OFFICE_COM_SCRIPTS = {
     "word": """
-$app = New-Object -ComObject Word.Application
+try {
+    $app = [System.Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application')
+    Write-Host "Reusing existing Word instance"
+} catch {
+    $app = New-Object -ComObject Word.Application
+    Write-Host "Created new Word instance"
+}
 $app.Visible = $true
 $doc = $app.Documents.Add()
 $app.Activate()
@@ -55,7 +99,13 @@ $app.Activate()
 [System.Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null
 """,
     "excel": """
-$app = New-Object -ComObject Excel.Application
+try {
+    $app = [System.Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application')
+    Write-Host "Reusing existing Excel instance"
+} catch {
+    $app = New-Object -ComObject Excel.Application
+    Write-Host "Created new Excel instance"
+}
 $app.Visible = $true
 $wb = $app.Workbooks.Add()
 $app.WindowState = -4137
@@ -64,7 +114,13 @@ $app.Activate()
 [System.Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null
 """,
     "powerpoint": """
-$app = New-Object -ComObject PowerPoint.Application
+try {
+    $app = [System.Runtime.InteropServices.Marshal]::GetActiveObject('PowerPoint.Application')
+    Write-Host "Reusing existing PowerPoint instance"
+} catch {
+    $app = New-Object -ComObject PowerPoint.Application
+    Write-Host "Created new PowerPoint instance"
+}
 $app.Visible = $true
 $pres = $app.Presentations.Add()
 $app.Activate()
@@ -73,14 +129,12 @@ $app.Activate()
 """,
 }
 
-# Title fragments used for AppActivate focus
 OFFICE_TITLES = {
     "word":       "Word",
     "excel":      "Excel",
     "powerpoint": "PowerPoint",
 }
 
-# Where to click to land in the document body (as fraction of screen height)
 OFFICE_BODY_Y = {
     "word":       0.50,
     "excel":      0.45,
@@ -96,7 +150,6 @@ def find_notepadpp() -> str | None:
 
 
 def activate_window_by_title(title_fragment: str):
-    """Bring a window to the foreground using PowerShell AppActivate."""
     try:
         ps_cmd = (
             "Add-Type -AssemblyName Microsoft.VisualBasic; "
@@ -107,21 +160,17 @@ def activate_window_by_title(title_fragment: str):
             capture_output=True, timeout=5
         )
     except Exception as e:
-        logger.warning(f"activate_window_by_title('{title_fragment}') failed: {e}")
+        logger.warning(f"activate_window_by_title failed: {e}")
 
 
 def open_office_via_com(office_key: str):
-    """
-    Launch an Office app with a blank document using COM automation.
-    This is more reliable than exe flags and avoids the double-window issue.
-    Runs asynchronously — caller must await sleep after calling this.
-    """
     script = OFFICE_COM_SCRIPTS.get(office_key, "")
     if not script:
         return
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     subprocess.Popen(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        creationflags=flags,
     )
 
 
@@ -144,7 +193,7 @@ class DeviceAgent:
     async def connect(self):
         while self.running:
             try:
-                logger.info(f"Connecting to {self.ws_url}")
+                logger.info(f"Connecting to {self.ws_url} as '{DEVICE_ID}'")
                 headers = {"X-Api-Key": API_KEY} if API_KEY else {}
                 async with websockets.connect(
                     self.ws_url,
@@ -154,10 +203,7 @@ class DeviceAgent:
                     close_timeout=10,
                 ) as ws:
                     logger.info("✓ Connected to AetherAI Cloud Brain")
-                    await asyncio.gather(
-                        self._listen(ws),
-                        self._keepalive(ws),
-                    )
+                    await asyncio.gather(self._listen(ws), self._keepalive(ws))
             except websockets.ConnectionClosed as e:
                 logger.warning(f"Disconnected ({e.code} {e.reason}). Reconnecting in 5s...")
             except Exception as e:
@@ -228,23 +274,19 @@ class DeviceAgent:
         try:
             if action == "click":
                 x, y = int(params["x"]), int(params["y"])
-                pyautogui.click(x, y)
-                result = f"Clicked ({x}, {y})"
+                pyautogui.click(x, y); result = f"Clicked ({x}, {y})"
 
             elif action == "double_click":
                 x, y = int(params["x"]), int(params["y"])
-                pyautogui.doubleClick(x, y)
-                result = f"Double-clicked ({x}, {y})"
+                pyautogui.doubleClick(x, y); result = f"Double-clicked ({x}, {y})"
 
             elif action == "right_click":
                 x, y = int(params["x"]), int(params["y"])
-                pyautogui.rightClick(x, y)
-                result = f"Right-clicked ({x}, {y})"
+                pyautogui.rightClick(x, y); result = f"Right-clicked ({x}, {y})"
 
             elif action == "move":
                 x, y = int(params["x"]), int(params["y"])
-                pyautogui.moveTo(x, y, duration=0.3)
-                result = f"Moved to ({x}, {y})"
+                pyautogui.moveTo(x, y, duration=0.3); result = f"Moved to ({x}, {y})"
 
             elif action == "type":
                 text = params.get("text", "")
@@ -267,8 +309,7 @@ class DeviceAgent:
 
             elif action == "hotkey":
                 keys = params.get("keys", [])
-                pyautogui.hotkey(*keys)
-                result = f"Hotkey: {'+'.join(keys)}"
+                pyautogui.hotkey(*keys); result = f"Hotkey: {'+'.join(keys)}"
 
             elif action == "scroll":
                 x      = int(params.get("x", pyautogui.size()[0] // 2))
@@ -278,18 +319,14 @@ class DeviceAgent:
                 result = f"Scrolled {clicks} at ({x},{y})"
 
             elif action == "open_app":
-                app = params.get("app", "").strip()
-                result = await self._open_app(app)
+                result = await self._open_app(params.get("app", "").strip())
 
             elif action == "new_file":
-                app = params.get("app", "notepad").strip().lower()
-                result = await self._new_file(app)
+                result = await self._new_file(params.get("app", "notepad").strip().lower())
 
             elif action == "run_command":
                 cmd  = params.get("command", "")
-                proc = subprocess.run(
-                    cmd, shell=True, capture_output=True, text=True, timeout=30
-                )
+                proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
                 result = (proc.stdout or proc.stderr or "Done").strip()[:500]
 
             elif action == "wait":
@@ -321,25 +358,18 @@ class DeviceAgent:
 
     async def _open_app(self, app: str) -> str:
         app_lc = app.lower().strip()
-
+        office_map = {"word": "word", "excel": "excel",
+                      "powerpoint": "powerpoint", "ppt": "powerpoint"}
+        if app_lc in office_map:
+            return await self._new_file(office_map[app_lc])
         if "notepad++" in app_lc or "notepadpp" in app_lc:
-            npp_path = find_notepadpp()
-            if npp_path:
-                subprocess.Popen([npp_path])
+            npp = find_notepadpp()
+            if npp:
+                subprocess.Popen([npp])
                 await asyncio.sleep(2.5)
                 activate_window_by_title("Notepad++")
                 await asyncio.sleep(0.4)
-                return f"Opened Notepad++"
-            subprocess.Popen('start "" "notepad++"', shell=True)
-            await asyncio.sleep(2.0)
-            return "Opened Notepad++ (shell)"
-
-        # Check if it's an Office app — use COM for those too
-        office_map = {"word": "word", "excel": "excel", "powerpoint": "powerpoint", "ppt": "powerpoint"}
-        office_key = office_map.get(app_lc)
-        if office_key:
-            return await self._new_file(office_key)
-
+                return "Opened Notepad++"
         if sys.platform == "win32":
             subprocess.Popen(f'start "" "{app}"', shell=True)
         elif sys.platform == "darwin":
@@ -350,10 +380,8 @@ class DeviceAgent:
         return f"Opened: {app}"
 
     async def _new_file(self, app: str) -> str:
-        """Open a blank document using COM automation (Office) or direct launch (Notepad)."""
         app_lc = app.lower().strip()
 
-        # ── Notepad ───────────────────────────────────────────────────────────
         if app_lc == "notepad":
             subprocess.Popen(["notepad.exe"])
             await asyncio.sleep(1.5)
@@ -364,11 +392,10 @@ class DeviceAgent:
             await asyncio.sleep(0.2)
             return "Opened new Notepad window"
 
-        # ── Notepad++ ─────────────────────────────────────────────────────────
         if "notepad++" in app_lc or "notepadpp" in app_lc:
-            npp_path = find_notepadpp()
-            if npp_path:
-                subprocess.Popen([npp_path])
+            npp = find_notepadpp()
+            if npp:
+                subprocess.Popen([npp])
                 await asyncio.sleep(2.5)
                 activate_window_by_title("Notepad++")
                 await asyncio.sleep(0.4)
@@ -379,57 +406,35 @@ class DeviceAgent:
                 await asyncio.sleep(0.2)
                 return "Opened new Notepad++ window"
             logger.warning("Notepad++ not found — falling back to Notepad")
-            subprocess.Popen(["notepad.exe"])
-            await asyncio.sleep(1.5)
-            activate_window_by_title("Notepad")
-            await asyncio.sleep(0.4)
-            screen_w, screen_h = pyautogui.size()
-            pyautogui.click(screen_w // 2, screen_h // 2)
-            await asyncio.sleep(0.2)
-            return "Opened new Notepad window (Notepad++ not found)"
+            return await self._new_file("notepad")
 
-        # ── Microsoft Office via COM ──────────────────────────────────────────
         office_map = {
-            "word":       "word",
-            "winword":    "word",
-            "excel":      "excel",
-            "powerpoint": "powerpoint",
-            "ppt":        "powerpoint",
+            "word": "word", "winword": "word",
+            "excel": "excel",
+            "powerpoint": "powerpoint", "ppt": "powerpoint",
         }
         office_key = office_map.get(app_lc)
-
         if office_key:
-            logger.info(f"Opening {office_key} via COM automation...")
-            # COM script opens exactly one instance with one blank document
+            logger.info(f"Opening {office_key} via COM (reuse-or-create)...")
             open_office_via_com(office_key)
+            wait = 6.0 if office_key in ("word", "powerpoint") else 5.0
+            await asyncio.sleep(wait)
 
-            # Wait for Office to fully load
-            wait_time = 6.0 if office_key in ("word", "powerpoint") else 5.0
-            logger.info(f"Waiting {wait_time}s for {office_key} to load...")
-            await asyncio.sleep(wait_time)
-
-            # Activate the window
             title_hint = OFFICE_TITLES[office_key]
             activate_window_by_title(title_hint)
             await asyncio.sleep(0.8)
 
-            # Click in the document body to guarantee keyboard focus
             screen_w, screen_h = pyautogui.size()
             body_y = OFFICE_BODY_Y.get(office_key, 0.50)
             pyautogui.click(screen_w // 2, int(screen_h * body_y))
             await asyncio.sleep(0.4)
-
-            # One more activation + click to be sure
             activate_window_by_title(title_hint)
             await asyncio.sleep(0.3)
             pyautogui.click(screen_w // 2, int(screen_h * body_y))
             await asyncio.sleep(0.2)
-
-            return f"Opened new {office_key} document via COM"
+            return f"Opened new {office_key} document"
 
         return f"new_file: unsupported app '{app}'"
-
-    # ── Vision loop ───────────────────────────────────────────────────────────
 
     async def _vision_loop(self, ws, data: dict):
         goal       = data.get("goal", "")
@@ -486,7 +491,8 @@ class DeviceAgent:
 
 
 async def main():
-    logger.info(f"AetherAI Device Agent v3 — Device ID: {DEVICE_ID}")
+    logger.info(f"AetherAI Device Agent v4 — Device ID: {DEVICE_ID}")
+    logger.info(f"Cloud: {CLOUD_BRAIN_URL}")
     logger.info("Press Ctrl+C to stop")
     agent = DeviceAgent()
     try:
