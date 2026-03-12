@@ -20,13 +20,20 @@ class AutomationAgent(BaseAgent):
     description = "Controls mouse, keyboard, and screen on the connected PC"
 
     async def run(self, parameters: dict, task_id: str, context: str = "") -> Optional[str]:
-        # Normalize: Qwen sometimes puts action params at top level
-        # e.g. {"action": "open_app", "app": "notepad"} instead of {"action": "open_app", "parameters": {"app": "notepad"}}
-        if "action" in parameters and "parameters" not in parameters:
-            action_name = parameters.get("action", "")
-            inner = {k: v for k, v in parameters.items() if k not in ("action", "mode", "goal", "task", "sequence")}
-            if inner:
-                parameters = {"action": action_name, "parameters": inner, **{k: v for k, v in parameters.items() if k in ("mode", "goal", "task", "sequence")}}
+        # Normalize flat parameters from Qwen into nested form
+        # e.g. {"action": "open_app", "app": "notepad"}
+        #   -> {"action": "open_app", "parameters": {"app": "notepad"}}
+        action_name = parameters.get("action", "")
+        if action_name and "parameters" not in parameters:
+            inner = {
+                k: v for k, v in parameters.items()
+                if k not in ("action", "mode", "goal", "task", "sequence")
+            }
+            parameters = {
+                "action": action_name,
+                "parameters": inner,
+                **{k: v for k, v in parameters.items() if k in ("mode", "goal", "task", "sequence")},
+            }
 
         # Check a device is connected
         devices = self.ws_manager.list_devices()
@@ -36,22 +43,23 @@ class AutomationAgent(BaseAgent):
                     "2. Run: python agent.py\n"
                     "3. Wait for 'Connected' message, then retry.")
 
-        device_id  = devices[0]
-        action     = parameters.get("action", "")
-        goal       = parameters.get("goal", "") or parameters.get("task", "") or context
-        sequence   = parameters.get("sequence", [])
+        device_id = devices[0]
+        action    = parameters.get("action", "")
+        goal      = parameters.get("goal", "") or parameters.get("task", "") or context
+        sequence  = parameters.get("sequence", [])
 
-        # Vision loop mode — for complex goals that need to see the screen
+        # Vision loop mode
         if parameters.get("mode") == "vision" or (goal and not action and not sequence):
             return await self._vision_task(device_id, goal, task_id)
 
-        # Sequence mode — execute a list of actions
+        # Sequence mode
         if sequence:
             return await self._run_sequence(device_id, sequence, task_id)
 
         # Single action mode
         if action:
-            return await self._single_action(device_id, action, parameters, task_id)
+            inner_params = parameters.get("parameters", {})
+            return await self._single_action(device_id, action, inner_params, task_id)
 
         return "⚠️ No action, sequence, or goal specified."
 
@@ -62,16 +70,17 @@ class AutomationAgent(BaseAgent):
         request_id = str(uuid.uuid4())[:8]
         future = asyncio.get_event_loop().create_future()
 
-        # Register response handler
         self.ws_manager.register_pending(request_id, future)
 
         await self.ws_manager.send_to_device(device_id, {
             "type":       "action",
             "action":     action,
-            "parameters": params,
+            "parameters": params,       # clean nested dict — no extra keys
             "request_id": request_id,
             "task_id":    task_id,
         })
+
+        logger.info(f"[AutomationAgent] Sent action={action} params={params}")
 
         try:
             result = await asyncio.wait_for(future, timeout=15.0)
@@ -88,8 +97,11 @@ class AutomationAgent(BaseAgent):
         results = []
         for i, step in enumerate(sequence, 1):
             action = step.get("action", "")
-            params = step.get("parameters", step)  # allow flat params too
-            logger.info(f"[AutomationAgent] Sequence step {i}/{len(sequence)}: {action}")
+            # Support both nested {"parameters": {...}} and flat params
+            params = step.get("parameters") or {
+                k: v for k, v in step.items() if k != "action"
+            }
+            logger.info(f"[AutomationAgent] Sequence step {i}/{len(sequence)}: {action} params={params}")
 
             request_id = str(uuid.uuid4())[:8]
             future     = asyncio.get_event_loop().create_future()
@@ -111,7 +123,6 @@ class AutomationAgent(BaseAgent):
             finally:
                 self.ws_manager.unregister_pending(request_id)
 
-            # Small delay between steps
             await asyncio.sleep(0.5)
 
         return "✅ Sequence complete:\n" + "\n".join(results)
@@ -119,13 +130,6 @@ class AutomationAgent(BaseAgent):
     # ── Vision loop ───────────────────────────────────────────────────────────
 
     async def _vision_task(self, device_id: str, goal: str, task_id: str) -> str:
-        """
-        Send a vision_task to the device. The device will:
-        1. Take a screenshot
-        2. Send it back as vision_step
-        3. We analyze with Qwen and send back the next action
-        4. Repeat until done
-        """
         request_id = str(uuid.uuid4())[:8]
         future     = asyncio.get_event_loop().create_future()
 
@@ -149,15 +153,10 @@ class AutomationAgent(BaseAgent):
 
     async def _vision_step_handler(self, device_id: str, request_id: str,
                                     step_data: dict) -> dict:
-        """
-        Called for each vision step. Receives screenshot + goal,
-        asks Qwen what to do next, returns action dict.
-        """
         goal      = step_data.get("goal", "")
         step_num  = step_data.get("step", 1)
         img_b64   = step_data.get("image_base64", "")
-
-        screen_w, screen_h = 1920, 1080  # assume full HD
+        screen_w, screen_h = 1920, 1080
 
         prompt = f"""You are controlling a Windows PC to accomplish this goal: {goal}
 
@@ -189,7 +188,6 @@ When the goal is fully complete:
 Screen is {screen_w}x{screen_h} pixels. Be precise with coordinates."""
 
         try:
-            # Use Qwen vision if available, else text-only
             response = await self.qwen.chat(
                 system_prompt="You are a computer vision agent. Analyze the screenshot and return ONLY valid JSON action.",
                 user_message=prompt,
@@ -205,3 +203,4 @@ Screen is {screen_w}x{screen_h} pixels. Be precise with coordinates."""
         except Exception as e:
             logger.error(f"[Vision] Step analysis error: {e}")
             return {"action": "done", "message": f"Vision error: {e}"}
+            
