@@ -13,9 +13,10 @@ class BaseAgent(ABC):
     name: str        = "base_agent"
     description: str = "Base agent"
 
-    def __init__(self, qwen: QwenClient, ws_manager=None, **kwargs):
+    def __init__(self, qwen: QwenClient, ws_manager=None, memory=None, **kwargs):
         self.qwen       = qwen
         self.ws_manager = ws_manager
+        self.memory     = memory   # Stage 5: memory_agent needs MemoryManager
 
     @abstractmethod
     async def run(
@@ -24,4 +25,3 @@ class BaseAgent(ABC):
         task_id: str,
         context: str = "",
     ) -> Optional[str]: ...
-    

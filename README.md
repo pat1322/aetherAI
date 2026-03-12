@@ -1,23 +1,24 @@
 # ⬡ AetherAI — Personal AI Agent System
 
 > A cloud-hosted AI agent that acts as your digital employee.
-> Controls computers, automates tasks, researches topics, browses the web, and generates documents.
+> Controls computers, automates tasks, researches topics, browses the web, generates documents, and remembers your preferences.
 
 ---
 
-## Stage 4 — What's Running
+## Stage 5 — What's Running
 
 | Component | Status | Description |
 |---|---|---|
 | Cloud Brain (FastAPI) | ✅ | API Gateway, WebSocket hub |
-| Orchestrator | ✅ | Plans tasks with Qwen, routes to agents |
-| Research Agent | ✅ | DuckDuckGo web search + Qwen summarization |
-| Document Agent | ✅ | PowerPoint (with Unsplash photos), Word, Excel — 6 random themes |
+| Orchestrator | ✅ | Plans tasks with Qwen, injects user preferences into every call |
+| Research Agent | ✅ | DuckDuckGo HTML + JSON fallback, source URLs, dedup |
+| Document Agent | ✅ | PowerPoint (Picsum photos, 4-layout engine), Word, Excel — 6 themes |
 | Browser Agent | ✅ | Playwright — Google, YouTube, scraping, multi-step workflows |
 | Device Agent | ✅ | PC control via WebSocket (mouse, keyboard, vision loop) |
 | Automation Agent | ✅ | Single actions, sequences, and vision loop execution |
-| Web UI | ✅ | Command center dashboard |
-| Memory (SQLite) | ✅ | Task + step persistence |
+| **Memory Agent** | ✅ | **Stage 5 — save/recall/forget user preferences and personal facts** |
+| Web UI | ✅ | Command center dashboard (command history, settings modal, busy bar) |
+| Memory (SQLite) | ✅ | Tasks, steps, preferences — WAL mode, indexes, auto-cleanup |
 | Standalone EXE | ✅ | Others can connect their PC without installing Python |
 
 ---
@@ -60,7 +61,7 @@ python agent.py
 
 ```bash
 git add .
-git commit -m "Stage 4: Browser Agent + Standalone EXE"
+git commit -m "Stage 5: Memory system"
 git push origin main
 ```
 
@@ -78,22 +79,63 @@ AETHER_API_KEY  = your_secret_here
 QWEN_MODEL      = qwen-plus
 ```
 
-### Step 4: Install Playwright on Railway
-
-Add to your `Procfile` or a `railway.toml` post-deploy command:
-```
-playwright install chromium --with-deps
-```
-
-Or add to your startup script. Railway runs on Linux so chromium works fine.
-
-### Step 5: Connect Device Agent to Railway
+### Step 4: Connect Device Agent to Railway
 
 ```bash
 export AETHER_CLOUD_URL=https://your-app.railway.app
 export AETHER_API_KEY=your_secret_here
 python agent.py
 ```
+
+---
+
+## Memory System (Stage 5)
+
+AetherAI now remembers facts and preferences about you across all sessions.
+Tell it something once and it applies that knowledge to every future command automatically.
+
+### Saving preferences
+
+```
+"Remember that I prefer Python over JavaScript"
+"My Railway URL is https://aetherai.up.railway.app"
+"I'm based in Manila, Philippines (Asia/Manila timezone)"
+"Note that I use VS Code as my editor"
+"My preferred presentation theme is Ocean Deep"
+```
+
+### Recalling preferences
+
+```
+"What do you know about me?"
+"Show my preferences"
+"Do you remember my Railway URL?"
+"What's my preferred language?"
+```
+
+### Deleting preferences
+
+```
+"Forget my timezone"
+"Delete my language preference"
+"Clear all preferences"
+```
+
+### How it works
+
+1. Any command matching a memory keyword (remember, recall, forget, "what do you know", "my X is Y", etc.) is hard-routed to the **memory_agent** before Qwen even sees it.
+2. The memory agent uses Qwen to extract a structured `label` + `value` from natural language, then stores it in the SQLite `preferences` table.
+3. Before **every** command — task or chat — the orchestrator calls `MemoryAgent.load_context()` to build a compact preferences string and injects it into the Qwen system prompt.
+4. Result: Qwen always knows your preferences when writing plans and answers, without you repeating yourself.
+
+### Preference REST API
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/preferences` | List all stored preferences |
+| POST | `/preferences` | Save a preference directly (JSON: `{label, value}`) |
+| DELETE | `/preferences/all` | Wipe all preferences |
+| DELETE | `/preferences/{key}` | Delete one preference by key |
 
 ---
 
@@ -122,17 +164,16 @@ They edit `aether_config.ini`:
 ```ini
 [aether]
 cloud_url = wss://aetherai.up.railway.app
-device_id = johns-laptop         ; unique name per person
-api_key   = your_shared_api_key  ; matches AETHER_API_KEY on Railway
+device_id = johns-laptop
+api_key   = your_shared_api_key
 ```
 
-Then they just double-click `AetherAI_Agent.exe`. Their device appears in the AetherAI dashboard and you can send commands to it.
+Then they just double-click `AetherAI_Agent.exe`.
 
 ### Optional: Auto-start on Windows boot
 
 1. Press `Win + R` → type `shell:startup` → press Enter
 2. Drop a shortcut to `AetherAI_Agent.exe` in that folder
-3. It will connect automatically on every login
 
 ---
 
@@ -141,7 +182,7 @@ Then they just double-click `AetherAI_Agent.exe`. Their device appears in the Ae
 | Method | Endpoint | Description |
 |---|---|---|
 | GET | `/` | System info |
-| GET | `/health` | Health check |
+| GET | `/health` | Health check + task stats |
 | POST | `/command` | Send a command |
 | GET | `/task/{id}` | Get task status |
 | GET | `/tasks` | List recent tasks |
@@ -152,6 +193,10 @@ Then they just double-click `AetherAI_Agent.exe`. Their device appears in the Ae
 | GET | `/files/download/{filename}` | Download a generated file |
 | DELETE | `/files/{filename}` | Delete a generated file |
 | DELETE | `/files/all/clear` | Delete all generated files |
+| GET | `/preferences` | List all preferences |
+| POST | `/preferences` | Save a preference |
+| DELETE | `/preferences/all` | Clear all preferences |
+| DELETE | `/preferences/{key}` | Delete one preference |
 | GET | `/devices` | List connected devices |
 | WS | `/ws/device/{id}` | Device Agent connection |
 | WS | `/ws/ui/{id}` | Web UI live updates |
@@ -163,6 +208,14 @@ curl -X POST https://your-app.railway.app/command \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: your_secret" \
   -d '{"command": "Search YouTube for lofi music playlists"}'
+```
+
+### Example: Save a preference via API
+
+```bash
+curl -X POST https://your-app.railway.app/preferences \
+  -H "Content-Type: application/json" \
+  -d '{"label": "Preferred language", "value": "Python"}'
 ```
 
 ---
@@ -211,32 +264,33 @@ Trigger with: `{"mode": "vision", "goal": "Open Chrome and search for AI news"}`
 ```
 aetherAI/
 ├── cloud_brain/
-│   ├── main.py
-│   ├── orchestrator.py
-│   ├── agent_router.py
-│   ├── memory.py
+│   ├── main.py                        # Stage 5 — preference endpoints
+│   ├── orchestrator.py                # Stage 5 — user context injection
+│   ├── agent_router.py                # Stage 5 — memory_agent wired in
+│   ├── memory.py                      # WAL mode, indexes, auto-cleanup
 │   ├── config.py
 │   ├── agents/
-│   │   ├── __init__.py
-│   │   ├── research_agent.py
-│   │   ├── document_agent.py      # PPTX (with photos), DOCX, XLSX — 6 themes
-│   │   ├── browser_agent.py       # Stage 4 — Playwright
-│   │   ├── coding_agent.py
-│   │   └── automation_agent.py
+│   │   ├── __init__.py                # Stage 5 — memory kwarg added
+│   │   ├── research_agent.py          # DDG JSON fallback, source URLs
+│   │   ├── document_agent.py          # Picsum photos, 4-layout PPTX engine
+│   │   ├── browser_agent.py           # Playwright + httpx fallback chain
+│   │   ├── coding_agent.py            # Syntax validation, multi-file blocks
+│   │   ├── automation_agent.py        # Param normalisation, sequence timeouts
+│   │   └── memory_agent.py            # Stage 5 — NEW
 │   └── utils/
-│       ├── qwen_client.py
-│       └── websocket_manager.py
+│       ├── qwen_client.py             # Stage 5 — user_context in all calls
+│       └── websocket_manager.py       # Per-session queues, dead session pruning
 ├── device_agent/
-│   ├── agent.py                   # Stage 4 — COM fix, standalone exe support
-│   ├── config.py                  # Dev mode config
-│   ├── aether_config.ini          # Standalone exe config (distribute with exe)
-│   ├── build_exe.bat              # Build AetherAI_Agent.exe
+│   ├── agent.py                       # Action retry, JPEG screenshots, COM fix
+│   ├── config.py
+│   ├── aether_config.ini
+│   ├── build_exe.bat
 │   └── requirements.txt
 ├── web_ui/
-│   └── index.html
+│   └── index.html                     # Command history, settings modal, busy bar
 ├── database/
 ├── output/
-├── requirements.txt               # Updated with playwright
+├── requirements.txt
 ├── Procfile
 ├── .env.example
 └── .gitignore
@@ -250,7 +304,7 @@ aetherAI/
 - **Stage 2** ✅ Document Agent (PPTX with photos, DOCX, XLSX — 6 themes)
 - **Stage 3** ✅ Device Agent (vision loop, mouse/keyboard, app automation)
 - **Stage 4** ✅ Browser Agent (Playwright — Google, YouTube, scraping, workflows) + Standalone EXE
-- **Stage 5** — Memory system (preferences, file registry, user profiles)
+- **Stage 5** ✅ Memory system (preferences, memory_agent, user context injection)
 - **Stage 6** — ESP32 voice interface
 - **Stage 7** — Web Dashboard v2 (multi-device management, per-device commands)
 
@@ -263,3 +317,4 @@ aetherAI/
 - Device Agent has pyautogui FAILSAFE enabled (move mouse to top-left corner to abort)
 - Destructive actions (file deletion, system commands) will require confirmation in a future stage
 - Each connected device shows up by `device_id` in the dashboard — give each person a unique ID
+- Preferences are stored locally in SQLite — they never leave your Railway instance
