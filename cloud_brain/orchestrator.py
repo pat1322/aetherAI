@@ -16,6 +16,25 @@ from agent_router import AgentRouter
 
 logger = logging.getLogger(__name__)
 
+# Max characters stored in DB for step output (keeps steps panel clean)
+STEP_OUTPUT_PREVIEW = 300
+
+
+def extract_code_block(output: str) -> tuple[str, str, str]:
+    """
+    If output contains [CODE_BLOCK:lang]...[/CODE_BLOCK],
+    returns (summary, language, code).
+    Otherwise returns (output, "", "").
+    """
+    import re
+    m = re.search(r"\[CODE_BLOCK:(\w+)\]\n(.*?)\n\[/CODE_BLOCK\]", output, re.DOTALL)
+    if m:
+        lang = m.group(1)
+        code = m.group(2)
+        summary = output[:m.start()].strip()
+        return summary, lang, code
+    return output, "", ""
+
 
 class Orchestrator:
     def __init__(self, memory: MemoryManager, ws_manager: WebSocketManager):
@@ -26,11 +45,9 @@ class Orchestrator:
         self._running_tasks: dict[str, bool] = {}
 
     async def run_task(self, task_id: str, command: str):
-        """Full lifecycle: classify → chat answer OR plan → execute steps → complete."""
         self._running_tasks[task_id] = True
 
         try:
-            # ── Step 1: Classify the command ──────────────────────────────
             self.memory.update_task_status(task_id, "planning")
             await self.ws_manager.broadcast_task_update(task_id, {
                 "status": "planning",
@@ -40,7 +57,7 @@ class Orchestrator:
             command_type = await self.qwen.classify_command(command)
             logger.info(f"[{task_id}] Command classified as: {command_type}")
 
-            # ── CHAT MODE: answer directly, no agents ─────────────────────
+            # ── CHAT MODE ─────────────────────────────────────────────────────
             if command_type == "chat":
                 answer = await self.qwen.answer(command)
                 self.memory.update_task_status(task_id, "completed", result=answer)
@@ -50,22 +67,18 @@ class Orchestrator:
                     "result": answer,
                     "is_chat": True,
                 })
-                logger.info(f"[{task_id}] Chat answered directly.")
                 return
 
-            # ── TASK MODE: plan + execute ─────────────────────────────────
+            # ── TASK MODE ─────────────────────────────────────────────────────
             plan = await self.qwen.plan_task(command)
 
-            # Deduplicate: if document_agent appears more than once, keep only the LAST call
-            # (the last one has the most context from previous research steps)
-            doc_indices = [i for i, s in enumerate(plan) if s.get('agent') == 'document_agent']
+            # Deduplicate document_agent — keep only last call
+            doc_indices = [i for i, s in enumerate(plan) if s.get("agent") == "document_agent"]
             if len(doc_indices) > 1:
                 keep = doc_indices[-1]
-                plan = [s for i, s in enumerate(plan) if s.get('agent') != 'document_agent' or i == keep]
-                # Re-number steps
+                plan = [s for i, s in enumerate(plan) if s.get("agent") != "document_agent" or i == keep]
                 for idx, step in enumerate(plan, 1):
-                    step['step'] = idx
-                logger.info(f"[{task_id}] Deduplicated document_agent calls to 1")
+                    step["step"] = idx
 
             logger.info(f"[{task_id}] Plan: {len(plan)} steps")
 
@@ -89,8 +102,8 @@ class Orchestrator:
                 if not self._running_tasks.get(task_id):
                     break
 
-                step_num   = step.get("step", 0)
-                agent_name = step.get("agent", "research_agent")
+                step_num    = step.get("step", 0)
+                agent_name  = step.get("agent", "research_agent")
                 description = step.get("description", "")
                 parameters  = step.get("parameters", {})
 
@@ -112,14 +125,38 @@ class Orchestrator:
                         ),
                         timeout=120.0,
                     )
-                    self.memory.update_step(task_id, step_num, "completed", output)
-                    last_output = output or last_output
-                    await self.ws_manager.broadcast_task_update(task_id, {
-                        "status": "running",
-                        "current_step": step_num,
-                        "step_status": "completed",
-                        "output": output if output else "",
-                    })
+
+                    if output:
+                        # Check for code block marker
+                        summary, lang, code = extract_code_block(output)
+
+                        # Store only summary in DB (keeps steps panel clean)
+                        db_output = summary if summary else output[:STEP_OUTPUT_PREVIEW]
+                        if len(output) > STEP_OUTPUT_PREVIEW and not code:
+                            db_output = output[:STEP_OUTPUT_PREVIEW] + "…"
+
+                        self.memory.update_step(task_id, step_num, "completed", db_output)
+                        last_output = output  # pass full output to next step
+
+                        # Broadcast to UI
+                        if code:
+                            # Send code block separately for rich rendering in chat
+                            await self.ws_manager.broadcast_task_update(task_id, {
+                                "status": "running",
+                                "current_step": step_num,
+                                "step_status": "completed",
+                                "output": summary,
+                                "code_block": {"language": lang, "code": code},
+                            })
+                        else:
+                            await self.ws_manager.broadcast_task_update(task_id, {
+                                "status": "running",
+                                "current_step": step_num,
+                                "step_status": "completed",
+                                "output": output,
+                            })
+                    else:
+                        self.memory.update_step(task_id, step_num, "completed", "")
 
                 except asyncio.TimeoutError:
                     error_msg = f"Step {step_num} timed out"
@@ -132,11 +169,16 @@ class Orchestrator:
                     self.memory.update_step(task_id, step_num, "failed", error_msg)
 
             final_status = "completed" if self._running_tasks.get(task_id) else "cancelled"
-            self.memory.update_task_status(task_id, final_status, result=last_output)
+
+            # For final result, strip code block markers
+            final_summary, _, _ = extract_code_block(last_output)
+            display_result = final_summary if final_summary else last_output
+
+            self.memory.update_task_status(task_id, final_status, result=display_result[:500])
             await self.ws_manager.broadcast_task_update(task_id, {
                 "status": final_status,
                 "message": "Task completed." if final_status == "completed" else "Task cancelled.",
-                "result": last_output if last_output else "",
+                "result": display_result if display_result else "",
             })
 
         except Exception as e:

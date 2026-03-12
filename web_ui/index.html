@@ -32,23 +32,16 @@
       overflow: hidden;
     }
 
-    /* ── Topbar ── */
     .topbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 20px;
-      height: 48px;
-      background: var(--bg2);
-      border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 20px; height: 48px;
+      background: var(--bg2); border-bottom: 1px solid var(--border); flex-shrink: 0;
     }
     .logo { display: flex; align-items: center; gap: 10px; }
     .logo-icon {
       width: 28px; height: 28px;
       background: linear-gradient(135deg, var(--accent), var(--accent2));
-      border-radius: 7px;
-      display: flex; align-items: center; justify-content: center;
+      border-radius: 7px; display: flex; align-items: center; justify-content: center;
       font-size: 14px; font-weight: 900; color: #000;
     }
     .logo-text { font-size: 15px; font-weight: 700; color: var(--text); letter-spacing: 0.05em; }
@@ -57,49 +50,29 @@
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
     .status-dot.offline { background: var(--warn); animation: none; }
 
-    /* ── Main layout ── */
     .layout {
-      display: grid;
-      grid-template-columns: 220px 1fr 260px;
-      flex: 1;
-      overflow: hidden;
+      display: grid; grid-template-columns: 220px 1fr 260px;
+      flex: 1; overflow: hidden;
     }
 
-    /* ── Sidebar ── */
     .sidebar {
-      background: var(--bg2);
-      border-right: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
+      background: var(--bg2); border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; overflow: hidden;
     }
     .sidebar-header {
-      padding: 10px 12px;
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
-      color: var(--muted);
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
+      padding: 10px 12px; font-size: 10px; text-transform: uppercase;
+      letter-spacing: 0.12em; color: var(--muted); border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
     }
     .clear-btn {
-      background: none; border: none;
-      color: var(--warn); font-size: 9px;
-      cursor: pointer; padding: 2px 5px;
-      border-radius: 3px; font-family: inherit;
+      background: none; border: none; color: var(--warn); font-size: 9px;
+      cursor: pointer; padding: 2px 5px; border-radius: 3px; font-family: inherit;
     }
     .clear-btn:hover { background: rgba(255,107,107,0.1); }
     .task-list { flex: 1; overflow-y: auto; padding: 6px; }
     .task-card {
-      padding: 8px 10px;
-      border-radius: 6px;
-      cursor: pointer;
-      margin-bottom: 4px;
-      border: 1px solid transparent;
-      transition: all 0.15s;
-      background: var(--card);
+      padding: 8px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 4px;
+      border: 1px solid transparent; transition: all 0.15s; background: var(--card);
     }
     .task-card:hover { border-color: var(--border); }
     .task-card.active { border-color: var(--accent); background: rgba(0,229,255,0.06); }
@@ -113,33 +86,16 @@
     .task-badge.cancelled { background: rgba(90,112,128,0.15); color: var(--muted); }
     .task-row { display: flex; align-items: flex-start; gap: 4px; }
     .task-del-btn {
-      background: none; border: none; color: var(--muted);
-      cursor: pointer; font-size: 12px; flex-shrink: 0;
-      padding: 0 3px; line-height: 1; margin-top: 1px;
-      font-family: inherit;
+      background: none; border: none; color: var(--muted); cursor: pointer;
+      font-size: 12px; flex-shrink: 0; padding: 0 3px; line-height: 1; margin-top: 1px; font-family: inherit;
     }
     .task-del-btn:hover { color: var(--warn); }
 
-    /* ── Main panel ── */
-    main {
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      background: var(--bg);
-    }
-    .output-area {
-      flex: 1;
-      overflow-y: auto;
-      padding: 16px 20px;
-      font-size: 12px;
-      line-height: 1.7;
-    }
+    main { display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
+    .output-area { flex: 1; overflow-y: auto; padding: 16px 20px; font-size: 12px; line-height: 1.7; }
     .log-entry {
-      display: flex;
-      gap: 12px;
-      margin-bottom: 4px;
-      opacity: 0;
-      transform: translateY(4px);
+      display: flex; gap: 12px; margin-bottom: 4px;
+      opacity: 0; transform: translateY(4px);
       animation: fadeUp 0.2s ease forwards;
     }
     @keyframes fadeUp { to { opacity:1; transform:translateY(0); } }
@@ -152,36 +108,45 @@
     .log-msg.chat    { color: var(--text); background: rgba(0,229,255,0.05); border-left: 2px solid var(--accent); padding: 6px 10px; border-radius: 0 6px 6px 0; }
     .log-msg.info    { color: var(--text); }
 
-    /* ── Input row ── */
+    /* ── Code block in chat ── */
+    .code-block-wrapper {
+      width: 100%; margin: 4px 0;
+    }
+    .code-block-header {
+      display: flex; justify-content: space-between; align-items: center;
+      background: #1a2233; border: 1px solid var(--border);
+      border-bottom: none; border-radius: 6px 6px 0 0;
+      padding: 5px 12px; font-size: 10px;
+    }
+    .code-lang { color: var(--accent2); font-weight: 700; text-transform: uppercase; }
+    .code-copy-btn {
+      background: none; border: 1px solid var(--border); color: var(--muted);
+      border-radius: 3px; padding: 2px 8px; font-size: 9px; cursor: pointer; font-family: inherit;
+    }
+    .code-copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+    .code-block-body {
+      background: #0d1117; border: 1px solid var(--border);
+      border-radius: 0 0 6px 6px;
+      padding: 12px 14px; overflow-x: auto;
+      font-size: 11.5px; line-height: 1.6;
+      color: #c9d1d9; white-space: pre;
+      max-height: 420px; overflow-y: auto;
+    }
+
     .input-row {
-      border-top: 1px solid var(--border);
-      padding: 12px 16px;
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      background: var(--bg2);
-      flex-shrink: 0;
+      border-top: 1px solid var(--border); padding: 12px 16px;
+      display: flex; gap: 8px; align-items: center;
+      background: var(--bg2); flex-shrink: 0;
     }
     .prompt { color: var(--accent); font-size: 13px; white-space: nowrap; }
     .cmd-input {
-      flex: 1;
-      background: transparent;
-      border: none;
-      outline: none;
-      color: var(--text);
-      font-family: inherit;
-      font-size: 13px;
+      flex: 1; background: transparent; border: none; outline: none;
+      color: var(--text); font-family: inherit; font-size: 13px;
     }
     .cmd-input::placeholder { color: var(--muted); }
     .btn {
-      padding: 6px 14px;
-      border-radius: 5px;
-      border: none;
-      cursor: pointer;
-      font-family: inherit;
-      font-size: 11px;
-      font-weight: 700;
-      transition: opacity 0.15s;
+      padding: 6px 14px; border-radius: 5px; border: none; cursor: pointer;
+      font-family: inherit; font-size: 11px; font-weight: 700; transition: opacity 0.15s;
     }
     .btn:disabled { opacity: 0.4; cursor: not-allowed; }
     .btn.primary { background: var(--accent); color: #000; }
@@ -189,27 +154,16 @@
     .btn.danger  { background: var(--warn);  color: #fff; }
     .btn.danger:hover:not(:disabled)  { opacity: 0.85; }
 
-    /* ── Right panel ── */
     .panel {
-      background: var(--bg2);
-      border-left: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
+      background: var(--bg2); border-left: 1px solid var(--border);
+      display: flex; flex-direction: column; overflow: hidden;
     }
     .panel-header {
-      padding: 10px 12px;
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
-      color: var(--muted);
-      border-bottom: 1px solid var(--border);
+      padding: 10px 12px; font-size: 10px; text-transform: uppercase;
+      letter-spacing: 0.12em; color: var(--muted); border-bottom: 1px solid var(--border);
     }
     .devices-row {
-      padding: 8px 12px;
-      font-size: 10px;
-      color: var(--muted);
-      border-bottom: 1px solid var(--border);
+      padding: 8px 12px; font-size: 10px; color: var(--muted); border-bottom: 1px solid var(--border);
     }
     .device-chip {
       display: inline-flex; align-items: center; gap: 5px;
@@ -218,11 +172,8 @@
     }
     .steps-list { flex: 1; overflow-y: auto; padding: 8px; }
     .step-item {
-      padding: 8px 10px;
-      border-radius: 5px;
-      margin-bottom: 4px;
-      background: var(--card);
-      border: 1px solid var(--border);
+      padding: 8px 10px; border-radius: 5px; margin-bottom: 4px;
+      background: var(--card); border: 1px solid var(--border);
     }
     .step-header { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
     .step-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
@@ -234,50 +185,33 @@
     .step-desc  { font-size: 10px; color: var(--muted); line-height: 1.4; }
     .step-output { font-size: 10px; color: var(--text); margin-top: 4px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 
-    /* ── Files section ── */
     .files-section {
-      border-top: 1px solid var(--border);
-      padding: 8px 10px;
-      max-height: 220px;
-      overflow-y: auto;
+      border-top: 1px solid var(--border); padding: 8px 10px;
+      max-height: 220px; overflow-y: auto;
     }
     .files-title {
-      font-size: 10px; text-transform: uppercase;
-      letter-spacing: 0.1em; color: var(--muted);
-      margin-bottom: 7px;
-      display: flex; justify-content: space-between; align-items: center;
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted);
+      margin-bottom: 7px; display: flex; justify-content: space-between; align-items: center;
     }
     .file-item {
-      display: flex; align-items: center; gap: 5px;
-      padding: 5px 7px;
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 5px;
-      margin-bottom: 4px;
+      display: flex; align-items: center; gap: 5px; padding: 5px 7px;
+      background: var(--card); border: 1px solid var(--border); border-radius: 5px; margin-bottom: 4px;
     }
-    .file-ext {
-      font-size: 8px; padding: 1px 4px;
-      border-radius: 3px; font-weight: 700;
-      text-transform: uppercase; flex-shrink: 0;
-    }
+    .file-ext { font-size: 8px; padding: 1px 4px; border-radius: 3px; font-weight: 700; text-transform: uppercase; flex-shrink: 0; }
     .ext-pptx { background: rgba(255,107,53,0.15); color: #ff6b35; }
     .ext-docx { background: rgba(0,229,255,0.12);  color: var(--accent); }
     .ext-xlsx { background: rgba(0,255,157,0.12);  color: var(--green); }
-    .file-name {
-      font-size: 10px; color: var(--text);
-      white-space: nowrap; overflow: hidden;
-      text-overflow: ellipsis; flex: 1;
-    }
+    .ext-py   { background: rgba(167,139,250,0.15); color: var(--accent2); }
+    .ext-js   { background: rgba(255,170,64,0.15);  color: var(--orange); }
+    .ext-c    { background: rgba(0,229,255,0.12);   color: var(--accent); }
+    .ext-cpp  { background: rgba(0,229,255,0.12);   color: var(--accent); }
+    .file-name { font-size: 10px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
     .file-dl  { font-size: 10px; color: var(--accent); text-decoration: none; flex-shrink: 0; }
     .file-dl:hover { text-decoration: underline; }
     .file-x   { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 11px; flex-shrink: 0; font-family: inherit; padding: 0 2px; }
     .file-x:hover { color: var(--warn); }
 
-    .panel-actions {
-      padding: 8px;
-      border-top: 1px solid var(--border);
-      flex-shrink: 0;
-    }
+    .panel-actions { padding: 8px; border-top: 1px solid var(--border); flex-shrink: 0; }
 
     ::-webkit-scrollbar { width: 4px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -286,7 +220,6 @@
 </head>
 <body>
 
-<!-- Topbar -->
 <div class="topbar">
   <div class="logo">
     <div class="logo-icon">A</div>
@@ -299,21 +232,17 @@
   </div>
 </div>
 
-<!-- Layout -->
 <div class="layout">
-
-  <!-- Sidebar: recent tasks -->
   <aside class="sidebar">
     <div class="sidebar-header">
       <span>Recent Tasks</span>
-      <button class="clear-btn" onclick="deleteAllTasks()" title="Clear all tasks">✕ Clear all</button>
+      <button class="clear-btn" onclick="deleteAllTasks()">✕ Clear all</button>
     </div>
     <div class="task-list" id="taskList">
       <div style="color:var(--muted);font-size:10px;padding:10px">No tasks yet</div>
     </div>
   </aside>
 
-  <!-- Main: log output + input -->
   <main>
     <div class="output-area" id="outputArea">
       <div class="log-entry">
@@ -331,7 +260,6 @@
     </div>
   </main>
 
-  <!-- Right panel: task detail + files -->
   <aside class="panel">
     <div class="panel-header">Task Detail</div>
     <div class="devices-row" id="devicesRow">No devices connected</div>
@@ -352,17 +280,14 @@
 </div>
 
 <script>
-// ─── Config ──────────────────────────────────────────────────────────────────
 const BASE_URL   = window.location.origin;
 const WS_BASE    = BASE_URL.replace(/^http/, 'ws');
 const API_KEY    = localStorage.getItem('aether_api_key') || '';
 const SESSION_ID = crypto.randomUUID();
 
-// ─── State ───────────────────────────────────────────────────────────────────
 let activeTaskId = null;
 let ws           = null;
 
-// ─── Clock ───────────────────────────────────────────────────────────────────
 function updateClock() {
   document.getElementById('clockDisplay').textContent =
     new Date().toLocaleTimeString('en-GB', { hour12: false });
@@ -370,7 +295,6 @@ function updateClock() {
 updateClock();
 setInterval(updateClock, 1000);
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
 function escHtml(s) {
   return String(s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;')
@@ -382,12 +306,12 @@ function now() {
 function timeAgo(iso) {
   if (!iso) return '';
   const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
-  if (diff < 60)  return `${diff}s ago`;
+  if (diff < 60)   return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
   return `${Math.floor(diff/3600)}h ago`;
 }
 
-// ─── Log output ──────────────────────────────────────────────────────────────
+// ── Log helpers ───────────────────────────────────────────────────────────────
 function log(msg, cls = 'info') {
   const area = document.getElementById('outputArea');
   const el   = document.createElement('div');
@@ -396,11 +320,49 @@ function log(msg, cls = 'info') {
   area.appendChild(el);
   area.scrollTop = area.scrollHeight;
 }
+
+function logCodeBlock(summary, language, code) {
+  const area = document.getElementById('outputArea');
+
+  // Summary line
+  if (summary) {
+    const sumEl = document.createElement('div');
+    sumEl.className = 'log-entry';
+    sumEl.innerHTML = `<span class="log-time">[${now()}]</span><span class="log-msg result">${escHtml(summary)}</span>`;
+    area.appendChild(sumEl);
+  }
+
+  // Code block
+  const blockId = 'cb_' + Math.random().toString(36).slice(2);
+  const el = document.createElement('div');
+  el.className = 'log-entry';
+  el.innerHTML = `
+    <span class="log-time"></span>
+    <div class="code-block-wrapper">
+      <div class="code-block-header">
+        <span class="code-lang">${escHtml(language)}</span>
+        <button class="code-copy-btn" onclick="copyCode('${blockId}')">Copy</button>
+      </div>
+      <pre class="code-block-body" id="${blockId}">${escHtml(code)}</pre>
+    </div>`;
+  area.appendChild(el);
+  area.scrollTop = area.scrollHeight;
+}
+
+function copyCode(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  navigator.clipboard.writeText(el.textContent).then(() => {
+    const btn = el.previousElementSibling?.querySelector('.code-copy-btn');
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = 'Copy', 1500); }
+  });
+}
+
 function clearOutput() {
   document.getElementById('outputArea').innerHTML = '';
 }
 
-// ─── WebSocket ────────────────────────────────────────────────────────────────
+// ── WebSocket ─────────────────────────────────────────────────────────────────
 function connectWS() {
   ws = new WebSocket(`${WS_BASE}/ws/ui/${SESSION_ID}`);
   ws.onopen  = () => { document.getElementById('statusIndicator').innerHTML = '<span class="status-dot"></span>ONLINE'; };
@@ -410,22 +372,28 @@ function connectWS() {
   };
   ws.onmessage = e => {
     const data = JSON.parse(e.data);
-    if (data.type === 'task_update')        handleTaskUpdate(data);
-    if (data.type === 'device_connected')   refreshDevices();
+    if (data.type === 'task_update')         handleTaskUpdate(data);
+    if (data.type === 'device_connected')    refreshDevices();
     if (data.type === 'device_disconnected') refreshDevices();
     if (data.type === 'ping') ws.send(JSON.stringify({ type: 'pong' }));
   };
 }
 connectWS();
 
-// ─── Task updates ─────────────────────────────────────────────────────────────
+// ── Task updates ──────────────────────────────────────────────────────────────
 function handleTaskUpdate(data) {
-  const { task_id, status, message, agent, current_step, result, plan } = data;
+  const { task_id, status, message, agent, result, plan, code_block } = data;
 
   if (plan)    renderPlan(plan);
   if (message) log(message, agentClass(agent || status));
 
-  // Chat response — show nicely inline
+  // Code block from coding_agent — render with syntax highlight box
+  if (code_block && code_block.code) {
+    logCodeBlock(data.output || '', code_block.language, code_block.code);
+    refreshFiles();
+  }
+
+  // Chat response
   if (data.is_chat && result) {
     const area = document.getElementById('outputArea');
     const el   = document.createElement('div');
@@ -438,9 +406,13 @@ function handleTaskUpdate(data) {
     return;
   }
 
-  if (result && status === 'completed') log('✓ ' + result, 'result');
+  // Regular step output (non-code)
+  if (data.output && !code_block && data.step_status === 'completed') {
+    log('✓ ' + data.output, 'result');
+  }
 
   if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+    if (result && !code_block) log('✓ ' + result, 'result');
     unlockInput();
     refreshFiles();
     if (activeTaskId === task_id) {
@@ -467,7 +439,7 @@ function unlockInput() {
   document.getElementById('cmdInput').disabled = false;
 }
 
-// ─── Send command ─────────────────────────────────────────────────────────────
+// ── Send command ──────────────────────────────────────────────────────────────
 async function sendCommand() {
   const input = document.getElementById('cmdInput');
   const cmd   = input.value.trim();
@@ -476,7 +448,7 @@ async function sendCommand() {
   input.value = '';
   document.getElementById('sendBtn').disabled = true;
   document.getElementById('stopBtn').style.display = 'inline-block';
-  document.getElementById('cmdInput').disabled = false; // keep input usable for chat
+  document.getElementById('cmdInput').disabled = false;
 
   clearOutput();
   log(`> ${cmd}`, 'system');
@@ -498,7 +470,6 @@ async function sendCommand() {
   }
 }
 
-// ─── Stop task ────────────────────────────────────────────────────────────────
 async function stopTask() {
   if (!activeTaskId) return;
   await fetch(`${BASE_URL}/task/${activeTaskId}/cancel`, { method: 'POST' });
@@ -506,7 +477,7 @@ async function stopTask() {
 }
 async function cancelActiveTask() { await stopTask(); }
 
-// ─── Plan visualization ───────────────────────────────────────────────────────
+// ── Plan visualization ────────────────────────────────────────────────────────
 function renderPlan(plan) {
   const list = document.getElementById('stepsList');
   list.innerHTML = plan.map(s => `
@@ -526,19 +497,27 @@ async function loadSteps(taskId) {
     if (!data.steps || !data.steps.length) return;
 
     const list = document.getElementById('stepsList');
-    list.innerHTML = data.steps.map(s => `
-      <div class="step-item">
-        <div class="step-header">
-          <div class="step-dot ${s.status || 'pending'}"></div>
-          <span class="step-agent">${escHtml(s.agent)}</span>
-        </div>
-        <div class="step-desc">${escHtml(s.description)}</div>
-        ${s.output ? `<div class="step-output">${escHtml(s.output)}</div>` : ''}
-      </div>`).join('');
+    list.innerHTML = data.steps.map(s => {
+      // For coding_agent steps: show only the summary line, not the code
+      let outputHtml = '';
+      if (s.output) {
+        const summary = s.output.split('\n')[0]; // first line only in steps panel
+        outputHtml = `<div class="step-output">${escHtml(summary)}</div>`;
+      }
+      return `
+        <div class="step-item">
+          <div class="step-header">
+            <div class="step-dot ${s.status || 'pending'}"></div>
+            <span class="step-agent">${escHtml(s.agent)}</span>
+          </div>
+          <div class="step-desc">${escHtml(s.description)}</div>
+          ${outputHtml}
+        </div>`;
+    }).join('');
   } catch {}
 }
 
-// ─── Task list ────────────────────────────────────────────────────────────────
+// ── Task list ─────────────────────────────────────────────────────────────────
 async function loadTasks() {
   try {
     const res   = await fetch(`${BASE_URL}/tasks?limit=30`);
@@ -556,7 +535,7 @@ async function loadTasks() {
            onclick="selectTask('${t.task_id}')">
         <div class="task-row">
           <div class="task-title" style="flex:1">${escHtml(t.command)}</div>
-          <button class="task-del-btn" onclick="deleteTask('${t.task_id}',event)" title="Delete">✕</button>
+          <button class="task-del-btn" onclick="deleteTask('${t.task_id}',event)">✕</button>
         </div>
         <div class="task-meta">
           <span>${timeAgo(t.created_at)}</span>
@@ -574,7 +553,6 @@ function selectTask(taskId) {
   loadTasks();
 }
 
-// ─── Delete functions ─────────────────────────────────────────────────────────
 async function deleteTask(taskId, e) {
   e.stopPropagation();
   await fetch(`${BASE_URL}/task/${taskId}`, { method: 'DELETE' });
@@ -588,7 +566,7 @@ async function deleteTask(taskId, e) {
 }
 
 async function deleteAllTasks() {
-  if (!confirm('Delete ALL tasks? This cannot be undone.')) return;
+  if (!confirm('Delete ALL tasks?')) return;
   await fetch(`${BASE_URL}/tasks/all`, { method: 'DELETE' });
   activeTaskId = null;
   document.getElementById('stepsList').innerHTML =
@@ -609,7 +587,6 @@ async function deleteAllFiles() {
   refreshFiles();
 }
 
-// ─── Files panel ─────────────────────────────────────────────────────────────
 async function refreshFiles() {
   try {
     const res   = await fetch(`${BASE_URL}/files`);
@@ -628,7 +605,7 @@ async function refreshFiles() {
         <span class="file-ext ext-${ext}">${ext}</span>
         <span class="file-name" title="${escHtml(f.name)}">${escHtml(f.name)}</span>
         <a class="file-dl" href="${BASE_URL}${f.url}" download="${escHtml(f.name)}">↓</a>
-        <button class="file-x" onclick="deleteFile('${escHtml(f.name)}',event)" title="Delete">✕</button>
+        <button class="file-x" onclick="deleteFile('${escHtml(f.name)}',event)">✕</button>
       </div>`;
     }).join('');
   } catch {}
@@ -636,7 +613,6 @@ async function refreshFiles() {
 refreshFiles();
 setInterval(refreshFiles, 8000);
 
-// ─── Devices ─────────────────────────────────────────────────────────────────
 async function refreshDevices() {
   try {
     const res  = await fetch(`${BASE_URL}/devices`);
@@ -657,7 +633,6 @@ async function refreshDevices() {
 refreshDevices();
 setInterval(refreshDevices, 15000);
 
-// ─── Keyboard shortcut ────────────────────────────────────────────────────────
 document.getElementById('cmdInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') sendCommand();
 });

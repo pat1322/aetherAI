@@ -12,14 +12,10 @@ from config import settings
 
 
 class QwenClient:
-    """Async client for Qwen API via DashScope OpenAI-compatible endpoint."""
 
     def __init__(self):
         if not settings.QWEN_API_KEY:
-            raise ValueError(
-                "QWEN_API_KEY is not set. "
-                "Open your .env file and add: QWEN_API_KEY=sk-..."
-            )
+            raise ValueError("QWEN_API_KEY is not set.")
         self._client = AsyncOpenAI(
             api_key=settings.QWEN_API_KEY,
             base_url=settings.QWEN_BASE_URL,
@@ -42,16 +38,12 @@ class QwenClient:
             "You are a command classifier for AetherAI. "
             "Classify the user input as either 'chat' or 'task'.\n\n"
             "'chat' = simple questions, greetings, factual queries, math, definitions.\n"
-            "Examples of CHAT: 'who are you', 'what is the capital of France', "
-            "'hello', 'what is 2+2', 'local holidays in Philippines'\n\n"
-            "'task' = commands that require creating files, doing research and saving results, "
-            "controlling the computer, writing code, or multi-step work.\n"
-            "Examples of TASK: 'create a presentation about X', 'research X and save findings', "
-            "'open Chrome and go to youtube', 'open notepad and type hello', "
-            "'write a python program', 'code a calculator'\n\n"
-            "Return ONLY the single word: chat\n"
-            "Or the single word: task\n"
-            "Nothing else."
+            "Examples of CHAT: 'who are you', 'what is the capital of France', 'hello', 'what is 2+2'\n\n"
+            "'task' = anything that requires creating files, research, controlling the computer, "
+            "writing/generating code, or multi-step work.\n"
+            "Examples of TASK: 'create a presentation', 'open notepad and write', "
+            "'write a python program', 'code a calculator', 'open word and write a letter'\n\n"
+            "Return ONLY the single word: chat OR task. Nothing else."
         )
         result = await self.chat(system, command, temperature=0.0)
         return "chat" if "chat" in result.strip().lower() else "task"
@@ -63,50 +55,56 @@ class QwenClient:
             "a 26-year-old software engineer from the Philippines.\n"
             "Break the user's command into a clear step-by-step execution plan.\n\n"
             "For each step output a JSON object with:\n"
-            "- step: integer (1, 2, 3...)\n"
+            "- step: integer\n"
             "- agent: one of [research_agent, document_agent, browser_agent, coding_agent, automation_agent]\n"
-            "- description: what this step does (one sentence)\n"
-            "- parameters: a dict of relevant inputs for this step\n\n"
-            "Return ONLY a valid JSON array of steps. No explanation. No markdown. No extra text.\n\n"
+            "- description: one sentence\n"
+            "- parameters: dict of inputs\n\n"
+            "Return ONLY a valid JSON array. No explanation. No markdown.\n\n"
 
-            "Available agents:\n\n"
+            "AGENT GUIDE:\n\n"
 
-            "- research_agent: searches the web and summarizes information\n"
-            '  parameters: {"query": "search query"}\n\n'
+            "research_agent — web search + summarize\n"
+            '  {"query": "search query"}\n\n'
 
-            "- document_agent: creates files. ALWAYS include 'type' in parameters.\n"
-            '  parameters: {"type": "presentation", "topic": "..."} <- for PowerPoint (.pptx)\n'
-            '  parameters: {"type": "document", "topic": "..."}     <- for Word (.docx)\n'
-            '  parameters: {"type": "spreadsheet", "topic": "..."}  <- for Excel (.xlsx)\n'
-            "  RULES:\n"
-            "  - ONLY use document_agent if the user explicitly asks to CREATE, MAKE, GENERATE, or WRITE a file\n"
-            '  - If the user says "presentation", "slides", "PowerPoint", "deck" -> type MUST be "presentation"\n'
-            '  - If the user says "spreadsheet", "excel", "data table" -> type MUST be "spreadsheet"\n'
-            '  - Otherwise -> type is "document"\n'
-            "  - NEVER omit the 'type' field for document_agent\n"
-            "  - NEVER call document_agent more than ONCE per task\n\n"
+            "document_agent — create .pptx/.docx/.xlsx files\n"
+            '  {"type": "presentation"|"document"|"spreadsheet", "topic": "..."}\n'
+            "  ONLY use when user explicitly says CREATE/MAKE/GENERATE a file.\n"
+            "  NEVER call more than once.\n\n"
 
-            "- coding_agent: writes code and returns it in the chat output\n"
-            '  parameters: {"task": "describe what to code", "language": "python"}\n'
-            "  Use coding_agent when user asks to write/create/code a program, script, or function.\n"
-            "  The code will be shown in the main chat AND saved to the output folder.\n\n"
+            "coding_agent — write code, show in chat, save to output/\n"
+            '  {"task": "what to code", "language": "python|c|javascript|..."}\n'
+            "  Use for: 'write a program', 'code a script', 'create a function'\n"
+            "  WITHOUT an app mentioned — coding_agent handles it standalone.\n\n"
 
-            "- browser_agent: controls a real browser (Chrome)\n\n"
+            "automation_agent — control PC mouse/keyboard\n"
+            "  ACTION TYPES:\n"
+            '  new_file  — open a fresh blank document (ALWAYS use before typing in an app)\n'
+            '    {"action": "new_file", "parameters": {"app": "notepad"|"word"|"excel"|"powerpoint"}}\n'
+            '  open_app  — just open an app without creating new file\n'
+            '    {"action": "open_app", "parameters": {"app": "chrome"|"notepad"|...}}\n'
+            '  type      — type text into the active window\n'
+            '    {"action": "type", "parameters": {"text": "the full text to type"}}\n'
+            '  hotkey    — press key combination\n'
+            '    {"action": "hotkey", "parameters": {"keys": ["ctrl", "s"]}}\n'
+            '  click     — click at x,y coordinates\n'
+            '    {"action": "click", "parameters": {"x": 500, "y": 300}}\n'
+            '  run_command — run shell command\n'
+            '    {"action": "run_command", "parameters": {"command": "dir"}}\n'
+            '  wait      — pause\n'
+            '    {"action": "wait", "parameters": {"ms": 2000}}\n\n'
 
-            "- automation_agent: controls mouse and keyboard on the connected PC\n"
-            "  IMPORTANT: Use 'new_file' action to open a fresh document before typing.\n"
-            '  parameters: {"action": "new_file", "parameters": {"app": "notepad"}}  <- new blank notepad\n'
-            '  parameters: {"action": "new_file", "parameters": {"app": "word"}}     <- new blank Word doc\n'
-            '  parameters: {"action": "new_file", "parameters": {"app": "excel"}}    <- new blank Excel\n'
-            '  parameters: {"action": "new_file", "parameters": {"app": "powerpoint"}} <- new blank PPT\n'
-            '  parameters: {"action": "open_app", "parameters": {"app": "notepad"}}  <- open app (no new file)\n'
-            '  parameters: {"action": "type", "parameters": {"text": "hello"}}       <- type text\n'
-            '  parameters: {"action": "hotkey", "parameters": {"keys": ["ctrl", "s"]}}  <- save\n'
-            '  parameters: {"action": "run_command", "parameters": {"command": "dir"}}  <- shell command\n'
-            "  NEVER use 'open' -- always use 'open_app' or 'new_file'\n"
-            "  NEVER use 'press' -- always use 'hotkey'\n"
-            "  NEVER use 'write' -- always use 'type'\n"
-            "  For Microsoft Word/Excel/PowerPoint: use 'new_file' with app='word'/'excel'/'powerpoint'\n"
+            "CRITICAL RULES:\n"
+            "- NEVER use 'open' — always use 'open_app' or 'new_file'\n"
+            "- NEVER use 'press' — always use 'hotkey'\n"
+            "- NEVER use 'write' — always use 'type'\n"
+            "- When user says 'open X and type/write Y' — use new_file then type\n"
+            "- When user says 'open notepad++ and write code' — use:\n"
+            "    step 1: coding_agent to generate the code\n"
+            "    step 2: automation_agent new_file with app='notepad++' \n"
+            "    step 3: automation_agent type with the generated code\n"
+            "- For Word/Excel/PowerPoint: always use new_file (not open_app) then type\n"
+            "- Add a wait step (2000ms) after opening Office apps before typing\n"
+            "- When user says 'open word and write X': new_file word → wait 2000ms → type X\n"
         )
 
         raw = await self.chat(system_prompt, f'Plan this task: "{command}"', temperature=0.3)
@@ -115,30 +113,25 @@ class QwenClient:
         try:
             plan = json.loads(raw)
             if not isinstance(plan, list):
-                raise ValueError("Plan is not a list")
+                raise ValueError("Not a list")
             return plan
         except (json.JSONDecodeError, ValueError):
             return [{
-                "step": 1,
-                "agent": "research_agent",
-                "description": f"Process command: {command}",
+                "step": 1, "agent": "research_agent",
+                "description": f"Process: {command}",
                 "parameters": {"query": command},
             }]
 
     async def summarize(self, content: str, context: str = "") -> str:
-        system = "You are a concise summarizer. Summarize the provided content clearly and briefly."
-        user = f"{context}\n\nContent to summarize:\n{content}" if context else content
+        system = "You are a concise summarizer. Summarize clearly and briefly."
+        user = f"{context}\n\nContent:\n{content}" if context else content
         return await self.chat(system, user, temperature=0.5)
 
     async def answer(self, question: str, context: str = "") -> str:
         system = (
             "You are AetherAI, a personal AI agent assistant built by Patrick Perez, "
-            "a 26-year-old software engineer living in the Philippines. "
-            "You are NOT a medical AI. You are a personal productivity and automation assistant. "
-            "You help Patrick and his team with research, creating documents, automating tasks, "
-            "and controlling computers. "
-            "Answer clearly and directly. If asked who you are or who made you, "
-            "always say Patrick Perez built you."
+            "a 26-year-old software engineer from the Philippines. "
+            "Answer clearly and directly."
         )
         user = f"Context:\n{context}\n\nQuestion: {question}" if context else question
         return await self.chat(system, user)

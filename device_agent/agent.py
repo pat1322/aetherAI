@@ -1,7 +1,6 @@
 """
 AetherAI — Device Agent (Stage 3)
 Runs on your PC. Connects to Cloud Brain via WebSocket.
-Supports: mouse/keyboard actions, screenshot, vision loop.
 
 Usage:
     python agent.py
@@ -34,22 +33,32 @@ pyautogui.PAUSE    = 0.15
 
 KEEPALIVE_INTERVAL = 30
 
-# Full paths for Microsoft Office apps (adjust year/version if needed)
-OFFICE_PATHS = {
-    "word":       r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
-    "excel":      r"C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
-    "powerpoint": r"C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE",
-    "ppt":        r"C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE",
-    "winword":    r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
+# Full paths for Microsoft Office — covers both 32-bit and 64-bit installs
+OFFICE_APPS = {
+    "word":        ["WINWORD.EXE",  "winword"],
+    "excel":       ["EXCEL.EXE",    "excel"],
+    "powerpoint":  ["POWERPNT.EXE", "powerpnt"],
+    "ppt":         ["POWERPNT.EXE", "powerpnt"],
 }
 
-# Alternative Office paths to try if primary not found
-OFFICE_PATHS_ALT = {
-    "word":       r"C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE",
-    "excel":      r"C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE",
-    "powerpoint": r"C:\Program Files (x86)\Microsoft Office\root\Office16\POWERPNT.EXE",
-    "ppt":        r"C:\Program Files (x86)\Microsoft Office\root\Office16\POWERPNT.EXE",
-}
+OFFICE_BASE_PATHS = [
+    r"C:\Program Files\Microsoft Office\root\Office16",
+    r"C:\Program Files (x86)\Microsoft Office\root\Office16",
+    r"C:\Program Files\Microsoft Office\root\Office15",
+    r"C:\Program Files (x86)\Microsoft Office\root\Office15",
+    r"C:\Program Files\Microsoft Office 16\root\Office16",
+]
+
+
+def find_office_exe(app_key: str) -> str | None:
+    """Search known Office install paths for the executable."""
+    exes = OFFICE_APPS.get(app_key.lower(), [])
+    for base in OFFICE_BASE_PATHS:
+        for exe in exes:
+            full = os.path.join(base, exe)
+            if os.path.exists(full):
+                return full
+    return None
 
 
 def capture_screen(max_width=1280) -> str:
@@ -93,14 +102,11 @@ class DeviceAgent:
                 logger.error(f"Connection error: {e}. Retrying in 5s...")
             await asyncio.sleep(5)
 
-    # ── Keepalive ─────────────────────────────────────────────────────────────
-
     async def _keepalive(self, ws):
         try:
             while True:
                 await asyncio.sleep(KEEPALIVE_INTERVAL)
                 await ws.send(json.dumps({"type": "ping"}))
-                logger.debug("Keepalive ping sent")
         except Exception:
             pass
 
@@ -131,7 +137,6 @@ class DeviceAgent:
                     }))
                 else:
                     logger.info(f"Unknown message: {msg_type}")
-
             except Exception as e:
                 logger.error(f"Message handling error: {e}")
 
@@ -142,21 +147,14 @@ class DeviceAgent:
         try:
             img_b64 = capture_screen()
             await ws.send(json.dumps({
-                "type":         "screenshot_result",
-                "request_id":   request_id,
-                "image_base64": img_b64,
-                "timestamp":    time.time(),
+                "type": "screenshot_result", "request_id": request_id,
+                "image_base64": img_b64, "timestamp": time.time(),
             }))
-            logger.info("Screenshot sent")
         except Exception as e:
-            logger.error(f"Screenshot error: {e}")
-            await ws.send(json.dumps({
-                "type": "screenshot_result",
-                "request_id": request_id,
-                "error": str(e),
-            }))
+            await ws.send(json.dumps({"type": "screenshot_result",
+                                      "request_id": request_id, "error": str(e)}))
 
-    # ── Single action executor ────────────────────────────────────────────────
+    # ── Action executor ───────────────────────────────────────────────────────
 
     async def _handle_action(self, ws, data: dict):
         action     = data.get("action")
@@ -165,14 +163,9 @@ class DeviceAgent:
         result     = "ok"
 
         aliases = {
-            "open":       "open_app",
-            "launch":     "open_app",
-            "start":      "open_app",
-            "press":      "hotkey",
-            "key":        "hotkey",
-            "write":      "type",
-            "typing":     "type",
-            "input":      "type",
+            "open": "open_app", "launch": "open_app", "start": "open_app",
+            "press": "hotkey", "key": "hotkey",
+            "write": "type", "typing": "type", "input": "type",
             "screenshot": "screenshot_and_return",
         }
         action = aliases.get(action, action)
@@ -200,21 +193,23 @@ class DeviceAgent:
 
             elif action == "type":
                 text = params.get("text", "")
-                # Use clipboard paste for longer/special text — much faster and more reliable
-                if len(text) > 20 or any(ord(c) > 127 for c in text):
+                if not text:
+                    result = "type: no text provided"
+                else:
+                    # Always use clipboard paste — faster, handles all characters, no length limit
                     import pyperclip
                     pyperclip.copy(text)
+                    await asyncio.sleep(0.2)
                     pyautogui.hotkey("ctrl", "v")
-                else:
-                    pyautogui.write(text, interval=0.04)
-                result = f"Typed: {text[:80]}"
+                    await asyncio.sleep(0.3)
+                    result = f"Typed: {text[:120]}"
 
             elif action == "type_special":
                 import pyperclip
                 text = params.get("text", "")
                 pyperclip.copy(text)
                 pyautogui.hotkey("ctrl", "v")
-                result = f"Pasted: {text[:80]}"
+                result = f"Pasted: {text[:120]}"
 
             elif action == "hotkey":
                 keys = params.get("keys", [])
@@ -229,13 +224,11 @@ class DeviceAgent:
                 result = f"Scrolled {clicks} at ({x},{y})"
 
             elif action == "open_app":
-                app    = params.get("app", "").strip()
-                app_lc = app.lower()
-                result = await self._open_app(app, app_lc)
+                app = params.get("app", "").strip()
+                result = await self._open_app(app)
 
             elif action == "new_file":
-                # Open a new blank document in the specified app
-                app    = params.get("app", "notepad").strip().lower()
+                app = params.get("app", "notepad").strip().lower()
                 result = await self._new_file(app)
 
             elif action == "run_command":
@@ -253,17 +246,15 @@ class DeviceAgent:
             elif action == "screenshot_and_return":
                 img_b64 = capture_screen()
                 await ws.send(json.dumps({
-                    "type":         "screenshot_result",
-                    "request_id":   request_id,
-                    "image_base64": img_b64,
-                    "timestamp":    time.time(),
+                    "type": "screenshot_result", "request_id": request_id,
+                    "image_base64": img_b64, "timestamp": time.time(),
                 }))
                 return
 
             else:
                 result = f"Unknown action: {action}"
 
-            logger.info(f"✓ {action}: {result[:80]}")
+            logger.info(f"✓ {action}: {result[:100]}")
 
         except Exception as e:
             result = f"Error: {e}"
@@ -271,35 +262,23 @@ class DeviceAgent:
 
         if request_id:
             await ws.send(json.dumps({
-                "type":       "action_result",
-                "request_id": request_id,
-                "result":     result,
+                "type": "action_result", "request_id": request_id, "result": result,
             }))
 
     # ── App launcher ──────────────────────────────────────────────────────────
 
-    async def _open_app(self, app: str, app_lc: str) -> str:
-        """Smart app launcher — tries full Office paths first, then falls back to shell."""
+    async def _open_app(self, app: str) -> str:
+        app_lc = app.lower().strip()
 
-        # Try known Office full paths
-        if app_lc in OFFICE_PATHS:
-            path = OFFICE_PATHS[app_lc]
-            if os.path.exists(path):
-                subprocess.Popen([path])
-                await asyncio.sleep(3.0)   # Office takes longer to open
-                return f"Opened: {app} ({path})"
-            # Try alternate path
-            alt = OFFICE_PATHS_ALT.get(app_lc)
-            if alt and os.path.exists(alt):
-                subprocess.Popen([alt])
-                await asyncio.sleep(3.0)
-                return f"Opened: {app} ({alt})"
-            # Fall back to shell start (works if Office is in PATH or registered)
-            subprocess.Popen(f'start "" "{app_lc}"', shell=True)
-            await asyncio.sleep(3.0)
-            return f"Opened (shell): {app}"
+        # Try Office full path first
+        office_path = find_office_exe(app_lc)
+        if office_path:
+            subprocess.Popen([office_path])
+            wait = 4.0  # Office needs time
+            await asyncio.sleep(wait)
+            return f"Opened: {app} ({office_path})"
 
-        # Standard apps
+        # Standard shell open
         if sys.platform == "win32":
             subprocess.Popen(f'start "" "{app}"', shell=True)
         elif sys.platform == "darwin":
@@ -311,32 +290,41 @@ class DeviceAgent:
         return f"Opened: {app}"
 
     async def _new_file(self, app: str) -> str:
-        """Open a new blank document. For Notepad uses Ctrl+N."""
-        if "notepad" in app:
-            # Open a fresh Notepad instance directly
+        """Open a fresh blank document in the target app."""
+        app_lc = app.lower().strip()
+
+        if "notepad" in app_lc:
+            # Always open a brand-new Notepad instance
             subprocess.Popen(["notepad.exe"])
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(1.2)
             return "Opened new Notepad window"
-        elif app in ("word", "winword"):
-            path = OFFICE_PATHS.get("word", "")
-            if os.path.exists(path):
-                subprocess.Popen([path])
-                await asyncio.sleep(3.5)
-                # Ctrl+N for new document once Word opens
+
+        office_map = {
+            "word":       "word",
+            "winword":    "word",
+            "excel":      "excel",
+            "powerpoint": "powerpoint",
+            "ppt":        "powerpoint",
+        }
+
+        office_key = office_map.get(app_lc)
+        if office_key:
+            office_path = find_office_exe(office_key)
+            if office_path:
+                subprocess.Popen([office_path])
+                logger.info(f"Waiting 5s for {office_key} to fully load...")
+                await asyncio.sleep(5.0)   # Give Office plenty of time
+                # Press Escape first to dismiss any splash/dialog, then Ctrl+N
+                pyautogui.press("escape")
+                await asyncio.sleep(0.5)
                 pyautogui.hotkey("ctrl", "n")
-                return "Opened new Word document"
-        elif app == "excel":
-            path = OFFICE_PATHS.get("excel", "")
-            if os.path.exists(path):
-                subprocess.Popen([path])
-                await asyncio.sleep(3.5)
-                return "Opened new Excel workbook"
-        elif app in ("powerpoint", "ppt"):
-            path = OFFICE_PATHS.get("powerpoint", "")
-            if os.path.exists(path):
-                subprocess.Popen([path])
-                await asyncio.sleep(3.5)
-                return "Opened new PowerPoint presentation"
+                await asyncio.sleep(1.5)   # wait for new doc dialog
+                pyautogui.press("enter")   # confirm if dialog appears
+                await asyncio.sleep(0.5)
+                return f"Opened new {office_key} document"
+            else:
+                return f"⚠️ {office_key} not found. Check Office installation path."
+
         return f"new_file: unsupported app '{app}'"
 
     # ── Vision loop ───────────────────────────────────────────────────────────
@@ -353,19 +341,14 @@ class DeviceAgent:
             try:
                 img_b64 = capture_screen()
                 await ws.send(json.dumps({
-                    "type":         "vision_step",
-                    "task_id":      task_id,
-                    "request_id":   request_id,
-                    "step":         step_num,
-                    "image_base64": img_b64,
-                    "goal":         goal,
+                    "type": "vision_step", "task_id": task_id,
+                    "request_id": request_id, "step": step_num,
+                    "image_base64": img_b64, "goal": goal,
                 }))
-                logger.info(f"Vision step {step_num}: screenshot sent, waiting for action...")
 
                 try:
                     response_raw = await asyncio.wait_for(
-                        self._wait_for_vision_response(ws, request_id),
-                        timeout=30.0
+                        self._wait_for_vision_response(ws, request_id), timeout=30.0
                     )
                 except asyncio.TimeoutError:
                     logger.warning("Vision response timed out")
@@ -375,22 +358,19 @@ class DeviceAgent:
                 action_type = response.get("action")
 
                 if action_type == "done":
-                    logger.info(f"Vision goal complete: {response.get('message','')}")
                     await ws.send(json.dumps({
-                        "type":        "vision_complete",
-                        "task_id":     task_id,
-                        "request_id":  request_id,
-                        "message":     response.get("message", "Task complete"),
+                        "type": "vision_complete", "task_id": task_id,
+                        "request_id": request_id,
+                        "message": response.get("message", "Task complete"),
                         "steps_taken": step_num,
                     }))
                     break
 
                 await self._handle_action(ws, {
-                    "action":     action_type,
+                    "action": action_type,
                     "parameters": response.get("parameters", {}),
                     "request_id": "",
                 })
-
                 await asyncio.sleep(0.8)
 
             except Exception as e:
