@@ -31,11 +31,13 @@ logger = logging.getLogger(__name__)
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE    = 0.15
 
+# Send a ping every 30 seconds to keep Railway's WebSocket alive
+KEEPALIVE_INTERVAL = 30
+
 
 def capture_screen(max_width=1280) -> str:
     """Capture screen, resize, return as base64 PNG string."""
     img = ImageGrab.grab()
-    # Resize to reduce bandwidth while keeping it readable
     w, h = img.size
     if w > max_width:
         ratio = max_width / w
@@ -61,16 +63,33 @@ class DeviceAgent:
                 async with websockets.connect(
                     self.ws_url,
                     additional_headers=headers,
-                    ping_interval=20,
-                    ping_timeout=10,
+                    ping_interval=None,   # disable built-in ping — we handle it manually
+                    ping_timeout=None,
+                    close_timeout=10,
                 ) as ws:
                     logger.info("✓ Connected to AetherAI Cloud Brain")
-                    await self._listen(ws)
-            except websockets.ConnectionClosed:
-                logger.warning("Disconnected. Reconnecting in 5s...")
+                    # Run listener and keepalive ping concurrently
+                    await asyncio.gather(
+                        self._listen(ws),
+                        self._keepalive(ws),
+                    )
+            except websockets.ConnectionClosed as e:
+                logger.warning(f"Disconnected ({e.code} {e.reason}). Reconnecting in 5s...")
             except Exception as e:
                 logger.error(f"Connection error: {e}. Retrying in 5s...")
             await asyncio.sleep(5)
+
+    # ── Keepalive ping ────────────────────────────────────────────────────────
+
+    async def _keepalive(self, ws):
+        """Send a ping to the server every KEEPALIVE_INTERVAL seconds."""
+        try:
+            while True:
+                await asyncio.sleep(KEEPALIVE_INTERVAL)
+                await ws.send(json.dumps({"type": "ping"}))
+                logger.debug("Keepalive ping sent")
+        except Exception:
+            pass  # connection closed — let _listen handle the reconnect
 
     # ── Message handler ───────────────────────────────────────────────────────
 
@@ -83,6 +102,9 @@ class DeviceAgent:
                 if msg_type == "ping":
                     await ws.send(json.dumps({"type": "pong"}))
 
+                elif msg_type == "pong":
+                    pass  # server acknowledged our keepalive
+
                 elif msg_type == "screenshot":
                     await self._handle_screenshot(ws, data)
 
@@ -90,11 +112,9 @@ class DeviceAgent:
                     await self._handle_action(ws, data)
 
                 elif msg_type == "vision_task":
-                    # Start a vision loop for a complex goal
                     asyncio.create_task(self._vision_loop(ws, data))
 
                 elif msg_type == "get_screen_info":
-                    # Return screen size
                     w, h = pyautogui.size()
                     await ws.send(json.dumps({
                         "type": "screen_info",
@@ -137,7 +157,6 @@ class DeviceAgent:
         request_id = data.get("request_id", "")
         result     = "ok"
 
-        # Normalize action aliases so wrong names never fail
         aliases = {
             "open":        "open_app",
             "launch":      "open_app",
@@ -178,7 +197,6 @@ class DeviceAgent:
                 result = f"Typed: {text[:60]}"
 
             elif action == "type_special":
-                # For non-ASCII text, use clipboard paste
                 import pyperclip
                 text = params.get("text", "")
                 pyperclip.copy(text)
@@ -205,7 +223,7 @@ class DeviceAgent:
                     subprocess.Popen(["open", "-a", app])
                 else:
                     subprocess.Popen([app])
-                await asyncio.sleep(1.5)   # wait for app to open
+                await asyncio.sleep(1.5)
                 result = f"Opened: {app}"
 
             elif action == "run_command":
@@ -221,7 +239,6 @@ class DeviceAgent:
                 result = f"Waited {ms}ms"
 
             elif action == "screenshot_and_return":
-                # Take screenshot and include it in result
                 img_b64 = capture_screen()
                 await ws.send(json.dumps({
                     "type":         "screenshot_result",
@@ -229,7 +246,7 @@ class DeviceAgent:
                     "image_base64": img_b64,
                     "timestamp":    time.time(),
                 }))
-                return  # already sent response
+                return
 
             else:
                 result = f"Unknown action: {action}"
@@ -250,14 +267,6 @@ class DeviceAgent:
     # ── Vision loop ───────────────────────────────────────────────────────────
 
     async def _vision_loop(self, ws, data: dict):
-        """
-        Stage 3 vision loop:
-        1. Take screenshot
-        2. Send to Cloud Brain for Qwen to analyze
-        3. Receive next action
-        4. Execute action
-        5. Repeat until goal is complete or max steps reached
-        """
         goal       = data.get("goal", "")
         task_id    = data.get("task_id", "")
         max_steps  = data.get("max_steps", 10)
@@ -267,10 +276,8 @@ class DeviceAgent:
 
         for step_num in range(1, max_steps + 1):
             try:
-                # Capture current screen state
                 img_b64 = capture_screen()
 
-                # Send screenshot + goal to Cloud Brain for analysis
                 await ws.send(json.dumps({
                     "type":         "vision_step",
                     "task_id":      task_id,
@@ -282,8 +289,6 @@ class DeviceAgent:
 
                 logger.info(f"Vision step {step_num}: screenshot sent, waiting for action...")
 
-                # Wait for cloud brain to respond with next action
-                # (with timeout)
                 try:
                     response_raw = await asyncio.wait_for(
                         self._wait_for_vision_response(ws, request_id),
@@ -293,29 +298,26 @@ class DeviceAgent:
                     logger.warning("Vision response timed out")
                     break
 
-                response = json.loads(response_raw)
+                response    = json.loads(response_raw)
                 action_type = response.get("action")
 
-                # Goal complete
                 if action_type == "done":
                     logger.info(f"Vision goal complete: {response.get('message','')}")
                     await ws.send(json.dumps({
-                        "type":       "vision_complete",
-                        "task_id":    task_id,
-                        "request_id": request_id,
-                        "message":    response.get("message", "Task complete"),
+                        "type":        "vision_complete",
+                        "task_id":     task_id,
+                        "request_id":  request_id,
+                        "message":     response.get("message", "Task complete"),
                         "steps_taken": step_num,
                     }))
                     break
 
-                # Execute the action
                 await self._handle_action(ws, {
                     "action":     action_type,
                     "parameters": response.get("parameters", {}),
-                    "request_id": "",  # no individual ack needed in vision loop
+                    "request_id": "",
                 })
 
-                # Small pause between actions
                 await asyncio.sleep(0.8)
 
             except Exception as e:
@@ -330,7 +332,6 @@ class DeviceAgent:
                 return raw
             elif data.get("type") == "ping":
                 await ws.send(json.dumps({"type": "pong"}))
-            # Keep processing other messages while waiting
 
 
 async def main():
@@ -345,3 +346,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
