@@ -5,7 +5,6 @@ Uses Qwen (Alibaba DashScope) via the OpenAI-compatible endpoint.
 
 import json
 import re
-from typing import Optional
 
 from openai import AsyncOpenAI
 from config import settings
@@ -33,81 +32,119 @@ class QwenClient:
         )
         return response.choices[0].message.content.strip()
 
+    # ── Command classifier ────────────────────────────────────────────────────
+
     async def classify_command(self, command: str) -> str:
+        """Returns 'chat', 'task', or 'code_task'."""
+        cmd_lc = command.lower()
+
+        # Hard-coded pre-classifier for coding commands — never let these fall to research_agent
+        CODE_KEYWORDS = [
+            "write a program", "create a program", "make a program",
+            "write a script", "create a script",
+            "write code", "create code", "generate code",
+            "code that", "program that", "script that",
+            "write a python", "write a c ", "write a c++", "write a java",
+            "write a function", "create a function",
+            "write an algorithm", "implement a",
+        ]
+        if any(k in cmd_lc for k in CODE_KEYWORDS):
+            return "task"
+
         system = (
             "You are a command classifier for AetherAI. "
             "Classify the user input as either 'chat' or 'task'.\n\n"
             "'chat' = simple questions, greetings, factual queries, math, definitions.\n"
-            "Examples of CHAT: 'who are you', 'what is the capital of France', 'hello', 'what is 2+2'\n\n"
-            "'task' = anything that requires creating files, research, controlling the computer, "
-            "writing/generating code, or multi-step work.\n"
+            "Examples of CHAT: 'who are you', 'what is 2+2', 'hello', 'what is the capital of France'\n\n"
+            "'task' = anything requiring creating files, research, computer control, writing code, "
+            "or multi-step work.\n"
             "Examples of TASK: 'create a presentation', 'open notepad and write', "
-            "'write a python program', 'code a calculator', 'open word and write a letter'\n\n"
+            "'write a python program', 'open word and write a letter', 'research X'\n\n"
             "Return ONLY the single word: chat OR task. Nothing else."
         )
         result = await self.chat(system, command, temperature=0.0)
         return "chat" if "chat" in result.strip().lower() else "task"
 
+    # ── Task planner ──────────────────────────────────────────────────────────
+
     async def plan_task(self, command: str) -> list[dict]:
+        """
+        IMPORTANT DESIGN RULE:
+        The planner must NEVER put long generated content (stories, code, letters)
+        inline inside the JSON plan. That causes Qwen to truncate mid-sentence.
+
+        Instead:
+        - For 'open app + write content' tasks: plan uses a PLACEHOLDER "__GENERATED_CONTENT__"
+          in the type step. The orchestrator replaces it after calling the content generator.
+        - For coding tasks WITHOUT an app: use coding_agent standalone.
+        - For coding tasks WITH an app (open notepad++ and write code): use coding_agent first,
+          then automation_agent type with context from previous step.
+        """
+
+        cmd_lc = command.lower()
+
+        # ── Detect if this is a "write code in app" task ──────────────────────
+        WRITE_IN_APP = any(k in cmd_lc for k in [
+            "notepad", "word", "excel", "powerpoint", "ppt", "notepad++"
+        ])
+        IS_CODING = any(k in cmd_lc for k in [
+            "code", "program", "script", "function", "algorithm",
+            "python", " c ", " c++", "java", "javascript", "html"
+        ])
+
+        # ── Detect plain text writing in app (no code) ────────────────────────
+        IS_WRITING = any(k in cmd_lc for k in [
+            "write", "type", "story", "letter", "essay", "song", "poem",
+            "note", "article", "report"
+        ])
+
         system_prompt = (
-            "You are AetherAI's task planner. "
-            "AetherAI is a personal AI agent built by Patrick Perez, "
-            "a 26-year-old software engineer from the Philippines.\n"
-            "Break the user's command into a clear step-by-step execution plan.\n\n"
-            "For each step output a JSON object with:\n"
-            "- step: integer\n"
-            "- agent: one of [research_agent, document_agent, browser_agent, coding_agent, automation_agent]\n"
-            "- description: one sentence\n"
-            "- parameters: dict of inputs\n\n"
-            "Return ONLY a valid JSON array. No explanation. No markdown.\n\n"
+            "You are AetherAI's task planner built by Patrick Perez.\n"
+            "Return ONLY a valid JSON array of steps. No explanation. No markdown fences.\n\n"
+            "Each step: {step, agent, description, parameters}\n\n"
 
-            "AGENT GUIDE:\n\n"
+            "AGENTS:\n\n"
 
-            "research_agent — web search + summarize\n"
-            '  {"query": "search query"}\n\n'
+            "research_agent — web search\n"
+            '  {"query": "..."}\n\n'
 
-            "document_agent — create .pptx/.docx/.xlsx files\n"
+            "document_agent — create .pptx/.docx/.xlsx files (NOT for PC automation)\n"
             '  {"type": "presentation"|"document"|"spreadsheet", "topic": "..."}\n'
-            "  ONLY use when user explicitly says CREATE/MAKE/GENERATE a file.\n"
-            "  NEVER call more than once.\n\n"
+            "  Use ONLY when user says CREATE/MAKE/GENERATE a file to download.\n\n"
 
-            "coding_agent — write code, show in chat, save to output/\n"
-            '  {"task": "what to code", "language": "python|c|javascript|..."}\n'
-            "  Use for: 'write a program', 'code a script', 'create a function'\n"
-            "  WITHOUT an app mentioned — coding_agent handles it standalone.\n\n"
+            "coding_agent — generate code, shows in chat, saves to output/\n"
+            '  {"task": "describe what to code", "language": "python|c|c++|javascript|..."}\n'
+            "  Use when user wants code WITHOUT opening an app.\n"
+            "  Also use as STEP 1 when user wants to write code IN an app.\n\n"
 
-            "automation_agent — control PC mouse/keyboard\n"
-            "  ACTION TYPES:\n"
-            '  new_file  — open a fresh blank document (ALWAYS use before typing in an app)\n'
-            '    {"action": "new_file", "parameters": {"app": "notepad"|"word"|"excel"|"powerpoint"}}\n'
-            '  open_app  — just open an app without creating new file\n'
-            '    {"action": "open_app", "parameters": {"app": "chrome"|"notepad"|...}}\n'
-            '  type      — type text into the active window\n'
-            '    {"action": "type", "parameters": {"text": "the full text to type"}}\n'
-            '  hotkey    — press key combination\n'
-            '    {"action": "hotkey", "parameters": {"keys": ["ctrl", "s"]}}\n'
-            '  click     — click at x,y coordinates\n'
-            '    {"action": "click", "parameters": {"x": 500, "y": 300}}\n'
-            '  run_command — run shell command\n'
-            '    {"action": "run_command", "parameters": {"command": "dir"}}\n'
-            '  wait      — pause\n'
-            '    {"action": "wait", "parameters": {"ms": 2000}}\n\n'
+            "automation_agent — control the PC\n"
+            '  new_file:    {"action":"new_file","parameters":{"app":"notepad|word|excel|powerpoint|notepad++"}}\n'
+            '  open_app:    {"action":"open_app","parameters":{"app":"chrome|notepad|..."}}\n'
+            '  type:        {"action":"type","parameters":{"text":"__GENERATED_CONTENT__"}}\n'
+            '                 ^^^ USE __GENERATED_CONTENT__ AS PLACEHOLDER — never write long text inline\n'
+            '  hotkey:      {"action":"hotkey","parameters":{"keys":["ctrl","s"]}}\n'
+            '  wait:        {"action":"wait","parameters":{"ms":2000}}\n\n'
 
-            "CRITICAL RULES:\n"
-            "- NEVER use 'open' — always use 'open_app' or 'new_file'\n"
-            "- NEVER use 'press' — always use 'hotkey'\n"
-            "- NEVER use 'write' — always use 'type'\n"
-            "- When user says 'open X and type/write Y' — use new_file then type\n"
-            "- When user says 'open notepad++ and write code' — use:\n"
-            "    step 1: coding_agent to generate the code\n"
-            "    step 2: automation_agent new_file with app='notepad++' \n"
-            "    step 3: automation_agent type with the generated code\n"
-            "- For Word/Excel/PowerPoint: always use new_file (not open_app) then type\n"
-            "- Add a wait step (2000ms) after opening Office apps before typing\n"
-            "- When user says 'open word and write X': new_file word → wait 2000ms → type X\n"
+            "RULES:\n"
+            "1. NEVER write stories, code, letters, or long text inline in the plan JSON.\n"
+            "   Use __GENERATED_CONTENT__ as placeholder in type steps.\n"
+            "2. For 'open notepad and write a story/letter/essay':\n"
+            "   → automation_agent new_file notepad\n"
+            "   → automation_agent type with text='__GENERATED_CONTENT__'\n"
+            "3. For 'write a python/C/java program' (no app):\n"
+            "   → coding_agent only\n"
+            "4. For 'open notepad++ and write code for X':\n"
+            "   → coding_agent (generates the code)\n"
+            "   → automation_agent new_file notepad++\n"
+            "   → automation_agent type with text='__GENERATED_CONTENT__'\n"
+            "5. For Word/Excel/PowerPoint: use new_file then wait 3000ms then type\n"
+            "6. NEVER use 'open' — use 'open_app' or 'new_file'\n"
+            "7. NEVER use 'press' — use 'hotkey'\n"
+            "8. NEVER use 'write' as action — use 'type'\n"
+            "9. research_agent is ONLY for web searches, NEVER for coding tasks\n"
         )
 
-        raw = await self.chat(system_prompt, f'Plan this task: "{command}"', temperature=0.3)
+        raw = await self.chat(system_prompt, f'Plan this task: "{command}"', temperature=0.2)
         raw = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
 
         try:
@@ -121,6 +158,19 @@ class QwenClient:
                 "description": f"Process: {command}",
                 "parameters": {"query": command},
             }]
+
+    # ── Content generator (used by orchestrator for __GENERATED_CONTENT__) ───
+
+    async def generate_content(self, command: str, content_type: str = "text") -> str:
+        """Generate the actual content for a type step."""
+        system = (
+            "You are a helpful writing assistant. "
+            "Write the requested content clearly and completely. "
+            "Return ONLY the content itself — no titles, no labels, no explanation."
+        )
+        return await self.chat(system, command, temperature=0.7)
+
+    # ── Utility ───────────────────────────────────────────────────────────────
 
     async def summarize(self, content: str, context: str = "") -> str:
         system = "You are a concise summarizer. Summarize clearly and briefly."

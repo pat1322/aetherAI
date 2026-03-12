@@ -1,13 +1,16 @@
 """
 AetherAI — Orchestrator
-Receives a command, classifies it (chat vs task), then either
-answers directly or routes steps to agents.
+Receives a command, classifies it, then plans and executes steps.
+
+KEY FIX: When a type step contains __GENERATED_CONTENT__ placeholder,
+the orchestrator generates the actual content FIRST (separate Qwen call),
+then replaces the placeholder before sending to the device.
+This prevents text truncation caused by Qwen writing long content inline in JSON.
 """
 
 import asyncio
 import logging
-from datetime import datetime
-from typing import Optional
+import re
 
 from memory import MemoryManager
 from utils.qwen_client import QwenClient
@@ -16,23 +19,13 @@ from agent_router import AgentRouter
 
 logger = logging.getLogger(__name__)
 
-# Max characters stored in DB for step output (keeps steps panel clean)
 STEP_OUTPUT_PREVIEW = 300
 
 
 def extract_code_block(output: str) -> tuple[str, str, str]:
-    """
-    If output contains [CODE_BLOCK:lang]...[/CODE_BLOCK],
-    returns (summary, language, code).
-    Otherwise returns (output, "", "").
-    """
-    import re
     m = re.search(r"\[CODE_BLOCK:(\w+)\]\n(.*?)\n\[/CODE_BLOCK\]", output, re.DOTALL)
     if m:
-        lang = m.group(1)
-        code = m.group(2)
-        summary = output[:m.start()].strip()
-        return summary, lang, code
+        return output[:m.start()].strip(), m.group(1), m.group(2)
     return output, "", ""
 
 
@@ -55,32 +48,53 @@ class Orchestrator:
             })
 
             command_type = await self.qwen.classify_command(command)
-            logger.info(f"[{task_id}] Command classified as: {command_type}")
+            logger.info(f"[{task_id}] Classified: {command_type}")
 
             # ── CHAT MODE ─────────────────────────────────────────────────────
             if command_type == "chat":
                 answer = await self.qwen.answer(command)
                 self.memory.update_task_status(task_id, "completed", result=answer)
                 await self.ws_manager.broadcast_task_update(task_id, {
-                    "status": "completed",
-                    "message": "Done.",
-                    "result": answer,
-                    "is_chat": True,
+                    "status": "completed", "message": "Done.",
+                    "result": answer, "is_chat": True,
                 })
                 return
 
             # ── TASK MODE ─────────────────────────────────────────────────────
             plan = await self.qwen.plan_task(command)
 
-            # Deduplicate document_agent — keep only last call
-            doc_indices = [i for i, s in enumerate(plan) if s.get("agent") == "document_agent"]
-            if len(doc_indices) > 1:
-                keep = doc_indices[-1]
+            # Deduplicate document_agent
+            doc_idx = [i for i, s in enumerate(plan) if s.get("agent") == "document_agent"]
+            if len(doc_idx) > 1:
+                keep = doc_idx[-1]
                 plan = [s for i, s in enumerate(plan) if s.get("agent") != "document_agent" or i == keep]
                 for idx, step in enumerate(plan, 1):
                     step["step"] = idx
 
-            logger.info(f"[{task_id}] Plan: {len(plan)} steps")
+            logger.info(f"[{task_id}] Plan ({len(plan)} steps): {[s.get('agent') for s in plan]}")
+
+            # ── Pre-resolve __GENERATED_CONTENT__ placeholders ────────────────
+            # Find all type steps that need content generated
+            # Content comes from: previous coding_agent output, or fresh Qwen generation
+            generated_content = None  # will hold code or text from previous step
+
+            for step in plan:
+                agent = step.get("agent", "")
+                params = step.get("parameters", {})
+
+                # Track coding_agent output as content source
+                if agent == "coding_agent":
+                    # Mark that next type step should use coding_agent output
+                    step["_will_generate_code"] = True
+                    continue
+
+                # Resolve __GENERATED_CONTENT__ in type steps
+                if agent == "automation_agent":
+                    inner = params.get("parameters", params)
+                    text = inner.get("text", "")
+                    if "__GENERATED_CONTENT__" in str(text):
+                        # Will be resolved at runtime after previous step
+                        step["_needs_content"] = True
 
             for step in plan:
                 self.memory.create_step(
@@ -98,6 +112,8 @@ class Orchestrator:
             self.memory.update_task_status(task_id, "running")
 
             last_output = command
+            last_code   = None   # holds code from coding_agent
+
             for step in plan:
                 if not self._running_tasks.get(task_id):
                     break
@@ -106,6 +122,28 @@ class Orchestrator:
                 agent_name  = step.get("agent", "research_agent")
                 description = step.get("description", "")
                 parameters  = step.get("parameters", {})
+
+                # ── Resolve __GENERATED_CONTENT__ right before execution ───────
+                if step.get("_needs_content"):
+                    if last_code:
+                        # Use code from previous coding_agent step
+                        resolved_text = last_code
+                    else:
+                        # Generate the content now (story, letter, essay, etc.)
+                        logger.info(f"[{task_id}] Generating content for type step...")
+                        await self.ws_manager.broadcast_task_update(task_id, {
+                            "status": "running",
+                            "message": "Generating content...",
+                        })
+                        resolved_text = await self.qwen.generate_content(command)
+
+                    # Inject resolved text into parameters
+                    if "parameters" in parameters:
+                        parameters["parameters"]["text"] = resolved_text
+                    else:
+                        parameters["text"] = resolved_text
+
+                    logger.info(f"[{task_id}] Resolved content ({len(resolved_text)} chars)")
 
                 self.memory.update_step(task_id, step_num, "running")
                 await self.ws_manager.broadcast_task_update(task_id, {
@@ -127,20 +165,22 @@ class Orchestrator:
                     )
 
                     if output:
-                        # Check for code block marker
                         summary, lang, code = extract_code_block(output)
 
-                        # Store only summary in DB (keeps steps panel clean)
-                        db_output = summary if summary else output[:STEP_OUTPUT_PREVIEW]
-                        if len(output) > STEP_OUTPUT_PREVIEW and not code:
-                            db_output = output[:STEP_OUTPUT_PREVIEW] + "…"
+                        # Save code for later type steps
+                        if code:
+                            last_code = code
+
+                        # DB: store summary only (keep steps panel clean)
+                        db_output = summary if summary else output
+                        if len(db_output) > STEP_OUTPUT_PREVIEW:
+                            db_output = db_output[:STEP_OUTPUT_PREVIEW] + "…"
 
                         self.memory.update_step(task_id, step_num, "completed", db_output)
-                        last_output = output  # pass full output to next step
+                        last_output = output
 
-                        # Broadcast to UI
+                        # Broadcast
                         if code:
-                            # Send code block separately for rich rendering in chat
                             await self.ws_manager.broadcast_task_update(task_id, {
                                 "status": "running",
                                 "current_step": step_num,
@@ -159,26 +199,24 @@ class Orchestrator:
                         self.memory.update_step(task_id, step_num, "completed", "")
 
                 except asyncio.TimeoutError:
-                    error_msg = f"Step {step_num} timed out"
-                    logger.warning(f"[{task_id}] {error_msg}")
-                    self.memory.update_step(task_id, step_num, "failed", error_msg)
+                    msg = f"Step {step_num} timed out"
+                    logger.warning(f"[{task_id}] {msg}")
+                    self.memory.update_step(task_id, step_num, "failed", msg)
 
                 except Exception as e:
-                    error_msg = f"Step {step_num} failed: {str(e)}"
-                    logger.error(f"[{task_id}] {error_msg}", exc_info=True)
-                    self.memory.update_step(task_id, step_num, "failed", error_msg)
+                    msg = f"Step {step_num} failed: {e}"
+                    logger.error(f"[{task_id}] {msg}", exc_info=True)
+                    self.memory.update_step(task_id, step_num, "failed", msg)
 
             final_status = "completed" if self._running_tasks.get(task_id) else "cancelled"
-
-            # For final result, strip code block markers
             final_summary, _, _ = extract_code_block(last_output)
-            display_result = final_summary if final_summary else last_output
+            display = (final_summary or last_output)[:500]
 
-            self.memory.update_task_status(task_id, final_status, result=display_result[:500])
+            self.memory.update_task_status(task_id, final_status, result=display)
             await self.ws_manager.broadcast_task_update(task_id, {
                 "status": final_status,
                 "message": "Task completed." if final_status == "completed" else "Task cancelled.",
-                "result": display_result if display_result else "",
+                "result": display,
             })
 
         except Exception as e:
@@ -186,7 +224,7 @@ class Orchestrator:
             self.memory.update_task_status(task_id, "failed", result=str(e))
             await self.ws_manager.broadcast_task_update(task_id, {
                 "status": "failed",
-                "message": f"Task failed: {str(e)}",
+                "message": f"Task failed: {e}",
             })
         finally:
             self._running_tasks.pop(task_id, None)
