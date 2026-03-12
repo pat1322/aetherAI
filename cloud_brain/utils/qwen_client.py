@@ -128,7 +128,7 @@ class QwenClient:
             "RULES:\n"
             "1. NEVER write stories, code, letters, or long text inline in the plan JSON.\n"
             "   Use __GENERATED_CONTENT__ as placeholder in type steps.\n"
-            "2. For 'open notepad and write a story/letter/essay':\n"
+            "2. For 'open notepad and write a story/letter/essay/song':\n"
             "   → automation_agent new_file notepad\n"
             "   → automation_agent type with text='__GENERATED_CONTENT__'\n"
             "3. For 'write a python/C/java program' (no app):\n"
@@ -162,13 +162,23 @@ class QwenClient:
     # ── Content generator (used by orchestrator for __GENERATED_CONTENT__) ───
 
     async def generate_content(self, command: str, content_type: str = "text") -> str:
-        """Generate the actual content for a type step."""
+        """Generate the actual content for a type step (story, song, letter, essay, etc.)."""
         system = (
-            "You are a helpful writing assistant. "
-            "Write the requested content clearly and completely. "
-            "Return ONLY the content itself — no titles, no labels, no explanation."
+            "You are a creative writing assistant. Your ONLY job is to produce the requested written content. "
+            "NEVER mention files, apps, computers, or what you can/cannot do. "
+            "NEVER start with phrases like 'I can\\'t', 'Here is', 'Sure!', 'Certainly', or any preamble. "
+            "NEVER refer to the fact that you are an AI. "
+            "Output ONLY the raw content itself — prose, lyrics, letter body, or whatever was requested. "
+            "Begin writing immediately with the actual content."
         )
-        return await self.chat(system, command, temperature=0.7)
+        # Strip app/tool launch phrases so Qwen doesn't confuse the task as a computer-control request
+        clean_cmd = re.sub(
+            r"\b(open|launch|start|create|use)\s+(notepad\+\+|notepad|word|excel|powerpoint|ppt|a file|a new file|an?\s+app)\s*(and|then|to)?\s*",
+            "", command, flags=re.IGNORECASE
+        ).strip()
+        if not clean_cmd:
+            clean_cmd = command
+        return await self.chat(system, f"Write this: {clean_cmd}", temperature=0.7)
 
     # ── Utility ───────────────────────────────────────────────────────────────
 

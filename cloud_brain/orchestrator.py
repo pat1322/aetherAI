@@ -6,6 +6,10 @@ KEY FIX: When a type step contains __GENERATED_CONTENT__ placeholder,
 the orchestrator generates the actual content FIRST (separate Qwen call),
 then replaces the placeholder before sending to the device.
 This prevents text truncation caused by Qwen writing long content inline in JSON.
+
+TYPE ACTION LOG FIX: automation_agent "type" steps no longer echo the full
+typed content back to the chat — only a brief "✅ Typed into <app>" summary
+is shown, eliminating the redundant/truncated log lines.
 """
 
 import asyncio
@@ -27,6 +31,21 @@ def extract_code_block(output: str) -> tuple[str, str, str]:
     if m:
         return output[:m.start()].strip(), m.group(1), m.group(2)
     return output, "", ""
+
+
+def is_type_action(agent_name: str, parameters: dict) -> bool:
+    """Return True if this step is an automation_agent 'type' action."""
+    if agent_name != "automation_agent":
+        return False
+    return parameters.get("action") == "type"
+
+
+def type_action_summary(parameters: dict) -> str:
+    """Return a brief human-readable summary for a type action (no content echo)."""
+    inner = parameters.get("parameters", {})
+    app_hint = ""
+    # Try to guess app from context — not always available, so just be generic
+    return f"✅ Content typed into application"
 
 
 class Orchestrator:
@@ -74,26 +93,20 @@ class Orchestrator:
             logger.info(f"[{task_id}] Plan ({len(plan)} steps): {[s.get('agent') for s in plan]}")
 
             # ── Pre-resolve __GENERATED_CONTENT__ placeholders ────────────────
-            # Find all type steps that need content generated
-            # Content comes from: previous coding_agent output, or fresh Qwen generation
-            generated_content = None  # will hold code or text from previous step
+            generated_content = None
 
             for step in plan:
                 agent = step.get("agent", "")
                 params = step.get("parameters", {})
 
-                # Track coding_agent output as content source
                 if agent == "coding_agent":
-                    # Mark that next type step should use coding_agent output
                     step["_will_generate_code"] = True
                     continue
 
-                # Resolve __GENERATED_CONTENT__ in type steps
                 if agent == "automation_agent":
                     inner = params.get("parameters", params)
                     text = inner.get("text", "")
                     if "__GENERATED_CONTENT__" in str(text):
-                        # Will be resolved at runtime after previous step
                         step["_needs_content"] = True
 
             for step in plan:
@@ -112,7 +125,9 @@ class Orchestrator:
             self.memory.update_task_status(task_id, "running")
 
             last_output = command
-            last_code   = None   # holds code from coding_agent
+            last_code   = None
+            # Track the last meaningful (non-typed) result for task completion display
+            last_meaningful_output = command
 
             for step in plan:
                 if not self._running_tasks.get(task_id):
@@ -126,10 +141,8 @@ class Orchestrator:
                 # ── Resolve __GENERATED_CONTENT__ right before execution ───────
                 if step.get("_needs_content"):
                     if last_code:
-                        # Use code from previous coding_agent step
                         resolved_text = last_code
                     else:
-                        # Generate the content now (story, letter, essay, etc.)
                         logger.info(f"[{task_id}] Generating content for type step...")
                         await self.ws_manager.broadcast_task_update(task_id, {
                             "status": "running",
@@ -137,7 +150,6 @@ class Orchestrator:
                         })
                         resolved_text = await self.qwen.generate_content(command)
 
-                    # Inject resolved text into parameters
                     if "parameters" in parameters:
                         parameters["parameters"]["text"] = resolved_text
                     else:
@@ -167,17 +179,25 @@ class Orchestrator:
                     if output:
                         summary, lang, code = extract_code_block(output)
 
-                        # Save code for later type steps
                         if code:
                             last_code = code
 
-                        # DB: store summary only (keep steps panel clean)
-                        db_output = summary if summary else output
-                        if len(db_output) > STEP_OUTPUT_PREVIEW:
-                            db_output = db_output[:STEP_OUTPUT_PREVIEW] + "…"
+                        # ── Determine what to show in chat ────────────────────
+                        # For automation "type" steps: show a brief confirmation only.
+                        # Never echo the full typed content — it's redundant and clutters the log.
+                        if is_type_action(agent_name, parameters):
+                            chat_output = type_action_summary(parameters)
+                            db_output   = chat_output
+                            # Don't update last_meaningful_output for type steps
+                        else:
+                            db_output = summary if summary else output
+                            if len(db_output) > STEP_OUTPUT_PREVIEW:
+                                db_output = db_output[:STEP_OUTPUT_PREVIEW] + "…"
+                            chat_output = output
+                            last_meaningful_output = output
 
                         self.memory.update_step(task_id, step_num, "completed", db_output)
-                        last_output = output
+                        last_output = output  # still pass full output for context chaining
 
                         # Broadcast
                         if code:
@@ -188,12 +208,20 @@ class Orchestrator:
                                 "output": summary,
                                 "code_block": {"language": lang, "code": code},
                             })
+                        elif is_type_action(agent_name, parameters):
+                            # Suppress full typed content — only show brief confirmation
+                            await self.ws_manager.broadcast_task_update(task_id, {
+                                "status": "running",
+                                "current_step": step_num,
+                                "step_status": "completed",
+                                "output": chat_output,
+                            })
                         else:
                             await self.ws_manager.broadcast_task_update(task_id, {
                                 "status": "running",
                                 "current_step": step_num,
                                 "step_status": "completed",
-                                "output": output,
+                                "output": chat_output,
                             })
                     else:
                         self.memory.update_step(task_id, step_num, "completed", "")
@@ -209,8 +237,10 @@ class Orchestrator:
                     self.memory.update_step(task_id, step_num, "failed", msg)
 
             final_status = "completed" if self._running_tasks.get(task_id) else "cancelled"
-            final_summary, _, _ = extract_code_block(last_output)
-            display = (final_summary or last_output)[:500]
+
+            # Use last meaningful output (not the typed content) as the task result
+            final_summary, _, _ = extract_code_block(last_meaningful_output)
+            display = (final_summary or last_meaningful_output)[:500]
 
             self.memory.update_task_status(task_id, final_status, result=display)
             await self.ws_manager.broadcast_task_update(task_id, {
