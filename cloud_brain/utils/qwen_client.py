@@ -2,13 +2,19 @@
 AetherAI -- Qwen API Client
 Uses Qwen (Alibaba DashScope) via the OpenAI-compatible endpoint.
 
-FIXES:
-  - "open chrome and go to X" now routes to automation_agent (not browser_agent)
-  - "open chrome/browser/firefox/launch chrome" removed from BROWSER_KEYWORDS
-    because those are PC control commands, not browser-agent tasks
-  - Added _is_open_chrome_command() hard route → automation plan
-  - Cleaner separation: browser_agent = headless Playwright tasks,
-    automation_agent = controlling the real visible PC
+ROUTING LOGIC (priority order):
+  1. _is_open_chrome_command()  → automation_agent  (open real Chrome on PC)
+       Catches: "open chrome", "launch chrome", "go to youtube", "go to reddit",
+                "play on youtube", "open youtube", etc.
+  2. _is_browser_task()         → browser_agent     (headless cloud scraping/search)
+       Catches: "search youtube for X", "on youtube", Wikipedia URLs, etc.
+  3. _is_open_app_command()     → automation_agent  (open Word/Excel/etc.)
+  4. Qwen planner               → decides remaining tasks
+
+KEY FIX v2:
+  - "go to [site]" and "play on youtube" now correctly open real Chrome on the PC
+  - "open chrome and google X" now generates a Google search URL in step 3
+  - Separated navigation intent from research intent for YouTube/sites
 """
 
 import json
@@ -42,33 +48,42 @@ class QwenClient:
 
     # ── Keyword sets ──────────────────────────────────────────────────────────
 
-    # These are headless/cloud browser tasks — no need to open a real browser on the PC
+    # Headless cloud browser tasks — research/scraping, no real PC browser needed
     BROWSER_KEYWORDS = [
-        # YouTube
-        "search youtube", "on youtube", "youtube for", "find on youtube",
-        "youtube search", "youtube video", "youtube channel",
+        # YouTube research (NOT navigation — "go to youtube" is handled by OPEN_CHROME)
+        "search youtube for", "youtube search for", "find on youtube",
+        "youtube video about", "youtube channel",
         # Wikipedia
         "wikipedia", "wiki/",
-        # URL navigation (without "open chrome" prefix — that's automation territory)
-        "go to http", "go to www", "go to reddit", "go to twitter",
-        "go to facebook", "go to instagram", "go to hacker news",
-        "go to github", "go to stackoverflow", "visit http",
-        "navigate to", "open the website", "open the page",
-        # Google search (explicit)
-        "search google for", "google for", "google search",
-        "search the web for", "search bing",
-        # Scraping
+        # Explicit scraping/research
         "scrape", "extract from", "read the article at",
         "summarize the page", "summarize the website",
         "summarize the article at",
+        # Explicit web search (cloud, not PC browser)
+        "search google for", "google search for",
+        "search the web for", "search bing for",
     ]
 
-    # These mean "open a real app on the PC" → automation_agent
+    # Navigation intents — user wants real Chrome open on their PC
     OPEN_CHROME_KEYWORDS = [
+        # Explicit browser open
         "open chrome", "launch chrome", "start chrome",
         "open browser", "launch browser",
         "open firefox", "launch firefox",
         "open edge", "launch edge",
+        # "go to [site]" — navigation, not research
+        "go to youtube", "open youtube",
+        "go to reddit", "go to twitter", "go to x.com",
+        "go to facebook", "go to instagram",
+        "go to github", "go to google",
+        "go to netflix", "go to spotify",
+        "go to hacker news", "go to hackernews",
+        "go to stackoverflow", "go to stack overflow",
+        # Play/watch intents always need real browser
+        "play on youtube", "watch on youtube", "watch youtube",
+        "play youtube", "open youtube and",
+        # Generic navigate/visit
+        "navigate to", "visit the website",
     ]
 
     CODE_KEYWORDS = [
@@ -214,53 +229,82 @@ class QwenClient:
 
     def _build_open_chrome_plan(self, command: str, cmd_lc: str) -> list[dict]:
         """
-        "open chrome and go to X" → automation_agent:
-         Step 1: open Chrome
-         Step 2: wait for it to load
-         Step 3: run_command to navigate to the URL
+        Builds an automation_agent plan to open real Chrome on the PC and navigate.
+
+        Handles:
+          - "open chrome and google X"      → google.com/search?q=X
+          - "open chrome and go to youtube" → youtube.com
+          - "go to youtube and play X"      → youtube.com/results?search_query=X
+          - "go to reddit"                  → reddit.com
+          - any explicit https:// URL
         """
-        # Try to find a destination URL/site
         dest = None
 
-        # Look for explicit URL
+        # 1. Explicit URL in command
         url_match = re.search(r"https?://[^\s]+", command)
         if url_match:
             dest = url_match.group(0)
 
-        # Look for "go to X" pattern
+        # 2. "google X" / "and google X" → Google search URL
+        if not dest:
+            google_match = re.search(
+                r"(?:^|and\s+|then\s+)google\s+(.+)$", cmd_lc
+            )
+            if google_match:
+                query = google_match.group(1).strip()
+                from urllib.parse import quote_plus
+                dest = f"https://www.google.com/search?q={quote_plus(query)}"
+
+        # 3. YouTube play/watch intent → YouTube search URL
+        if not dest:
+            yt_play_match = re.search(
+                r"(?:play|watch|search|find)\s+(.+?)(?:\s+on youtube|\s+on yt|$)",
+                cmd_lc
+            )
+            if yt_play_match and "youtube" in cmd_lc:
+                query = yt_play_match.group(1).strip()
+                from urllib.parse import quote_plus
+                dest = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
+
+        # 4. "go to [site]" / "open [site]" / "visit [site]" pattern
         if not dest:
             go_match = re.search(
-                r"(?:go to|open|visit|navigate to|and (?:open|go to|visit))\s+"
-                r"((?:www\.)?[\w\-]+\.[\w]{2,}[^\s]*|youtube|reddit|github|google|twitter|instagram|facebook)",
+                r"(?:go to|open|visit|navigate to|and (?:go to|open|visit))\s+"
+                r"((?:www\.)?[\w\-]+(?:\.[\w]{2,}[^\s]*)?)",
                 cmd_lc
             )
             if go_match:
-                dest = go_match.group(1).strip()
-                if "." not in dest:
-                    # bare name like "youtube" → youtube.com
-                    dest = f"{dest}.com"
-                if not dest.startswith("http"):
-                    dest = f"https://{dest}"
+                site = go_match.group(1).strip()
+                # Known bare names → .com
+                KNOWN_SITES = {
+                    "youtube": "youtube.com", "reddit": "reddit.com",
+                    "twitter": "twitter.com", "instagram": "instagram.com",
+                    "facebook": "facebook.com", "github": "github.com",
+                    "google": "google.com", "netflix": "netflix.com",
+                    "spotify": "spotify.com", "stackoverflow": "stackoverflow.com",
+                    "hackernews": "news.ycombinator.com",
+                    "hacker news": "news.ycombinator.com",
+                }
+                site_resolved = KNOWN_SITES.get(site, site)
+                if "." not in site_resolved:
+                    site_resolved = f"{site_resolved}.com"
+                if not site_resolved.startswith("http"):
+                    site_resolved = f"https://{site_resolved}"
+                dest = site_resolved
 
-        # Build the plan
+        # Build base plan: open Chrome + wait
         plan = [
             {
                 "step": 1,
                 "agent": "automation_agent",
                 "description": "Open Chrome browser",
-                "parameters": {
-                    "action": "open_app",
-                    "parameters": {"app": "chrome"}
-                }
+                "parameters": {"action": "open_app", "parameters": {"app": "chrome"}}
             },
             {
                 "step": 2,
                 "agent": "automation_agent",
                 "description": "Wait for Chrome to load",
-                "parameters": {
-                    "action": "wait",
-                    "parameters": {"ms": 2000}
-                }
+                "parameters": {"action": "wait", "parameters": {"ms": 2500}}
             },
         ]
 
