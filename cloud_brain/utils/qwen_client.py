@@ -2,10 +2,11 @@
 AetherAI -- Qwen API Client
 Uses Qwen (Alibaba DashScope) via the OpenAI-compatible endpoint.
 
-FIX: plan_task now has a hard pre-check — if the command starts with "open [office app]",
-it is treated as a PC automation task and document_agent is NEVER used.
-document_agent is only used when the user explicitly asks to CREATE/MAKE/GENERATE a file
-to download, without saying "open [app]".
+BROWSER AGENT FIX:
+  Added hard pre-routing for browser tasks — same pattern as coding tasks.
+  If the command contains browser keywords (youtube, google, go to, visit, open chrome,
+  search youtube, wikipedia, etc.) the planner is forced to use browser_agent.
+  This prevents Qwen from falling back to research_agent for browser tasks.
 """
 
 import json
@@ -37,33 +38,67 @@ class QwenClient:
         )
         return response.choices[0].message.content.strip()
 
+    # ── Keyword sets ──────────────────────────────────────────────────────────
+
+    BROWSER_KEYWORDS = [
+        # explicit browser agent mentions
+        "using browser agent", "use browser agent", "browser agent",
+        # YouTube
+        "search youtube", "on youtube", "youtube for", "find on youtube",
+        "youtube search", "youtube video", "youtube channel",
+        # Wikipedia
+        "wikipedia", "wiki/",
+        # Chrome / browser actions
+        "open chrome", "open browser", "open firefox",
+        "open chrome and", "launch chrome",
+        # URL navigation
+        "go to http", "go to www", "go to reddit", "go to twitter",
+        "go to facebook", "go to instagram", "go to hacker news",
+        "go to github", "go to stackoverflow", "visit http",
+        "navigate to", "open the website", "open the page",
+        # Google search (explicit)
+        "search google for", "google for", "google search",
+        "search the web for", "search bing",
+        # Scraping
+        "scrape", "extract from", "read the article at",
+        "summarize the page", "summarize the website",
+        "summarize the article at",
+    ]
+
+    CODE_KEYWORDS = [
+        "write a program", "create a program", "make a program",
+        "write a script", "create a script",
+        "write code", "create code", "generate code",
+        "code that", "program that", "script that",
+        "write a python", "write a c ", "write a c++", "write a java",
+        "write a function", "create a function",
+        "write an algorithm", "implement a",
+    ]
+
+    def _is_browser_task(self, cmd_lc: str) -> bool:
+        return any(k in cmd_lc for k in self.BROWSER_KEYWORDS)
+
+    def _is_open_app_command(self, cmd_lc: str) -> bool:
+        OPEN_VERBS = ["open ", "launch ", "start "]
+        OFFICE_APPS = ["word", "excel", "powerpoint", "ppt", "notepad", "notepad++"]
+        starts_with_open = any(cmd_lc.startswith(v) or f" {v}" in cmd_lc for v in OPEN_VERBS)
+        mentions_app = any(app in cmd_lc for app in OFFICE_APPS)
+        return starts_with_open and mentions_app
+
     # ── Command classifier ────────────────────────────────────────────────────
 
     async def classify_command(self, command: str) -> str:
-        """Returns 'chat' or 'task'."""
         cmd_lc = command.lower()
-
-        CODE_KEYWORDS = [
-            "write a program", "create a program", "make a program",
-            "write a script", "create a script",
-            "write code", "create code", "generate code",
-            "code that", "program that", "script that",
-            "write a python", "write a c ", "write a c++", "write a java",
-            "write a function", "create a function",
-            "write an algorithm", "implement a",
-        ]
-        if any(k in cmd_lc for k in CODE_KEYWORDS):
+        if any(k in cmd_lc for k in self.CODE_KEYWORDS):
             return "task"
-
+        if self._is_browser_task(cmd_lc):
+            return "task"
         system = (
             "You are a command classifier for AetherAI. "
             "Classify the user input as either 'chat' or 'task'.\n\n"
             "'chat' = simple questions, greetings, factual queries, math, definitions.\n"
-            "Examples of CHAT: 'who are you', 'what is 2+2', 'hello', 'what is the capital of France'\n\n"
-            "'task' = anything requiring creating files, research, computer control, writing code, "
-            "or multi-step work.\n"
-            "Examples of TASK: 'create a presentation', 'open notepad and write', "
-            "'write a python program', 'open word and write a letter', 'research X'\n\n"
+            "'task' = anything requiring creating files, research, computer control, "
+            "writing code, browsing the web, or multi-step work.\n\n"
             "Return ONLY the single word: chat OR task. Nothing else."
         )
         result = await self.chat(system, command, temperature=0.0)
@@ -71,35 +106,23 @@ class QwenClient:
 
     # ── Task planner ──────────────────────────────────────────────────────────
 
-    def _is_open_app_command(self, cmd_lc: str) -> bool:
-        """
-        Returns True if the command is asking to OPEN an app on the PC.
-        These must ALWAYS use automation_agent — never document_agent.
-        """
-        OPEN_VERBS = ["open ", "launch ", "start "]
-        OFFICE_APPS = ["word", "excel", "powerpoint", "ppt", "notepad", "notepad++"]
-        starts_with_open = any(cmd_lc.startswith(v) or f" {v}" in cmd_lc for v in OPEN_VERBS)
-        mentions_app = any(app in cmd_lc for app in OFFICE_APPS)
-        return starts_with_open and mentions_app
-
     async def plan_task(self, command: str) -> list[dict]:
         cmd_lc = command.lower()
-        is_open_app = self._is_open_app_command(cmd_lc)
+        is_open_app    = self._is_open_app_command(cmd_lc)
+        is_browser     = self._is_browser_task(cmd_lc)
+        is_coding      = any(k in cmd_lc for k in self.CODE_KEYWORDS)
 
-        IS_CODING = any(k in cmd_lc for k in [
-            "code", "program", "script", "function", "algorithm",
-            "python", " c ", " c++", "java", "javascript", "html"
-        ])
+        # ── Hard-route browser tasks directly — never let Qwen second-guess ──
+        if is_browser:
+            return self._build_browser_plan(command, cmd_lc)
 
-        # Hard rule: if user says "open [app]", NEVER route to document_agent.
-        # document_agent is ONLY for "create/make/generate a file to download".
+        # ── Hard override for open [app] commands ────────────────────────────
         no_doc_agent_rule = ""
         if is_open_app:
             no_doc_agent_rule = (
                 "\n⚠️ CRITICAL OVERRIDE: This command says 'open [app]'. "
                 "You MUST use automation_agent to control the PC. "
-                "You MUST NOT use document_agent under any circumstances. "
-                "document_agent creates downloadable files — it does NOT open apps.\n"
+                "You MUST NOT use document_agent under any circumstances.\n"
             )
 
         system_prompt = (
@@ -110,39 +133,38 @@ class QwenClient:
 
             "AGENTS:\n\n"
 
-            "research_agent — web search\n"
-            '  {"query": "..."}\n\n'
+            "research_agent — DuckDuckGo web search + Qwen summarization\n"
+            '  {"query": "..."}\n'
+            "  Use for: general research, factual questions, news summaries.\n"
+            "  Do NOT use for: YouTube, Wikipedia URLs, Chrome, browser navigation.\n\n"
+
+            "browser_agent — real Chromium browser (Playwright)\n"
+            '  Search:   {"action":"search","query":"...","engine":"google|bing|duckduckgo"}\n'
+            '  YouTube:  {"action":"youtube","query":"..."}\n'
+            '  Scrape:   {"action":"scrape","url":"https://..."}\n'
+            '  Workflow: {"action":"workflow","goal":"...","url":"https://..."}\n'
+            "  Use for: YouTube, Wikipedia, Chrome, any URL navigation, web scraping.\n\n"
 
             "document_agent — create DOWNLOADABLE .pptx/.docx/.xlsx files\n"
             '  {"type": "presentation"|"document"|"spreadsheet", "topic": "..."}\n'
-            "  Use ONLY when user says CREATE/MAKE/GENERATE a file to download.\n"
-            "  NEVER use if the user said 'open [app]'.\n\n"
+            "  Use ONLY when user wants a file to download. NEVER if user said 'open [app]'.\n\n"
 
-            "coding_agent — generate code, shows in chat, saves to output/\n"
-            '  {"task": "describe what to code", "language": "python|c|c++|javascript|..."}\n'
-            "  Use when user wants code WITHOUT opening an app.\n"
-            "  Also use as STEP 1 when user wants to write code IN an app.\n\n"
+            "coding_agent — write and save code\n"
+            '  {"task": "...", "language": "python|c|c++|javascript|..."}\n\n'
 
             "automation_agent — control the PC\n"
-            '  new_file:    {"action":"new_file","parameters":{"app":"notepad|word|excel|powerpoint|notepad++"}}\n'
-            '  open_app:    {"action":"open_app","parameters":{"app":"chrome|notepad|..."}}\n'
-            '  type:        {"action":"type","parameters":{"text":"__GENERATED_CONTENT__"}}\n'
-            '                 ^^^ USE __GENERATED_CONTENT__ AS PLACEHOLDER — never write long text inline\n'
-            '  hotkey:      {"action":"hotkey","parameters":{"keys":["ctrl","s"]}}\n'
-            '  wait:        {"action":"wait","parameters":{"ms":2000}}\n\n'
+            '  new_file: {"action":"new_file","parameters":{"app":"notepad|word|excel|powerpoint|notepad++"}}\n'
+            '  type:     {"action":"type","parameters":{"text":"__GENERATED_CONTENT__"}}\n'
+            '  hotkey:   {"action":"hotkey","parameters":{"keys":["ctrl","s"]}}\n'
+            '  wait:     {"action":"wait","parameters":{"ms":2000}}\n\n'
 
             "ROUTING RULES:\n"
-            "1. 'open word/excel/powerpoint and write/create X' → automation_agent ONLY\n"
-            "   (new_file → type with __GENERATED_CONTENT__)\n"
-            "2. 'create/make/generate a presentation/document/spreadsheet' (no app mention) → document_agent\n"
-            "3. 'write a python/C/java program' (no app) → coding_agent only\n"
-            "4. 'open notepad++ and write code for X' → coding_agent + new_file + type\n"
-            "5. For Word/Excel/PowerPoint automation: new_file then wait 2000ms then type\n"
-            "6. NEVER use 'open' as action — use 'open_app' or 'new_file'\n"
-            "7. NEVER use 'press' — use 'hotkey'\n"
-            "8. NEVER use 'write' as action — use 'type'\n"
-            "9. NEVER write stories, code, letters, or long text inline in JSON — use __GENERATED_CONTENT__\n"
-            "10. research_agent is ONLY for web searches, NEVER for coding or document tasks\n"
+            "1. YouTube/Wikipedia/Chrome/URLs → browser_agent\n"
+            "2. 'open word/excel/ppt and write X' → automation_agent ONLY\n"
+            "3. 'create/make a presentation/doc/spreadsheet' → document_agent\n"
+            "4. 'write a python/C program' (no app) → coding_agent\n"
+            "5. General research/news → research_agent\n"
+            "6. NEVER write long content inline in JSON — use __GENERATED_CONTENT__\n"
         )
 
         raw = await self.chat(system_prompt, f'Plan this task: "{command}"', temperature=0.2)
@@ -153,7 +175,7 @@ class QwenClient:
             if not isinstance(plan, list):
                 raise ValueError("Not a list")
 
-            # Safety net: if open_app command still got document_agent, strip it out
+            # Safety net: strip document_agent if open_app command
             if is_open_app:
                 plan = [s for s in plan if s.get("agent") != "document_agent"]
                 for idx, step in enumerate(plan, 1):
@@ -167,24 +189,111 @@ class QwenClient:
                 "parameters": {"query": command},
             }]
 
+    def _build_browser_plan(self, command: str, cmd_lc: str) -> list[dict]:
+        """
+        Build a browser_agent plan directly without calling Qwen,
+        so it can never be misrouted to research_agent.
+        """
+        # YouTube
+        if "youtube" in cmd_lc:
+            query = re.sub(
+                r".*(search youtube for|on youtube|youtube for|find.*youtube|youtube search)\s*",
+                "", cmd_lc, flags=re.IGNORECASE
+            ).strip() or command
+            return [{
+                "step": 1,
+                "agent": "browser_agent",
+                "description": f"Search YouTube for: {query}",
+                "parameters": {"action": "youtube", "query": query},
+            }]
+
+        # Wikipedia
+        if "wikipedia" in cmd_lc or "wiki/" in cmd_lc:
+            # Extract URL if present
+            url_match = re.search(r"(https?://[^\s]+|wikipedia\.org/wiki/[^\s]+)", cmd_lc)
+            if url_match:
+                url = url_match.group(1)
+                if not url.startswith("http"):
+                    url = "https://" + url
+                return [{
+                    "step": 1,
+                    "agent": "browser_agent",
+                    "description": f"Read Wikipedia: {url}",
+                    "parameters": {"action": "scrape", "url": url},
+                }]
+            else:
+                return [{
+                    "step": 1,
+                    "agent": "browser_agent",
+                    "description": f"Search Wikipedia: {command}",
+                    "parameters": {"action": "search", "query": command, "engine": "google"},
+                }]
+
+        # Explicit URL
+        url_match = re.search(r"https?://[^\s]+", command)
+        if url_match:
+            url = url_match.group(0)
+            return [{
+                "step": 1,
+                "agent": "browser_agent",
+                "description": f"Read page: {url}",
+                "parameters": {"action": "scrape", "url": url},
+            }]
+
+        # Google / web search
+        if any(k in cmd_lc for k in ["search google", "google for", "google search",
+                                      "search the web", "search bing"]):
+            query = re.sub(
+                r".*(search google for|google for|search the web for|search bing for|google search)\s*",
+                "", cmd_lc, flags=re.IGNORECASE
+            ).strip() or command
+            engine = "bing" if "bing" in cmd_lc else "google"
+            return [{
+                "step": 1,
+                "agent": "browser_agent",
+                "description": f"Search {engine}: {query}",
+                "parameters": {"action": "search", "query": query, "engine": engine},
+            }]
+
+        # Multi-step workflow (go to site, open chrome, navigate, etc.)
+        # Extract destination if possible
+        dest_match = re.search(
+            r"(?:go to|open|visit|navigate to)\s+([\w\-\.]+\.[\w]{2,}[^\s]*)",
+            cmd_lc
+        )
+        if dest_match:
+            url = dest_match.group(1)
+            if not url.startswith("http"):
+                url = "https://" + url
+            return [{
+                "step": 1,
+                "agent": "browser_agent",
+                "description": f"Browser workflow: {command}",
+                "parameters": {"action": "workflow", "goal": command, "url": url},
+            }]
+
+        # Generic browser search fallback
+        return [{
+            "step": 1,
+            "agent": "browser_agent",
+            "description": f"Browser search: {command}",
+            "parameters": {"action": "search", "query": command, "engine": "google"},
+        }]
+
     # ── Content generator ─────────────────────────────────────────────────────
 
     async def generate_content(self, command: str, content_type: str = "text") -> str:
-        """Generate content for a type step (story, song, letter, essay, etc.)."""
         system = (
             "You are a creative writing assistant. Your ONLY job is to produce the requested written content. "
             "NEVER mention files, apps, computers, or what you can/cannot do. "
             "NEVER start with phrases like 'I can\\'t', 'Here is', 'Sure!', 'Certainly', or any preamble. "
             "NEVER refer to the fact that you are an AI. "
-            "Output ONLY the raw content itself — prose, lyrics, letter body, or whatever was requested. "
-            "Begin writing immediately with the actual content."
+            "Output ONLY the raw content itself. Begin writing immediately."
         )
         clean_cmd = re.sub(
             r"\b(open|launch|start|create|use)\s+(notepad\+\+|notepad|word|excel|powerpoint|ppt|a file|a new file|an?\s+app)\s*(and|then|to)?\s*",
             "", command, flags=re.IGNORECASE
-        ).strip()
-        if not clean_cmd:
-            clean_cmd = command
+        ).strip() or command
         return await self.chat(system, f"Write this: {clean_cmd}", temperature=0.7)
 
     # ── Utilities ─────────────────────────────────────────────────────────────
