@@ -108,7 +108,17 @@ Available agents:
 - browser_agent: controls a real browser (Chrome)
 - coding_agent: writes and runs code
 - automation_agent: controls mouse and keyboard on a connected PC
-"""
+  parameters: {"action": "open_app", "app": "notepad"}     ← open an application
+  parameters: {"action": "type", "text": "hello"}          ← type text
+  parameters: {"action": "hotkey", "keys": ["ctrl","s"]}   ← press key combo
+  parameters: {"action": "click", "x": 500, "y": 300}      ← click position
+  parameters: {"action": "run_command", "command": "dir"}  ← run terminal command
+  IMPORTANT: action name MUST be one of: open_app, type, hotkey, click, double_click,
+  right_click, scroll, move, run_command, wait, screenshot_and_return
+  NEVER use "open" — always use "open_app"
+  NEVER use "press" — always use "hotkey"
+  NEVER use "write" — always use "type"
+
         user_message = f'Plan this task: "{command}"'
         raw = await self.chat(system_prompt, user_message, temperature=0.3)
 

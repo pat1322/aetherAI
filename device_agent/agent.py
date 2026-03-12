@@ -57,9 +57,10 @@ class DeviceAgent:
         while self.running:
             try:
                 logger.info(f"Connecting to {self.ws_url}")
+                headers = {"X-Api-Key": API_KEY} if API_KEY else {}
                 async with websockets.connect(
                     self.ws_url,
-                    extra_headers={"X-Api-Key": API_KEY} if API_KEY else {},
+                    additional_headers=headers,
                     ping_interval=20,
                     ping_timeout=10,
                 ) as ws:
@@ -135,6 +136,20 @@ class DeviceAgent:
         params     = data.get("parameters", {})
         request_id = data.get("request_id", "")
         result     = "ok"
+
+        # Normalize action aliases so wrong names never fail
+        aliases = {
+            "open":        "open_app",
+            "launch":      "open_app",
+            "start":       "open_app",
+            "press":       "hotkey",
+            "key":         "hotkey",
+            "write":       "type",
+            "typing":      "type",
+            "input":       "type",
+            "screenshot":  "screenshot_and_return",
+        }
+        action = aliases.get(action, action)
 
         try:
             if action == "click":

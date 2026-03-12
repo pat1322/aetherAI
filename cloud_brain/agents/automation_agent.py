@@ -20,6 +20,14 @@ class AutomationAgent(BaseAgent):
     description = "Controls mouse, keyboard, and screen on the connected PC"
 
     async def run(self, parameters: dict, task_id: str, context: str = "") -> Optional[str]:
+        # Normalize: Qwen sometimes puts action params at top level
+        # e.g. {"action": "open_app", "app": "notepad"} instead of {"action": "open_app", "parameters": {"app": "notepad"}}
+        if "action" in parameters and "parameters" not in parameters:
+            action_name = parameters.get("action", "")
+            inner = {k: v for k, v in parameters.items() if k not in ("action", "mode", "goal", "task", "sequence")}
+            if inner:
+                parameters = {"action": action_name, "parameters": inner, **{k: v for k, v in parameters.items() if k in ("mode", "goal", "task", "sequence")}}
+
         # Check a device is connected
         devices = self.ws_manager.list_devices()
         if not devices:
