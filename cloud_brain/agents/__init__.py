@@ -10,17 +10,12 @@ from utils.qwen_client import QwenClient
 
 
 class BaseAgent(ABC):
-    """
-    Every agent must implement the `run` method.
-    Agents receive parameters + context from the Orchestrator
-    and return a string output (result, summary, file path, etc.).
-    """
-
-    name: str = "base_agent"
+    name: str        = "base_agent"
     description: str = "Base agent"
 
-    def __init__(self, qwen: QwenClient):
-        self.qwen = qwen
+    def __init__(self, qwen: QwenClient, ws_manager=None, **kwargs):
+        self.qwen       = qwen
+        self.ws_manager = ws_manager
 
     @abstractmethod
     async def run(
@@ -28,16 +23,5 @@ class BaseAgent(ABC):
         parameters: dict,
         task_id: str,
         context: str = "",
-    ) -> Optional[str]:
-        """
-        Execute a step.
-
-        Args:
-            parameters: Dict of inputs for this step (from the plan)
-            task_id:    ID of the parent task (for logging/memory)
-            context:    Output from the previous step (chained tasks)
-
-        Returns:
-            String result (summary, file path, code output, etc.)
-        """
-        ...
+    ) -> Optional[str]: ...
+    
