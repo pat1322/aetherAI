@@ -2,15 +2,11 @@
 AetherAI — Device Agent (Stage 3)
 Runs on your PC. Connects to Cloud Brain via WebSocket.
 
-Usage:
-    python agent.py
-
 FIXES:
-- Notepad++ now detected and launched from known install paths
-- After new_file/open_app, window is brought to front via PowerShell AppActivate
-  so the next 'type' action lands in the app — not in the browser input box
-- Word gets a longer startup wait + a click in the document body area
-- Typing uses clipboard paste (fast, handles all chars) but now with reliable focus
+- Office apps launched with /n (Word), /e (Excel), /blank (PowerPoint) — opens directly
+  to a blank document, no start screen, NO double-window issue
+- Window focus via PowerShell AppActivate before any type action
+- Notepad++ supported with known install paths
 """
 
 import asyncio
@@ -40,7 +36,6 @@ pyautogui.PAUSE    = 0.15
 
 KEEPALIVE_INTERVAL = 30
 
-# Full paths for Microsoft Office — covers both 32-bit and 64-bit installs
 OFFICE_APPS = {
     "word":        ["WINWORD.EXE",  "winword"],
     "excel":       ["EXCEL.EXE",    "excel"],
@@ -56,7 +51,14 @@ OFFICE_BASE_PATHS = [
     r"C:\Program Files\Microsoft Office 16\root\Office16",
 ]
 
-# Notepad++ install paths (covers most common locations)
+# Launch flags that bypass the Office start screen and open a blank file directly
+# This prevents the double-window issue caused by Ctrl+N on an already-open blank doc
+OFFICE_NEW_FLAGS = {
+    "word":       ["/n"],      # new blank document, no start screen
+    "excel":      ["/e"],      # skip startup dialog
+    "powerpoint": ["/blank"],  # new blank presentation
+}
+
 NOTEPADPP_PATHS = [
     r"C:\Program Files\Notepad++\notepad++.exe",
     r"C:\Program Files (x86)\Notepad++\notepad++.exe",
@@ -66,7 +68,6 @@ NOTEPADPP_PATHS = [
 
 
 def find_office_exe(app_key: str) -> str | None:
-    """Search known Office install paths for the executable."""
     exes = OFFICE_APPS.get(app_key.lower(), [])
     for base in OFFICE_BASE_PATHS:
         for exe in exes:
@@ -77,7 +78,6 @@ def find_office_exe(app_key: str) -> str | None:
 
 
 def find_notepadpp() -> str | None:
-    """Return path to notepad++.exe if found."""
     for path in NOTEPADPP_PATHS:
         if os.path.exists(path):
             return path
@@ -85,11 +85,7 @@ def find_notepadpp() -> str | None:
 
 
 def activate_window_by_title(title_fragment: str):
-    """
-    Use PowerShell + Microsoft.VisualBasic to bring a window to the foreground.
-    title_fragment should be a substring of the window title (e.g. 'Notepad', 'Word').
-    This does NOT require any extra Python packages.
-    """
+    """Bring a window to the foreground using PowerShell (no extra packages needed)."""
     try:
         ps_cmd = (
             "Add-Type -AssemblyName Microsoft.VisualBasic; "
@@ -118,8 +114,6 @@ class DeviceAgent:
     def __init__(self):
         self.ws_url  = f"{CLOUD_BRAIN_URL}/ws/device/{DEVICE_ID}"
         self.running = True
-
-    # ── Connection loop ───────────────────────────────────────────────────────
 
     async def connect(self):
         while self.running:
@@ -152,14 +146,11 @@ class DeviceAgent:
         except Exception:
             pass
 
-    # ── Message handler ───────────────────────────────────────────────────────
-
     async def _listen(self, ws):
         async for raw in ws:
             try:
                 data     = json.loads(raw)
                 msg_type = data.get("type")
-
                 if msg_type == "ping":
                     await ws.send(json.dumps({"type": "pong"}))
                 elif msg_type == "pong":
@@ -173,16 +164,13 @@ class DeviceAgent:
                 elif msg_type == "get_screen_info":
                     w, h = pyautogui.size()
                     await ws.send(json.dumps({
-                        "type": "screen_info",
-                        "width": w, "height": h,
+                        "type": "screen_info", "width": w, "height": h,
                         "request_id": data.get("request_id", ""),
                     }))
                 else:
                     logger.info(f"Unknown message: {msg_type}")
             except Exception as e:
                 logger.error(f"Message handling error: {e}")
-
-    # ── Screenshot ────────────────────────────────────────────────────────────
 
     async def _handle_screenshot(self, ws, data: dict):
         request_id = data.get("request_id", "")
@@ -193,10 +181,9 @@ class DeviceAgent:
                 "image_base64": img_b64, "timestamp": time.time(),
             }))
         except Exception as e:
-            await ws.send(json.dumps({"type": "screenshot_result",
-                                      "request_id": request_id, "error": str(e)}))
-
-    # ── Action executor ───────────────────────────────────────────────────────
+            await ws.send(json.dumps({
+                "type": "screenshot_result", "request_id": request_id, "error": str(e)
+            }))
 
     async def _handle_action(self, ws, data: dict):
         action     = data.get("action")
@@ -238,7 +225,6 @@ class DeviceAgent:
                 if not text:
                     result = "type: no text provided"
                 else:
-                    # Use clipboard paste — fast and handles all characters
                     import pyperclip
                     pyperclip.copy(text)
                     await asyncio.sleep(0.2)
@@ -307,12 +293,9 @@ class DeviceAgent:
                 "type": "action_result", "request_id": request_id, "result": result,
             }))
 
-    # ── App launcher ──────────────────────────────────────────────────────────
-
     async def _open_app(self, app: str) -> str:
         app_lc = app.lower().strip()
 
-        # Notepad++
         if "notepad++" in app_lc or "notepadpp" in app_lc:
             npp_path = find_notepadpp()
             if npp_path:
@@ -321,42 +304,35 @@ class DeviceAgent:
                 activate_window_by_title("Notepad++")
                 await asyncio.sleep(0.4)
                 return f"Opened Notepad++ ({npp_path})"
-            else:
-                # Fallback: try via shell
-                subprocess.Popen('start "" "notepad++"', shell=True)
-                await asyncio.sleep(2.0)
-                return "Opened Notepad++ (shell)"
+            subprocess.Popen('start "" "notepad++"', shell=True)
+            await asyncio.sleep(2.0)
+            return "Opened Notepad++ (shell)"
 
-        # Try Office full path first
         office_path = find_office_exe(app_lc)
         if office_path:
             subprocess.Popen([office_path])
             await asyncio.sleep(4.0)
             return f"Opened: {app} ({office_path})"
 
-        # Standard shell open
         if sys.platform == "win32":
             subprocess.Popen(f'start "" "{app}"', shell=True)
         elif sys.platform == "darwin":
             subprocess.Popen(["open", "-a", app])
         else:
             subprocess.Popen([app])
-
         await asyncio.sleep(1.5)
         return f"Opened: {app}"
 
     async def _new_file(self, app: str) -> str:
-        """Open a fresh blank document in the target app, then focus it."""
+        """Open a blank file using Office flags — avoids double-window problem."""
         app_lc = app.lower().strip()
 
         # ── Notepad ───────────────────────────────────────────────────────────
         if app_lc == "notepad":
             subprocess.Popen(["notepad.exe"])
             await asyncio.sleep(1.5)
-            # Bring the newly opened Notepad window to front
             activate_window_by_title("Notepad")
             await asyncio.sleep(0.4)
-            # Click in the text area to ensure keyboard focus
             screen_w, screen_h = pyautogui.size()
             pyautogui.click(screen_w // 2, screen_h // 2)
             await asyncio.sleep(0.2)
@@ -370,26 +346,23 @@ class DeviceAgent:
                 await asyncio.sleep(2.5)
                 activate_window_by_title("Notepad++")
                 await asyncio.sleep(0.4)
-                # Open a fresh new tab
                 pyautogui.hotkey("ctrl", "n")
                 await asyncio.sleep(0.5)
                 screen_w, screen_h = pyautogui.size()
                 pyautogui.click(screen_w // 2, screen_h // 2)
                 await asyncio.sleep(0.2)
                 return "Opened new Notepad++ window"
-            else:
-                # Fallback to plain Notepad
-                logger.warning("Notepad++ not found — falling back to Notepad")
-                subprocess.Popen(["notepad.exe"])
-                await asyncio.sleep(1.5)
-                activate_window_by_title("Notepad")
-                await asyncio.sleep(0.4)
-                screen_w, screen_h = pyautogui.size()
-                pyautogui.click(screen_w // 2, screen_h // 2)
-                await asyncio.sleep(0.2)
-                return "Opened new Notepad window (Notepad++ not found)"
+            logger.warning("Notepad++ not found — falling back to Notepad")
+            subprocess.Popen(["notepad.exe"])
+            await asyncio.sleep(1.5)
+            activate_window_by_title("Notepad")
+            await asyncio.sleep(0.4)
+            screen_w, screen_h = pyautogui.size()
+            pyautogui.click(screen_w // 2, screen_h // 2)
+            await asyncio.sleep(0.2)
+            return "Opened new Notepad window (Notepad++ not found)"
 
-        # ── Microsoft Office apps ─────────────────────────────────────────────
+        # ── Microsoft Office ──────────────────────────────────────────────────
         office_map = {
             "word":       "word",
             "winword":    "word",
@@ -397,58 +370,50 @@ class DeviceAgent:
             "powerpoint": "powerpoint",
             "ppt":        "powerpoint",
         }
-        # Window title fragments used by AppActivate
         office_titles = {
             "word":       "Word",
             "excel":      "Excel",
             "powerpoint": "PowerPoint",
         }
+        office_body_y = {
+            "word":       0.55,
+            "excel":      0.50,
+            "powerpoint": 0.55,
+        }
 
         office_key = office_map.get(app_lc)
         if office_key:
             office_path = find_office_exe(office_key)
-            if office_path:
-                subprocess.Popen([office_path])
-                logger.info(f"Waiting 6s for {office_key} to fully load...")
-                await asyncio.sleep(6.0)   # Office needs extra time
-
-                # Bring Office window to front
-                title_hint = office_titles.get(office_key, office_key.title())
-                activate_window_by_title(title_hint)
-                await asyncio.sleep(0.5)
-
-                # Dismiss any splash / start screen
-                pyautogui.press("escape")
-                await asyncio.sleep(0.5)
-
-                # Open a new blank document
-                pyautogui.hotkey("ctrl", "n")
-                await asyncio.sleep(2.0)   # wait for new doc dialog / blank doc
-                pyautogui.press("enter")   # confirm if a template-selection dialog appears
-                await asyncio.sleep(1.0)
-
-                # Re-activate and click in the document body area
-                activate_window_by_title(title_hint)
-                await asyncio.sleep(0.4)
-                screen_w, screen_h = pyautogui.size()
-                # Click roughly in the center of the document editing area
-                pyautogui.click(screen_w // 2, int(screen_h * 0.55))
-                await asyncio.sleep(0.3)
-
-                return f"Opened new {office_key} document"
-            else:
+            if not office_path:
                 return f"⚠️ {office_key} not found. Check Office installation path."
 
-        return f"new_file: unsupported app '{app}'"
+            # Use /n, /e, or /blank to open directly to a blank document.
+            # This skips the start screen entirely so Ctrl+N is NOT needed,
+            # which was causing a second window to open.
+            new_flags = OFFICE_NEW_FLAGS.get(office_key, [])
+            subprocess.Popen([office_path] + new_flags)
+            logger.info(f"Launched {office_key} with flags {new_flags}, waiting 5s...")
+            await asyncio.sleep(5.0)
 
-    # ── Vision loop ───────────────────────────────────────────────────────────
+            title_hint = office_titles.get(office_key, office_key.title())
+            activate_window_by_title(title_hint)
+            await asyncio.sleep(0.6)
+
+            # Click into the document body to ensure keyboard focus
+            screen_w, screen_h = pyautogui.size()
+            body_y = office_body_y.get(office_key, 0.55)
+            pyautogui.click(screen_w // 2, int(screen_h * body_y))
+            await asyncio.sleep(0.3)
+
+            return f"Opened new {office_key} document"
+
+        return f"new_file: unsupported app '{app}'"
 
     async def _vision_loop(self, ws, data: dict):
         goal       = data.get("goal", "")
         task_id    = data.get("task_id", "")
         max_steps  = data.get("max_steps", 10)
         request_id = data.get("request_id", "")
-
         logger.info(f"Vision loop started. Goal: {goal}")
 
         for step_num in range(1, max_steps + 1):
@@ -459,7 +424,6 @@ class DeviceAgent:
                     "request_id": request_id, "step": step_num,
                     "image_base64": img_b64, "goal": goal,
                 }))
-
                 try:
                     response_raw = await asyncio.wait_for(
                         self._wait_for_vision_response(ws, request_id), timeout=30.0
@@ -470,7 +434,6 @@ class DeviceAgent:
 
                 response    = json.loads(response_raw)
                 action_type = response.get("action")
-
                 if action_type == "done":
                     await ws.send(json.dumps({
                         "type": "vision_complete", "task_id": task_id,
