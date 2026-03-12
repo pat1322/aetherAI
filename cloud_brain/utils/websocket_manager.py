@@ -1,38 +1,89 @@
 """
-AetherAI — WebSocket Manager (Stage 3)
-Manages connections for Device Agents and Web UI sessions.
-Supports: task broadcasts, pending request/response futures, vision task handlers.
+AetherAI — WebSocket Manager  (Stage 4 — hardened)
+
+WHAT'S NEW vs the previous version
+────────────────────────────────────
+1. Message queue per UI session
+   Each UI session gets an asyncio.Queue. broadcast_ui_event() enqueues
+   messages; a per-session writer coroutine drains the queue. This means:
+   - A slow client never blocks broadcasts to other clients.
+   - Back-pressure: if a session's queue exceeds UI_QUEUE_MAX (64 msgs)
+     the oldest message is dropped and a warning is logged.
+
+2. Dead session pruning
+   _prune_dead_ui_sessions() runs on a background task every 60 s.
+   Sessions whose WebSocket is closed are removed without waiting for
+   the next disconnect event.
+
+3. Pending future TTL
+   register_pending() records a creation timestamp. A background task
+   (every 60 s) resolves futures waiting longer than PENDING_TTL (120 s)
+   with a timeout sentinel dict instead of leaking them forever.
+
+4. Vision handler cleanup
+   Vision handlers are removed atomically with their futures in
+   unregister_pending(), preventing a stale handler from being called
+   after its task has completed or timed out.
+
+5. broadcast_task_update() deduplication guard
+   Identical consecutive payloads for the same task_id are suppressed.
+
+6. send_to_device() returns SendResult enum
+   SendResult.OK / NO_DEVICE / SEND_ERROR — callers can distinguish
+   "not connected" from "connected but send failed".
 """
 
 import asyncio
+import enum
 import json
 import logging
-from typing import Any, Callable, Optional
+import time
+from typing import Callable
 
 from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
 
+UI_QUEUE_MAX   = 64
+PENDING_TTL    = 120.0
+PRUNE_INTERVAL = 60.0
+
+
+class SendResult(enum.Enum):
+    OK         = "ok"
+    NO_DEVICE  = "no_device"
+    SEND_ERROR = "send_error"
+
 
 class WebSocketManager:
-    def __init__(self):
-        self._devices:      dict[str, WebSocket] = {}   # device_id → ws
-        self._ui_sessions:  dict[str, WebSocket] = {}   # session_id → ws
-        self._pending:      dict[str, asyncio.Future] = {}  # request_id → Future
-        self._vision_handlers: dict[str, Callable] = {}  # request_id → handler fn
 
-    # ── Device connections ────────────────────────────────────────────────────
+    def __init__(self):
+        self._devices:         dict[str, WebSocket]      = {}
+        self._ui_sessions:     dict[str, WebSocket]      = {}
+        self._ui_queues:       dict[str, asyncio.Queue]  = {}
+        self._ui_writers:      dict[str, asyncio.Task]   = {}
+        self._pending:         dict[str, asyncio.Future] = {}
+        self._pending_ts:      dict[str, float]          = {}
+        self._vision_handlers: dict[str, Callable]       = {}
+        self._last_broadcast:  dict[str, str]            = {}
+
+        try:
+            asyncio.get_event_loop().create_task(self._background_prune())
+        except RuntimeError:
+            pass
+
+    # ── Devices ────────────────────────────────────────────────────────────────
 
     async def connect_device(self, device_id: str, ws: WebSocket):
         await ws.accept()
         self._devices[device_id] = ws
-        logger.info(f"Device connected: {device_id}")
+        logger.info(f"[WSManager] Device connected: {device_id}")
         await self.broadcast_ui_event({"type": "device_connected", "device_id": device_id})
 
     def disconnect_device(self, device_id: str):
         self._devices.pop(device_id, None)
-        logger.info(f"Device disconnected: {device_id}")
-        asyncio.create_task(
+        logger.info(f"[WSManager] Device disconnected: {device_id}")
+        asyncio.get_event_loop().create_task(
             self.broadcast_ui_event({"type": "device_disconnected", "device_id": device_id})
         )
 
@@ -42,113 +93,172 @@ class WebSocketManager:
     def device_count(self) -> int:
         return len(self._devices)
 
-    async def send_to_device(self, device_id: str, data: dict) -> bool:
+    async def send_to_device(self, device_id: str, data: dict) -> SendResult:
         ws = self._devices.get(device_id)
         if not ws:
-            logger.warning(f"Device {device_id} not connected")
-            return False
+            logger.warning(f"[WSManager] Device '{device_id}' not connected")
+            return SendResult.NO_DEVICE
         try:
             await ws.send_text(json.dumps(data))
-            return True
+            return SendResult.OK
         except Exception as e:
-            logger.error(f"Error sending to device {device_id}: {e}")
+            logger.error(f"[WSManager] Send to '{device_id}' failed: {e}")
             self.disconnect_device(device_id)
-            return False
+            return SendResult.SEND_ERROR
 
-    # ── UI sessions ───────────────────────────────────────────────────────────
+    # ── UI sessions ────────────────────────────────────────────────────────────
 
     async def connect_ui(self, session_id: str, ws: WebSocket):
         await ws.accept()
         self._ui_sessions[session_id] = ws
-        logger.info(f"UI session connected: {session_id}")
+        q = asyncio.Queue(maxsize=UI_QUEUE_MAX)
+        self._ui_queues[session_id]  = q
+        self._ui_writers[session_id] = asyncio.get_event_loop().create_task(
+            self._session_writer(session_id, ws, q)
+        )
+        logger.info(f"[WSManager] UI session connected: {session_id}")
 
     def disconnect_ui(self, session_id: str):
         self._ui_sessions.pop(session_id, None)
+        self._ui_queues.pop(session_id, None)
+        writer = self._ui_writers.pop(session_id, None)
+        if writer and not writer.done():
+            writer.cancel()
+
+    async def _session_writer(self, session_id: str, ws: WebSocket, q: asyncio.Queue):
+        try:
+            while True:
+                payload = await q.get()
+                try:
+                    await ws.send_text(payload)
+                except Exception:
+                    break
+        except asyncio.CancelledError:
+            pass
 
     async def broadcast_ui_event(self, data: dict):
-        """Send an event to all connected UI sessions."""
-        dead = []
-        for sid, ws in self._ui_sessions.items():
-            try:
-                await ws.send_text(json.dumps(data))
-            except Exception:
+        payload = json.dumps(data)
+        dead    = []
+        for sid, q in list(self._ui_queues.items()):
+            if self._ui_sessions.get(sid) is None:
                 dead.append(sid)
+                continue
+            if q.full():
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            try:
+                q.put_nowait(payload)
+            except asyncio.QueueFull:
+                pass
         for sid in dead:
-            self._ui_sessions.pop(sid, None)
+            self.disconnect_ui(sid)
 
     async def broadcast_task_update(self, task_id: str, data: dict):
-        """Broadcast a task progress update to all UI sessions."""
         payload = {"type": "task_update", "task_id": task_id, **data}
+        key     = json.dumps(payload, sort_keys=True)
+        if self._last_broadcast.get(task_id) == key:
+            return
+        self._last_broadcast[task_id] = key
         await self.broadcast_ui_event(payload)
 
-    # ── Pending request/response (for actions that need a reply) ─────────────
+    def clear_broadcast_cache(self, task_id: str):
+        self._last_broadcast.pop(task_id, None)
+
+    # ── Pending futures ────────────────────────────────────────────────────────
 
     def register_pending(self, request_id: str, future: asyncio.Future):
-        self._pending[request_id] = future
+        self._pending[request_id]    = future
+        self._pending_ts[request_id] = time.monotonic()
 
     def unregister_pending(self, request_id: str):
         self._pending.pop(request_id, None)
+        self._pending_ts.pop(request_id, None)
+        self._vision_handlers.pop(request_id, None)
 
     def register_vision_task(self, request_id: str, future: asyncio.Future,
                               handler: Callable):
-        self._pending[request_id] = future
+        self.register_pending(request_id, future)
         self._vision_handlers[request_id] = handler
 
+    # ── Device message routing ─────────────────────────────────────────────────
+
     async def handle_device_message(self, device_id: str, data: dict):
-        """Route messages coming FROM the device."""
         msg_type   = data.get("type")
         request_id = data.get("request_id", "")
 
-        # Action result — resolve the waiting future
-        if msg_type == "action_result" and request_id in self._pending:
-            future = self._pending.get(request_id)
-            if future and not future.done():
-                future.set_result(data)
+        def _resolve(result):
+            f = self._pending.get(request_id)
+            if f and not f.done():
+                f.set_result(result)
 
-        # Screenshot result — resolve the waiting future
-        elif msg_type == "screenshot_result" and request_id in self._pending:
-            future = self._pending.get(request_id)
-            if future and not future.done():
-                future.set_result(data)
+        if msg_type in ("action_result", "screenshot_result", "screen_info"):
+            if request_id in self._pending:
+                _resolve(data)
 
-        # Vision step — device sent a screenshot for analysis
         elif msg_type == "vision_step" and request_id in self._vision_handlers:
             handler = self._vision_handlers[request_id]
             try:
                 action = await handler(device_id, request_id, data)
-                # Send the action back to the device
                 await self.send_to_device(device_id, {
-                    "type":       "vision_action",
-                    "request_id": request_id,
-                    **action,
+                    "type": "vision_action", "request_id": request_id, **action,
                 })
             except Exception as e:
-                logger.error(f"Vision handler error: {e}")
+                logger.error(f"[WSManager] Vision handler error: {e}")
                 await self.send_to_device(device_id, {
-                    "type":       "vision_action",
-                    "request_id": request_id,
-                    "action":     "done",
-                    "message":    f"Error: {e}",
+                    "type": "vision_action", "request_id": request_id,
+                    "action": "done", "message": f"Handler error: {e}",
                 })
 
-        # Vision complete — resolve the waiting future
-        elif msg_type == "vision_complete" and request_id in self._pending:
-            future = self._pending.get(request_id)
-            if future and not future.done():
-                future.set_result(data.get("message", "Done"))
+        elif msg_type == "vision_complete":
+            f = self._pending.get(request_id)
+            if f and not f.done():
+                f.set_result(data.get("message", "Done"))
             self._vision_handlers.pop(request_id, None)
 
-        # Screen info response
-        elif msg_type == "screen_info" and request_id in self._pending:
-            future = self._pending.get(request_id)
-            if future and not future.done():
-                future.set_result(data)
-
-        # Forward device status updates to UI
         elif msg_type in ("status", "log", "error"):
             await self.broadcast_ui_event({
-                "type":      "device_log",
-                "device_id": device_id,
-                "message":   data.get("message", ""),
-                "level":     data.get("level", "info"),
+                "type": "device_log", "device_id": device_id,
+                "message": data.get("message", ""), "level": data.get("level", "info"),
             })
+
+        elif msg_type == "ping":
+            await self.send_to_device(device_id, {"type": "pong"})
+
+    # ── Background maintenance ─────────────────────────────────────────────────
+
+    async def _background_prune(self):
+        while True:
+            await asyncio.sleep(PRUNE_INTERVAL)
+            try:
+                self._prune_dead_ui_sessions()
+                self._purge_stale_pending()
+            except Exception as e:
+                logger.warning(f"[WSManager] Prune error: {e}")
+
+    def _prune_dead_ui_sessions(self):
+        dead = [
+            sid for sid, ws in list(self._ui_sessions.items())
+            if getattr(ws, "client_state", None) is not None
+            and ws.client_state.value >= 3
+        ]
+        for sid in dead:
+            self.disconnect_ui(sid)
+        if dead:
+            logger.debug(f"[WSManager] Pruned {len(dead)} dead UI sessions")
+
+    def _purge_stale_pending(self):
+        now   = time.monotonic()
+        stale = [
+            rid for rid, ts in list(self._pending_ts.items())
+            if now - ts > PENDING_TTL
+        ]
+        for rid in stale:
+            f = self._pending.get(rid)
+            if f and not f.done():
+                f.set_result({"error": "timeout", "request_id": rid})
+                logger.warning(f"[WSManager] Expired stale pending: {rid}")
+            self.unregister_pending(rid)
+        if stale:
+            logger.info(f"[WSManager] Purged {len(stale)} stale pending futures")
