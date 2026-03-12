@@ -3,10 +3,10 @@ AetherAI — Device Agent (Stage 3)
 Runs on your PC. Connects to Cloud Brain via WebSocket.
 
 FIXES:
-- Office apps launched with /n (Word), /e (Excel), /blank (PowerPoint) — opens directly
-  to a blank document, no start screen, NO double-window issue
-- Window focus via PowerShell AppActivate before any type action
-- Notepad++ supported with known install paths
+- Office apps now opened via PowerShell COM automation (New-Object -ComObject)
+  This guarantees exactly ONE window with ONE blank document — no double-window issue
+- Focus is set via COM .Activate() before pyautogui clicks, so clicks land in the doc body
+- Notepad++ support retained
 """
 
 import asyncio
@@ -36,29 +36,6 @@ pyautogui.PAUSE    = 0.15
 
 KEEPALIVE_INTERVAL = 30
 
-OFFICE_APPS = {
-    "word":        ["WINWORD.EXE",  "winword"],
-    "excel":       ["EXCEL.EXE",    "excel"],
-    "powerpoint":  ["POWERPNT.EXE", "powerpnt"],
-    "ppt":         ["POWERPNT.EXE", "powerpnt"],
-}
-
-OFFICE_BASE_PATHS = [
-    r"C:\Program Files\Microsoft Office\root\Office16",
-    r"C:\Program Files (x86)\Microsoft Office\root\Office16",
-    r"C:\Program Files\Microsoft Office\root\Office15",
-    r"C:\Program Files (x86)\Microsoft Office\root\Office15",
-    r"C:\Program Files\Microsoft Office 16\root\Office16",
-]
-
-# Launch flags that bypass the Office start screen and open a blank file directly
-# This prevents the double-window issue caused by Ctrl+N on an already-open blank doc
-OFFICE_NEW_FLAGS = {
-    "word":       ["/n"],      # new blank document, no start screen
-    "excel":      ["/e"],      # skip startup dialog
-    "powerpoint": ["/blank"],  # new blank presentation
-}
-
 NOTEPADPP_PATHS = [
     r"C:\Program Files\Notepad++\notepad++.exe",
     r"C:\Program Files (x86)\Notepad++\notepad++.exe",
@@ -66,15 +43,49 @@ NOTEPADPP_PATHS = [
     r"C:\Users\patri\scoop\apps\notepadplusplus\current\notepad++.exe",
 ]
 
+# PowerShell COM scripts — open exactly one blank document, bring to front
+# These bypass the Office start screen entirely and create no second window
+OFFICE_COM_SCRIPTS = {
+    "word": """
+$app = New-Object -ComObject Word.Application
+$app.Visible = $true
+$doc = $app.Documents.Add()
+$app.Activate()
+[System.Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null
+[System.Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null
+""",
+    "excel": """
+$app = New-Object -ComObject Excel.Application
+$app.Visible = $true
+$wb = $app.Workbooks.Add()
+$app.WindowState = -4137
+$app.Activate()
+[System.Runtime.InteropServices.Marshal]::ReleaseComObject($wb) | Out-Null
+[System.Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null
+""",
+    "powerpoint": """
+$app = New-Object -ComObject PowerPoint.Application
+$app.Visible = $true
+$pres = $app.Presentations.Add()
+$app.Activate()
+[System.Runtime.InteropServices.Marshal]::ReleaseComObject($pres) | Out-Null
+[System.Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null
+""",
+}
 
-def find_office_exe(app_key: str) -> str | None:
-    exes = OFFICE_APPS.get(app_key.lower(), [])
-    for base in OFFICE_BASE_PATHS:
-        for exe in exes:
-            full = os.path.join(base, exe)
-            if os.path.exists(full):
-                return full
-    return None
+# Title fragments used for AppActivate focus
+OFFICE_TITLES = {
+    "word":       "Word",
+    "excel":      "Excel",
+    "powerpoint": "PowerPoint",
+}
+
+# Where to click to land in the document body (as fraction of screen height)
+OFFICE_BODY_Y = {
+    "word":       0.50,
+    "excel":      0.45,
+    "powerpoint": 0.55,
+}
 
 
 def find_notepadpp() -> str | None:
@@ -85,7 +96,7 @@ def find_notepadpp() -> str | None:
 
 
 def activate_window_by_title(title_fragment: str):
-    """Bring a window to the foreground using PowerShell (no extra packages needed)."""
+    """Bring a window to the foreground using PowerShell AppActivate."""
     try:
         ps_cmd = (
             "Add-Type -AssemblyName Microsoft.VisualBasic; "
@@ -97,6 +108,21 @@ def activate_window_by_title(title_fragment: str):
         )
     except Exception as e:
         logger.warning(f"activate_window_by_title('{title_fragment}') failed: {e}")
+
+
+def open_office_via_com(office_key: str):
+    """
+    Launch an Office app with a blank document using COM automation.
+    This is more reliable than exe flags and avoids the double-window issue.
+    Runs asynchronously — caller must await sleep after calling this.
+    """
+    script = OFFICE_COM_SCRIPTS.get(office_key, "")
+    if not script:
+        return
+    subprocess.Popen(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+    )
 
 
 def capture_screen(max_width=1280) -> str:
@@ -303,16 +329,16 @@ class DeviceAgent:
                 await asyncio.sleep(2.5)
                 activate_window_by_title("Notepad++")
                 await asyncio.sleep(0.4)
-                return f"Opened Notepad++ ({npp_path})"
+                return f"Opened Notepad++"
             subprocess.Popen('start "" "notepad++"', shell=True)
             await asyncio.sleep(2.0)
             return "Opened Notepad++ (shell)"
 
-        office_path = find_office_exe(app_lc)
-        if office_path:
-            subprocess.Popen([office_path])
-            await asyncio.sleep(4.0)
-            return f"Opened: {app} ({office_path})"
+        # Check if it's an Office app — use COM for those too
+        office_map = {"word": "word", "excel": "excel", "powerpoint": "powerpoint", "ppt": "powerpoint"}
+        office_key = office_map.get(app_lc)
+        if office_key:
+            return await self._new_file(office_key)
 
         if sys.platform == "win32":
             subprocess.Popen(f'start "" "{app}"', shell=True)
@@ -324,7 +350,7 @@ class DeviceAgent:
         return f"Opened: {app}"
 
     async def _new_file(self, app: str) -> str:
-        """Open a blank file using Office flags — avoids double-window problem."""
+        """Open a blank document using COM automation (Office) or direct launch (Notepad)."""
         app_lc = app.lower().strip()
 
         # ── Notepad ───────────────────────────────────────────────────────────
@@ -362,7 +388,7 @@ class DeviceAgent:
             await asyncio.sleep(0.2)
             return "Opened new Notepad window (Notepad++ not found)"
 
-        # ── Microsoft Office ──────────────────────────────────────────────────
+        # ── Microsoft Office via COM ──────────────────────────────────────────
         office_map = {
             "word":       "word",
             "winword":    "word",
@@ -370,44 +396,40 @@ class DeviceAgent:
             "powerpoint": "powerpoint",
             "ppt":        "powerpoint",
         }
-        office_titles = {
-            "word":       "Word",
-            "excel":      "Excel",
-            "powerpoint": "PowerPoint",
-        }
-        office_body_y = {
-            "word":       0.55,
-            "excel":      0.50,
-            "powerpoint": 0.55,
-        }
-
         office_key = office_map.get(app_lc)
+
         if office_key:
-            office_path = find_office_exe(office_key)
-            if not office_path:
-                return f"⚠️ {office_key} not found. Check Office installation path."
+            logger.info(f"Opening {office_key} via COM automation...")
+            # COM script opens exactly one instance with one blank document
+            open_office_via_com(office_key)
 
-            # Use /n, /e, or /blank to open directly to a blank document.
-            # This skips the start screen entirely so Ctrl+N is NOT needed,
-            # which was causing a second window to open.
-            new_flags = OFFICE_NEW_FLAGS.get(office_key, [])
-            subprocess.Popen([office_path] + new_flags)
-            logger.info(f"Launched {office_key} with flags {new_flags}, waiting 5s...")
-            await asyncio.sleep(5.0)
+            # Wait for Office to fully load
+            wait_time = 6.0 if office_key in ("word", "powerpoint") else 5.0
+            logger.info(f"Waiting {wait_time}s for {office_key} to load...")
+            await asyncio.sleep(wait_time)
 
-            title_hint = office_titles.get(office_key, office_key.title())
+            # Activate the window
+            title_hint = OFFICE_TITLES[office_key]
             activate_window_by_title(title_hint)
-            await asyncio.sleep(0.6)
+            await asyncio.sleep(0.8)
 
-            # Click into the document body to ensure keyboard focus
+            # Click in the document body to guarantee keyboard focus
             screen_w, screen_h = pyautogui.size()
-            body_y = office_body_y.get(office_key, 0.55)
+            body_y = OFFICE_BODY_Y.get(office_key, 0.50)
             pyautogui.click(screen_w // 2, int(screen_h * body_y))
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.4)
 
-            return f"Opened new {office_key} document"
+            # One more activation + click to be sure
+            activate_window_by_title(title_hint)
+            await asyncio.sleep(0.3)
+            pyautogui.click(screen_w // 2, int(screen_h * body_y))
+            await asyncio.sleep(0.2)
+
+            return f"Opened new {office_key} document via COM"
 
         return f"new_file: unsupported app '{app}'"
+
+    # ── Vision loop ───────────────────────────────────────────────────────────
 
     async def _vision_loop(self, ws, data: dict):
         goal       = data.get("goal", "")

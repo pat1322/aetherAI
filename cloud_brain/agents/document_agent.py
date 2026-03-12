@@ -2,21 +2,27 @@
 AetherAI — Document Agent (Stage 2)
 Creates real PowerPoint, Word, and Excel files.
 
-CREATIVITY UPDATE:
-- 6 distinct color themes chosen randomly per generation
-- PowerPoint uses varied slide layouts (full-bleed accent, split, minimal, bold header)
-- Word documents use theme-matched heading colors and varied section styles
-- Excel uses theme-matched header/alt-row colors
+IMAGE UPDATE:
+- PowerPoint slides fetch real photos from Unsplash (free, no API key)
+- Even-numbered slides use an image+text split layout
+- Odd-numbered slides use text-only layouts for variety
+- Images are downloaded in parallel before building the deck
+- Graceful fallback to text-only if any image fails to download
 """
 
+import asyncio
 import logging
 import os
 import re
 import json
 import random
+import tempfile
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
+
+import httpx
 
 from agents import BaseAgent
 from utils.qwen_client import QwenClient
@@ -25,6 +31,14 @@ logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = Path(__file__).parent.parent.parent / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
+
+UNSPLASH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+}
 
 
 def safe_filename(text: str, ext: str) -> str:
@@ -35,7 +49,6 @@ def safe_filename(text: str, ext: str) -> str:
 
 
 # ── Color themes ──────────────────────────────────────────────────────────────
-# Each theme: (bg_dark, bg_light, accent, text_dark, text_light, muted, name)
 THEMES = [
     {
         "name":       "Ocean Deep",
@@ -102,6 +115,64 @@ THEMES = [
 
 def pick_theme() -> dict:
     return random.choice(THEMES)
+
+
+async def fetch_image_bytes(keyword: str, timeout: float = 8.0) -> bytes | None:
+    """
+    Download a relevant photo from Unsplash Source (free, no API key).
+    Returns image bytes or None if download fails.
+    """
+    try:
+        # Clean keyword for URL — take first 3 meaningful words
+        words = re.sub(r"[^\w\s]", "", keyword).split()[:3]
+        query = ",".join(w for w in words if len(w) > 2)
+        if not query:
+            query = keyword[:30]
+
+        url = f"https://source.unsplash.com/900x600/?{query}"
+        logger.info(f"[DocumentAgent] Fetching image for: '{query}'")
+
+        async with httpx.AsyncClient(
+            headers=UNSPLASH_HEADERS,
+            follow_redirects=True,
+            timeout=timeout,
+        ) as client:
+            resp = await client.get(url)
+            ct = resp.headers.get("content-type", "")
+            if resp.status_code == 200 and ct.startswith("image"):
+                logger.info(f"[DocumentAgent] Image downloaded ({len(resp.content)//1024}KB) for '{query}'")
+                return resp.content
+            else:
+                logger.warning(f"[DocumentAgent] Image fetch got {resp.status_code} for '{query}'")
+                return None
+    except Exception as e:
+        logger.warning(f"[DocumentAgent] Image fetch failed for '{keyword}': {e}")
+        return None
+
+
+async def fetch_images_for_slides(slides: list, topic: str) -> dict[int, bytes]:
+    """
+    Fetch images for alternating slides in parallel.
+    Returns a dict mapping slide index → image bytes.
+    """
+    # Fetch images for even-indexed slides (0, 2, 4, ...)
+    tasks = {}
+    for i, slide in enumerate(slides):
+        if i % 2 == 0:  # even slides get images
+            keyword = f"{slide.get('title', '')} {topic}"
+            tasks[i] = asyncio.create_task(fetch_image_bytes(keyword))
+
+    images = {}
+    for i, task in tasks.items():
+        try:
+            result = await task
+            if result:
+                images[i] = result
+        except Exception as e:
+            logger.warning(f"[DocumentAgent] Image task failed for slide {i}: {e}")
+
+    logger.info(f"[DocumentAgent] Successfully fetched {len(images)}/{len(tasks)} images")
+    return images
 
 
 class DocumentAgent(BaseAgent):
@@ -182,7 +253,7 @@ Return ONLY valid JSON — no markdown fences, no extra text:
 }}
 
 Include 6-8 content slides. Keep bullet points concise (max 15 words). Max 4 bullets per slide.
-Make the content rich, specific, and informative — not generic."""
+Make the content rich, specific, and informative."""
 
         raw = await self.qwen.chat(
             system_prompt="You are a presentation writer. Return ONLY valid JSON, no markdown fences.",
@@ -201,7 +272,13 @@ Make the content rich, specific, and informative — not generic."""
             }
 
         T = pick_theme()
-        logger.info(f"[DocumentAgent] Using theme: {T['name']}")
+        logger.info(f"[DocumentAgent] Theme: {T['name']}")
+
+        slides_data = data.get("slides", [])
+
+        # ── Fetch images in parallel ──────────────────────────────────────────
+        logger.info(f"[DocumentAgent] Fetching images for {len(slides_data)} slides...")
+        slide_images = await fetch_images_for_slides(slides_data, topic)
 
         def rgb(tup): return RGBColor(*tup)
 
@@ -210,7 +287,7 @@ Make the content rich, specific, and informative — not generic."""
         prs.slide_height = Inches(7.5)
         blank = prs.slide_layouts[6]
 
-        def rect(slide, x, y, w, h, color, alpha=None):
+        def rect(slide, x, y, w, h, color):
             s = slide.shapes.add_shape(1, Inches(x), Inches(y), Inches(w), Inches(h))
             s.fill.solid()
             s.fill.fore_color.rgb = color
@@ -218,89 +295,127 @@ Make the content rich, specific, and informative — not generic."""
             return s
 
         def txt(slide, text, x, y, w, h, size, bold=False, color=None,
-                align=PP_ALIGN.LEFT, italic=False, wrap=True):
+                align=PP_ALIGN.LEFT, italic=False):
             tb = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
             tf = tb.text_frame
-            tf.word_wrap = wrap
+            tf.word_wrap = True
             p  = tf.paragraphs[0]
             p.alignment = align
             r  = p.add_run()
             r.text = str(text)
-            r.font.size  = Pt(size)
-            r.font.bold  = bold
+            r.font.size   = Pt(size)
+            r.font.bold   = bold
             r.font.italic = italic
             r.font.color.rgb = color or rgb(T["text_dark"])
             return tb
 
-        def add_bullets(slide, bullets, x, y, w, h, size=19):
+        def add_bullets(slide, bullets, x, y, w, h, size=18):
             tb  = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
             tf2 = tb.text_frame
             tf2.word_wrap = True
             for j, b in enumerate(bullets):
                 para = tf2.paragraphs[0] if j == 0 else tf2.add_paragraph()
-                para.space_before = Pt(6)
-                para.space_after  = Pt(6)
+                para.space_before = Pt(7)
+                para.space_after  = Pt(7)
                 run = para.add_run()
                 run.text = f"▸  {b}"
                 run.font.size = Pt(size)
                 run.font.color.rgb = rgb(T["text_dark"])
-            return tb
+
+        def add_image(slide, img_bytes: bytes, x, y, w, h):
+            """Add image from bytes to slide at given position."""
+            try:
+                buf = BytesIO(img_bytes)
+                slide.shapes.add_picture(buf, Inches(x), Inches(y), Inches(w), Inches(h))
+                return True
+            except Exception as e:
+                logger.warning(f"[DocumentAgent] Could not add image to slide: {e}")
+                return False
 
         # ── Title slide ───────────────────────────────────────────────────────
         ts = prs.slides.add_slide(blank)
         rect(ts, 0, 0, 13.33, 7.5, rgb(T["bg_dark"]))
-        # Diagonal accent strip
         rect(ts, 0, 5.8, 13.33, 1.7, rgb(T["accent"]))
         rect(ts, 0, 5.6, 6.5, 1.9, rgb(T["bg_dark"]))
-        txt(ts, data.get("title", topic), 0.8, 1.6, 11.5, 2.5, 54,
+
+        # Try to get a title/hero image for the right side of the title slide
+        hero_img = await fetch_image_bytes(topic, timeout=8.0)
+        if hero_img:
+            try:
+                buf = BytesIO(hero_img)
+                # Place image on right portion of title slide
+                ts.shapes.add_picture(buf, Inches(7.2), Inches(0), Inches(6.13), Inches(7.5))
+                # Overlay dark gradient on right to blend with text area
+                overlay = rect(ts, 7.2, 0, 6.13, 7.5, rgb(T["bg_dark"]))
+                overlay.fill.fore_color.rgb = rgb(T["bg_dark"])
+                # Make overlay semi-transparent by using a lighter version
+                # (python-pptx doesn't support true alpha, so we just use a thinner overlay strip)
+                rect(ts, 6.8, 0, 0.6, 7.5, rgb(T["bg_dark"]))  # blending strip
+            except Exception as e:
+                logger.warning(f"[DocumentAgent] Title hero image failed: {e}")
+
+        txt(ts, data.get("title", topic), 0.8, 1.6, 11.5, 2.5, 52,
             bold=True, color=rgb(T["text_light"]), align=PP_ALIGN.LEFT)
         txt(ts, data.get("subtitle", ""), 0.8, 4.2, 9.0, 1.0, 22,
             color=rgb(T["muted"]), align=PP_ALIGN.LEFT)
-        txt(ts, f"{T['name']} Theme  ·  Generated by AetherAI  ·  {datetime.now().strftime('%B %d, %Y')}",
+        txt(ts, f"{T['name']} Theme  ·  AetherAI  ·  {datetime.now().strftime('%B %d, %Y')}",
             0.8, 6.9, 11.5, 0.4, 10, color=rgb(T["bg_dark"]), align=PP_ALIGN.LEFT)
 
-        # ── Content slides — cycle through 3 layout variants ─────────────────
-        layouts = ["standard", "accent_left", "bold_header"]
+        # ── Content slides ────────────────────────────────────────────────────
+        # Layout cycle:
+        #   even index + image  → IMAGE_RIGHT (bullets left, photo right)
+        #   even index, no img  → STANDARD
+        #   odd index           → alternates ACCENT_LEFT / BOLD_HEADER
 
-        for i, sd in enumerate(data.get("slides", [])):
-            layout = layouts[i % len(layouts)]
-            sl = prs.slides.add_slide(blank)
+        text_layouts = ["accent_left", "bold_header"]
 
-            if layout == "standard":
-                # Clean white slide with dark header bar
+        for i, sd in enumerate(slides_data):
+            sl  = prs.slides.add_slide(blank)
+            img = slide_images.get(i)  # bytes or None
+
+            if img:
+                # ── IMAGE RIGHT layout ─────────────────────────────────────
                 rect(sl, 0, 0, 13.33, 7.5, rgb(T["bg_light"]))
-                rect(sl, 0, 0, 13.33, 1.2, rgb(T["bg_dark"]))
-                rect(sl, 12.5, 0.25, 0.83, 0.7, rgb(T["accent"]))  # slide number badge
-                txt(sl, str(i + 1), 12.5, 0.25, 0.83, 0.7, 14,
+                rect(sl, 0, 0, 13.33, 1.15, rgb(T["bg_dark"]))
+                rect(sl, 0, 0, 0.18, 7.5, rgb(T["accent"]))
+                # Slide number badge
+                txt(sl, str(i + 1), 12.3, 0.22, 0.8, 0.7, 14,
                     bold=True, color=rgb(T["text_light"]), align=PP_ALIGN.CENTER)
-                txt(sl, sd.get("title", ""), 0.4, 0.15, 11.8, 0.9, 28,
+                # Title
+                txt(sl, sd.get("title", ""), 0.35, 0.13, 11.6, 0.9, 26,
                     bold=True, color=rgb(T["text_light"]))
-                rect(sl, 0, 1.2, 0.2, 6.3, rgb(T["accent"]))  # left accent bar
-                add_bullets(sl, sd.get("bullets", []), 0.55, 1.45, 12.3, 5.7)
+                # Bullets — left side
+                add_bullets(sl, sd.get("bullets", []), 0.4, 1.3, 7.2, 5.9, size=17)
+                # Photo — right side with thin accent border
+                rect(sl, 7.85, 1.2, 5.1, 5.95, rgb(T["accent"]))  # border
+                add_image(sl, img, 7.92, 1.27, 4.96, 5.81)
+                # Image credit note
+                txt(sl, "Photo: Unsplash", 7.9, 6.85, 4.0, 0.4, 8,
+                    color=rgb(T["muted"]), italic=True)
 
-            elif layout == "accent_left":
-                # Split: colored left panel + white right content area
-                rect(sl, 0, 0, 4.2, 7.5, rgb(T["bg_dark"]))
-                rect(sl, 4.2, 0, 9.13, 7.5, rgb(T["bg_light"]))
-                rect(sl, 4.2, 0, 9.13, 0.08, rgb(T["accent"]))  # top accent line
-                # Slide number on left panel
-                txt(sl, str(i + 1), 0.3, 0.3, 1.0, 0.8, 36,
-                    bold=True, color=rgb(T["accent"]))
-                # Title on left panel (vertical centered)
-                txt(sl, sd.get("title", ""), 0.3, 1.2, 3.5, 5.0, 24,
-                    bold=True, color=rgb(T["text_light"]))
-                add_bullets(sl, sd.get("bullets", []), 4.55, 0.8, 8.4, 6.3)
+            else:
+                # ── TEXT-ONLY layouts (cycle through 2 variants) ───────────
+                layout = text_layouts[i % len(text_layouts)]
 
-            elif layout == "bold_header":
-                # Full-width accent header, light body
-                rect(sl, 0, 0, 13.33, 7.5, rgb(T["bg_light"]))
-                rect(sl, 0, 0, 13.33, 2.0, rgb(T["accent"]))
-                txt(sl, str(i + 1), 12.3, 0.2, 0.8, 0.6, 13,
-                    bold=True, color=rgb(T["bg_dark"]), align=PP_ALIGN.CENTER)
-                txt(sl, sd.get("title", ""), 0.5, 0.3, 11.6, 1.4, 32,
-                    bold=True, color=rgb(T["text_light"]))
-                rect(sl, 0.5, 2.15, 1.5, 0.07, rgb(T["bg_dark"]))  # underline
-                add_bullets(sl, sd.get("bullets", []), 0.55, 2.35, 12.2, 4.8)
+                if layout == "accent_left":
+                    rect(sl, 0, 0, 4.2, 7.5, rgb(T["bg_dark"]))
+                    rect(sl, 4.2, 0, 9.13, 7.5, rgb(T["bg_light"]))
+                    rect(sl, 4.2, 0, 9.13, 0.08, rgb(T["accent"]))
+                    txt(sl, str(i + 1), 0.3, 0.3, 1.0, 0.8, 36,
+                        bold=True, color=rgb(T["accent"]))
+                    txt(sl, sd.get("title", ""), 0.3, 1.2, 3.5, 5.0, 22,
+                        bold=True, color=rgb(T["text_light"]))
+                    add_bullets(sl, sd.get("bullets", []), 4.55, 0.8, 8.4, 6.3)
+
+                else:  # bold_header
+                    rect(sl, 0, 0, 13.33, 7.5, rgb(T["bg_light"]))
+                    rect(sl, 0, 0, 13.33, 2.0, rgb(T["accent"]))
+                    txt(sl, str(i + 1), 12.3, 0.2, 0.8, 0.6, 13,
+                        bold=True, color=rgb(T["bg_dark"]), align=PP_ALIGN.CENTER)
+                    txt(sl, sd.get("title", ""), 0.5, 0.3, 11.6, 1.4, 30,
+                        bold=True, color=rgb(T["text_light"]))
+                    rect(sl, 0.5, 2.1, 1.5, 0.07, rgb(T["bg_dark"]))
+                    add_bullets(sl, sd.get("bullets", []), 0.55, 2.3, 12.2, 4.9)
 
             note = sd.get("speaker_note", "")
             if note:
@@ -309,7 +424,6 @@ Make the content rich, specific, and informative — not generic."""
         # ── Closing slide ─────────────────────────────────────────────────────
         cs = prs.slides.add_slide(blank)
         rect(cs, 0, 0, 13.33, 7.5, rgb(T["bg_dark"]))
-        rect(cs, 0, 3.2, 13.33, 0.1, rgb(T["accent"]))
         rect(cs, 0, 0, 13.33, 3.2, rgb(T["accent"]))
         txt(cs, "Thank You", 0.8, 0.6, 11.5, 2.0, 64,
             bold=True, color=rgb(T["bg_dark"]), align=PP_ALIGN.CENTER)
@@ -321,9 +435,10 @@ Make the content rich, specific, and informative — not generic."""
         fname = safe_filename(data.get("title", topic), "pptx")
         fpath = OUTPUT_DIR / fname
         prs.save(str(fpath))
-        n = len(data.get("slides", []))
+        n = len(slides_data)
+        imgs_fetched = len(slide_images)
         return (f"✅ PowerPoint created: output/{fname}\n"
-                f"Theme: {T['name']}  |  Slides: {n + 2} (title + {n} content + closing)\n"
+                f"Theme: {T['name']}  |  Slides: {n + 2}  |  Photos: {imgs_fetched}/{(n+1)//2 + 1}\n"
                 f"Topic: {data.get('title', topic)}\n"
                 f"Full path: {fpath}")
 
@@ -350,7 +465,7 @@ Return ONLY valid JSON:
   ],
   "conclusion": "Concluding paragraph."
 }}
-Include 4-6 sections with 2-3 paragraphs each. Make the content rich and specific."""
+Include 4-6 sections with 2-3 paragraphs each. Make content rich and specific."""
 
         raw = await self.qwen.chat(
             system_prompt="Professional document writer. Return ONLY valid JSON, no markdown fences.",
@@ -365,7 +480,6 @@ Include 4-6 sections with 2-3 paragraphs each. Make the content rich and specifi
                     "conclusion": ""}
 
         T = pick_theme()
-        logger.info(f"[DocumentAgent] Using theme: {T['name']}")
 
         def dr(tup): return DR(*tup)
 
@@ -374,7 +488,6 @@ Include 4-6 sections with 2-3 paragraphs each. Make the content rich and specifi
             sec.top_margin = sec.bottom_margin = Inches(1.0)
             sec.left_margin = sec.right_margin = Inches(1.25)
 
-        # Title
         tp = doc.add_paragraph()
         tp.alignment = WD_ALIGN_PARAGRAPH.CENTER
         tr = tp.add_run(data.get("title", topic))
@@ -382,7 +495,6 @@ Include 4-6 sections with 2-3 paragraphs each. Make the content rich and specifi
         tr.font.size = Pt(26)
         tr.font.color.rgb = dr(T["bg_dark"])
 
-        # Theme & date
         dp = doc.add_paragraph()
         dp.alignment = WD_ALIGN_PARAGRAPH.CENTER
         dr2 = dp.add_run(
@@ -455,7 +567,6 @@ Include 1-3 sheets with 10-15 data rows each. Make the data specific and realist
             data = {"title": topic, "sheets": [{"name": "Data", "headers": ["Item", "Value"], "rows": [["Example", "Data"]]}]}
 
         T = pick_theme()
-        logger.info(f"[DocumentAgent] Using theme: {T['name']}")
 
         def hex_color(tup):
             return "{:02X}{:02X}{:02X}".format(*tup)
@@ -463,22 +574,20 @@ Include 1-3 sheets with 10-15 data rows each. Make the data specific and realist
         wb = openpyxl.Workbook()
         wb.remove(wb.active)
 
-        hdr_fill  = PatternFill("solid", fgColor=hex_color(T["bg_dark"]))
-        alt_fill  = PatternFill("solid", fgColor=hex_color(T["alt_row"]))
-        acc_fill  = PatternFill("solid", fgColor=hex_color(T["accent"]))
-        hdr_font  = Font(bold=True, color=hex_color(T["text_light"]), size=11)
+        hdr_fill   = PatternFill("solid", fgColor=hex_color(T["bg_dark"]))
+        alt_fill   = PatternFill("solid", fgColor=hex_color(T["alt_row"]))
         title_font = Font(bold=True, color=hex_color(T["bg_dark"]), size=15)
-        thin  = Side(style="thin", color="CCCCCC")
+        hdr_font   = Font(bold=True, color=hex_color(T["text_light"]), size=11)
+        thin   = Side(style="thin", color="CCCCCC")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
         center = Alignment(horizontal="center", vertical="center")
         left   = Alignment(horizontal="left",   vertical="center")
 
         for sh in data.get("sheets", []):
-            ws = wb.create_sheet(title=sh.get("name", "Sheet")[:31])
+            ws      = wb.create_sheet(title=sh.get("name", "Sheet")[:31])
             headers = sh.get("headers", [])
             ncols   = max(len(headers), 1)
 
-            # Title row
             ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ncols)
             c = ws.cell(1, 1, data.get("title", topic))
             c.font = title_font
@@ -486,13 +595,11 @@ Include 1-3 sheets with 10-15 data rows each. Make the data specific and realist
             c.fill = PatternFill("solid", fgColor=hex_color(T["bg_light"]))
             ws.row_dimensions[1].height = 32
 
-            # Accent separator row
+            # Accent separator
             for ci in range(1, ncols + 1):
-                ac = ws.cell(2, ci, "")
-                ac.fill = acc_fill
+                ws.cell(2, ci, "").fill = PatternFill("solid", fgColor=hex_color(T["accent"]))
             ws.row_dimensions[2].height = 4
 
-            # Header row
             for ci, h in enumerate(headers, 1):
                 cell = ws.cell(3, ci, h)
                 cell.font = hdr_font
@@ -501,7 +608,6 @@ Include 1-3 sheets with 10-15 data rows each. Make the data specific and realist
                 cell.border = border
             ws.row_dimensions[3].height = 24
 
-            # Data rows
             for ri, row in enumerate(sh.get("rows", []), 4):
                 for ci, val in enumerate(row, 1):
                     cell = ws.cell(ri, ci, val)
@@ -511,7 +617,6 @@ Include 1-3 sheets with 10-15 data rows each. Make the data specific and realist
                         cell.fill = alt_fill
                 ws.row_dimensions[ri].height = 18
 
-            # Auto-width columns
             for ci, _ in enumerate(headers, 1):
                 col_letter = get_column_letter(ci)
                 max_len = len(str(headers[ci - 1]))
