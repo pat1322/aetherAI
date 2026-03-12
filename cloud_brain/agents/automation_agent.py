@@ -14,15 +14,22 @@ from agents import BaseAgent
 
 logger = logging.getLogger(__name__)
 
+# Timeout per action type (seconds)
+ACTION_TIMEOUTS = {
+    "open_app":              25.0,   # Office apps are slow to open
+    "run_command":           30.0,
+    "type":                  40.0,   # long text/code takes time
+    "type_special":          40.0,
+    "screenshot_and_return": 15.0,
+    "default":               15.0,
+}
+
 
 class AutomationAgent(BaseAgent):
     name = "automation_agent"
     description = "Controls mouse, keyboard, and screen on the connected PC"
 
     async def run(self, parameters: dict, task_id: str, context: str = "") -> Optional[str]:
-        # Normalize flat parameters from Qwen into nested form
-        # e.g. {"action": "open_app", "app": "notepad"}
-        #   -> {"action": "open_app", "parameters": {"app": "notepad"}}
         action_name = parameters.get("action", "")
         if action_name and "parameters" not in parameters:
             inner = {
@@ -35,7 +42,6 @@ class AutomationAgent(BaseAgent):
                 **{k: v for k, v in parameters.items() if k in ("mode", "goal", "task", "sequence")},
             }
 
-        # Check a device is connected
         devices = self.ws_manager.list_devices()
         if not devices:
             return ("⚠️ No device connected. To control your PC:\n"
@@ -48,15 +54,12 @@ class AutomationAgent(BaseAgent):
         goal      = parameters.get("goal", "") or parameters.get("task", "") or context
         sequence  = parameters.get("sequence", [])
 
-        # Vision loop mode
         if parameters.get("mode") == "vision" or (goal and not action and not sequence):
             return await self._vision_task(device_id, goal, task_id)
 
-        # Sequence mode
         if sequence:
             return await self._run_sequence(device_id, sequence, task_id)
 
-        # Single action mode
         if action:
             inner_params = parameters.get("parameters", {})
             return await self._single_action(device_id, action, inner_params, task_id)
@@ -69,24 +72,25 @@ class AutomationAgent(BaseAgent):
                               params: dict, task_id: str) -> str:
         request_id = str(uuid.uuid4())[:8]
         future = asyncio.get_event_loop().create_future()
+        timeout = ACTION_TIMEOUTS.get(action, ACTION_TIMEOUTS["default"])
 
         self.ws_manager.register_pending(request_id, future)
 
         await self.ws_manager.send_to_device(device_id, {
             "type":       "action",
             "action":     action,
-            "parameters": params,       # clean nested dict — no extra keys
+            "parameters": params,
             "request_id": request_id,
             "task_id":    task_id,
         })
 
-        logger.info(f"[AutomationAgent] Sent action={action} params={params}")
+        logger.info(f"[AutomationAgent] Sent action={action} params={params} timeout={timeout}s")
 
         try:
-            result = await asyncio.wait_for(future, timeout=15.0)
+            result = await asyncio.wait_for(future, timeout=timeout)
             return f"✅ {action}: {result.get('result', 'done')}"
         except asyncio.TimeoutError:
-            return f"⚠️ Action '{action}' timed out"
+            return f"⚠️ Action '{action}' timed out after {timeout}s"
         finally:
             self.ws_manager.unregister_pending(request_id)
 
@@ -97,10 +101,10 @@ class AutomationAgent(BaseAgent):
         results = []
         for i, step in enumerate(sequence, 1):
             action = step.get("action", "")
-            # Support both nested {"parameters": {...}} and flat params
             params = step.get("parameters") or {
                 k: v for k, v in step.items() if k != "action"
             }
+            timeout = ACTION_TIMEOUTS.get(action, ACTION_TIMEOUTS["default"])
             logger.info(f"[AutomationAgent] Sequence step {i}/{len(sequence)}: {action} params={params}")
 
             request_id = str(uuid.uuid4())[:8]
@@ -116,10 +120,10 @@ class AutomationAgent(BaseAgent):
             })
 
             try:
-                result = await asyncio.wait_for(future, timeout=20.0)
+                result = await asyncio.wait_for(future, timeout=timeout)
                 results.append(f"Step {i} ({action}): {result.get('result','done')}")
             except asyncio.TimeoutError:
-                results.append(f"Step {i} ({action}): timed out")
+                results.append(f"Step {i} ({action}): timed out after {timeout}s")
             finally:
                 self.ws_manager.unregister_pending(request_id)
 
@@ -155,7 +159,6 @@ class AutomationAgent(BaseAgent):
                                     step_data: dict) -> dict:
         goal      = step_data.get("goal", "")
         step_num  = step_data.get("step", 1)
-        img_b64   = step_data.get("image_base64", "")
         screen_w, screen_h = 1920, 1080
 
         prompt = f"""You are controlling a Windows PC to accomplish this goal: {goal}
@@ -203,4 +206,3 @@ Screen is {screen_w}x{screen_h} pixels. Be precise with coordinates."""
         except Exception as e:
             logger.error(f"[Vision] Step analysis error: {e}")
             return {"action": "done", "message": f"Vision error: {e}"}
-            

@@ -38,7 +38,6 @@ class QwenClient:
         return response.choices[0].message.content.strip()
 
     async def classify_command(self, command: str) -> str:
-        """Classify command as 'chat' (answer directly) or 'task' (use agents)."""
         system = (
             "You are a command classifier for AetherAI. "
             "Classify the user input as either 'chat' or 'task'.\n\n"
@@ -46,9 +45,10 @@ class QwenClient:
             "Examples of CHAT: 'who are you', 'what is the capital of France', "
             "'hello', 'what is 2+2', 'local holidays in Philippines'\n\n"
             "'task' = commands that require creating files, doing research and saving results, "
-            "controlling the computer, or multi-step work.\n"
+            "controlling the computer, writing code, or multi-step work.\n"
             "Examples of TASK: 'create a presentation about X', 'research X and save findings', "
-            "'open Chrome and go to youtube', 'open notepad and type hello'\n\n"
+            "'open Chrome and go to youtube', 'open notepad and type hello', "
+            "'write a python program', 'code a calculator'\n\n"
             "Return ONLY the single word: chat\n"
             "Or the single word: task\n"
             "Nothing else."
@@ -57,7 +57,6 @@ class QwenClient:
         return "chat" if "chat" in result.strip().lower() else "task"
 
     async def plan_task(self, command: str) -> list[dict]:
-        """Ask Qwen to break a command into an ordered execution plan."""
         system_prompt = (
             "You are AetherAI's task planner. "
             "AetherAI is a personal AI agent built by Patrick Perez, "
@@ -69,9 +68,12 @@ class QwenClient:
             "- description: what this step does (one sentence)\n"
             "- parameters: a dict of relevant inputs for this step\n\n"
             "Return ONLY a valid JSON array of steps. No explanation. No markdown. No extra text.\n\n"
+
             "Available agents:\n\n"
+
             "- research_agent: searches the web and summarizes information\n"
             '  parameters: {"query": "search query"}\n\n'
+
             "- document_agent: creates files. ALWAYS include 'type' in parameters.\n"
             '  parameters: {"type": "presentation", "topic": "..."} <- for PowerPoint (.pptx)\n'
             '  parameters: {"type": "document", "topic": "..."}     <- for Word (.docx)\n'
@@ -82,23 +84,29 @@ class QwenClient:
             '  - If the user says "spreadsheet", "excel", "data table" -> type MUST be "spreadsheet"\n'
             '  - Otherwise -> type is "document"\n'
             "  - NEVER omit the 'type' field for document_agent\n"
-            "  - NEVER call document_agent more than ONCE per task\n"
-            "  - Do NOT split file creation into multiple steps\n"
-            "  - If research is needed: do research_agent FIRST, then ONE document_agent call\n\n"
+            "  - NEVER call document_agent more than ONCE per task\n\n"
+
+            "- coding_agent: writes code and returns it in the chat output\n"
+            '  parameters: {"task": "describe what to code", "language": "python"}\n'
+            "  Use coding_agent when user asks to write/create/code a program, script, or function.\n"
+            "  The code will be shown in the main chat AND saved to the output folder.\n\n"
+
             "- browser_agent: controls a real browser (Chrome)\n\n"
-            "- coding_agent: writes and runs code\n\n"
+
             "- automation_agent: controls mouse and keyboard on the connected PC\n"
-            '  parameters: {"action": "open_app", "app": "notepad"}          <- open an app\n'
-            '  parameters: {"action": "type", "text": "hello"}               <- type text\n'
-            '  parameters: {"action": "hotkey", "keys": ["ctrl", "s"]}       <- press keys\n'
-            '  parameters: {"action": "click", "x": 500, "y": 300}           <- click position\n'
-            '  parameters: {"action": "run_command", "command": "dir"}       <- run command\n'
-            "  IMPORTANT: action name MUST be one of:\n"
-            "  open_app, type, hotkey, click, double_click, right_click,\n"
-            "  scroll, move, run_command, wait, screenshot_and_return\n"
-            "  NEVER use 'open' -- always use 'open_app'\n"
+            "  IMPORTANT: Use 'new_file' action to open a fresh document before typing.\n"
+            '  parameters: {"action": "new_file", "parameters": {"app": "notepad"}}  <- new blank notepad\n'
+            '  parameters: {"action": "new_file", "parameters": {"app": "word"}}     <- new blank Word doc\n'
+            '  parameters: {"action": "new_file", "parameters": {"app": "excel"}}    <- new blank Excel\n'
+            '  parameters: {"action": "new_file", "parameters": {"app": "powerpoint"}} <- new blank PPT\n'
+            '  parameters: {"action": "open_app", "parameters": {"app": "notepad"}}  <- open app (no new file)\n'
+            '  parameters: {"action": "type", "parameters": {"text": "hello"}}       <- type text\n'
+            '  parameters: {"action": "hotkey", "parameters": {"keys": ["ctrl", "s"]}}  <- save\n'
+            '  parameters: {"action": "run_command", "parameters": {"command": "dir"}}  <- shell command\n'
+            "  NEVER use 'open' -- always use 'open_app' or 'new_file'\n"
             "  NEVER use 'press' -- always use 'hotkey'\n"
             "  NEVER use 'write' -- always use 'type'\n"
+            "  For Microsoft Word/Excel/PowerPoint: use 'new_file' with app='word'/'excel'/'powerpoint'\n"
         )
 
         raw = await self.chat(system_prompt, f'Plan this task: "{command}"', temperature=0.3)
@@ -134,4 +142,3 @@ class QwenClient:
         )
         user = f"Context:\n{context}\n\nQuestion: {question}" if context else question
         return await self.chat(system, user)
-        
