@@ -5,15 +5,16 @@
 
 ---
 
-## Stage 1 — What's Running
+## Stage 3 — What's Running
 
 | Component | Status | Description |
 |---|---|---|
 | Cloud Brain (FastAPI) | ✅ | API Gateway, WebSocket hub |
 | Orchestrator | ✅ | Plans tasks with Qwen, routes to agents |
 | Research Agent | ✅ | Web search + Qwen summarization |
-| Document Agent | ✅ stub | Content generation via Qwen |
-| Device Agent | ✅ | PC control via WebSocket |
+| Document Agent | ✅ | PowerPoint, Word, and Excel generation via Qwen |
+| Device Agent | ✅ | PC control via WebSocket (mouse, keyboard, vision loop) |
+| Automation Agent | ✅ | Single actions, sequences, and vision loop execution |
 | Web UI | ✅ | Command center dashboard |
 | Memory (SQLite) | ✅ | Task + step persistence |
 
@@ -58,7 +59,7 @@ python agent.py
 
 ```bash
 git add .
-git commit -m "Stage 1: Cloud Brain"
+git commit -m "Stage 3: Device Agent + Vision Loop"
 git push origin main
 ```
 
@@ -103,6 +104,12 @@ python agent.py
 | GET | `/task/{id}` | Get task status |
 | GET | `/tasks` | List recent tasks |
 | POST | `/task/{id}/cancel` | Cancel a task |
+| DELETE | `/task/{id}` | Delete a task |
+| DELETE | `/tasks/all` | Delete all tasks |
+| GET | `/files` | List generated files |
+| GET | `/files/download/{filename}` | Download a generated file |
+| DELETE | `/files/{filename}` | Delete a generated file |
+| DELETE | `/files/all/clear` | Delete all generated files |
 | GET | `/devices` | List connected devices |
 | WS | `/ws/device/{id}` | Device Agent connection |
 | WS | `/ws/ui/{id}` | Web UI live updates |
@@ -115,6 +122,38 @@ curl -X POST https://your-app.railway.app/command \
   -H "X-Api-Key: your_secret" \
   -d '{"command": "Research the latest AI breakthroughs"}'
 ```
+
+---
+
+## Device Agent — Supported Actions
+
+The Device Agent supports the following actions via WebSocket:
+
+| Action | Description | Example Parameters |
+|---|---|---|
+| `open_app` | Open an application | `{"app": "notepad"}` |
+| `click` | Click at coordinates | `{"x": 500, "y": 300}` |
+| `double_click` | Double-click at coordinates | `{"x": 500, "y": 300}` |
+| `right_click` | Right-click at coordinates | `{"x": 500, "y": 300}` |
+| `move` | Move mouse to coordinates | `{"x": 500, "y": 300}` |
+| `type` | Type text | `{"text": "hello world"}` |
+| `type_special` | Paste non-ASCII text | `{"text": "special chars"}` |
+| `hotkey` | Press key combination | `{"keys": ["ctrl", "s"]}` |
+| `scroll` | Scroll at position | `{"x": 960, "y": 540, "clicks": -3}` |
+| `run_command` | Run a shell command | `{"command": "dir"}` |
+| `wait` | Wait for a duration | `{"ms": 1000}` |
+| `screenshot_and_return` | Capture and return screenshot | — |
+
+### Vision Loop
+
+The Device Agent supports a vision loop for complex, multi-step goals:
+
+1. Takes a screenshot
+2. Sends it to Cloud Brain for Qwen analysis
+3. Receives the next action to execute
+4. Repeats until the goal is complete or `max_steps` is reached
+
+Trigger with: `{"mode": "vision", "goal": "Open Chrome and search for AI news"}`
 
 ---
 
@@ -145,6 +184,7 @@ aetherAI/
 ├── web_ui/
 │   └── index.html           # Dashboard
 ├── database/                # Auto-created
+├── output/                  # Generated files (auto-created)
 ├── requirements.txt
 ├── Procfile                 # Railway start command
 ├── .env.example
@@ -156,8 +196,8 @@ aetherAI/
 ## Roadmap
 
 - **Stage 1** ✅ Cloud Brain + API + Orchestrator + Research Agent
-- **Stage 2** — Full Document Agent (PPTX, DOCX, XLSX generation)
-- **Stage 3** — Full Device Agent (vision loop, app control)
+- **Stage 2** ✅ Full Document Agent (PPTX, DOCX, XLSX generation)
+- **Stage 3** ✅ Full Device Agent (vision loop, mouse/keyboard control, app automation)
 - **Stage 4** — Browser Agent (Playwright, Gmail, YouTube)
 - **Stage 5** — Memory system (preferences, file registry)
 - **Stage 6** — ESP32 voice interface
@@ -169,4 +209,4 @@ aetherAI/
 
 - Set `AETHER_API_KEY` in production — this prevents unauthorized access
 - Device Agent has pyautogui FAILSAFE enabled (move mouse to top-left corner to abort)
-- Destructive actions (file deletion, system commands) will require confirmation in Stage 3
+- Destructive actions (file deletion, system commands) will require confirmation in a future stage
