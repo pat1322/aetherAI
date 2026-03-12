@@ -101,6 +101,9 @@ Available agents:
   - Otherwise → type is "document"
   - NEVER omit the "type" field for document_agent
   - NEVER create a document just because the topic could be a document — user must explicitly ask
+  - NEVER call document_agent more than ONCE per task — one call creates the complete final file
+  - Do NOT split file creation into multiple steps like "create then format" or "create then add data"
+  - If research is needed: do research_agent FIRST, then ONE document_agent call with that context
 
 - browser_agent: controls a real browser (Chrome)
 - coding_agent: writes and runs code

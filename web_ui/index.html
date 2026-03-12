@@ -2,126 +2,67 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AetherAI — Command Center</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg:        #080b10;
-      --bg2:       #0d1117;
-      --border:    #1e2a38;
-      --accent:    #00e5ff;
-      --accent2:   #7b61ff;
-      --warn:      #ff6b35;
-      --green:     #00ff9d;
-      --text:      #c9d1d9;
-      --muted:     #4a5568;
-      --card:      #0f1923;
-      --glow:      0 0 20px rgba(0,229,255,0.15);
+      --bg:      #0d1117;
+      --bg2:     #161b22;
+      --bg3:     #1c2330;
+      --card:    #1e2736;
+      --border:  #2a3444;
+      --accent:  #00e5ff;
+      --accent2: #a78bfa;
+      --green:   #00ff9d;
+      --warn:    #ff6b6b;
+      --orange:  #ffaa40;
+      --text:    #e2e8f0;
+      --muted:   #5a7080;
     }
 
-    html, body {
-      height: 100%;
+    body {
+      font-family: 'Consolas', 'Monaco', monospace;
       background: var(--bg);
       color: var(--text);
-      font-family: 'Space Mono', monospace;
-      font-size: 13px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
       overflow: hidden;
     }
 
-    /* ── Scan line overlay ── */
-    body::before {
-      content: '';
-      position: fixed;
-      inset: 0;
-      background: repeating-linear-gradient(
-        0deg,
-        transparent,
-        transparent 2px,
-        rgba(0,0,0,0.03) 2px,
-        rgba(0,0,0,0.03) 4px
-      );
-      pointer-events: none;
-      z-index: 9999;
-    }
-
-    /* ── Layout ── */
-    .shell {
-      display: grid;
-      grid-template-rows: 52px 1fr;
-      grid-template-columns: 280px 1fr 320px;
-      height: 100vh;
-      gap: 0;
-    }
-
-    /* ── Header ── */
-    header {
-      grid-column: 1 / -1;
+    /* ── Topbar ── */
+    .topbar {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0 24px;
-      border-bottom: 1px solid var(--border);
+      padding: 0 20px;
+      height: 48px;
       background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
     }
-
-    .logo {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-family: 'Syne', sans-serif;
-      font-weight: 800;
-      font-size: 17px;
-      letter-spacing: 0.05em;
-      color: #fff;
-    }
-
+    .logo { display: flex; align-items: center; gap: 10px; }
     .logo-icon {
-      width: 28px;
-      height: 28px;
+      width: 28px; height: 28px;
       background: linear-gradient(135deg, var(--accent), var(--accent2));
-      border-radius: 6px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 14px;
+      border-radius: 7px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; font-weight: 900; color: #000;
     }
+    .logo-text { font-size: 15px; font-weight: 700; color: var(--text); letter-spacing: 0.05em; }
+    .topbar-right { display: flex; align-items: center; gap: 16px; font-size: 11px; color: var(--muted); }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); display: inline-block; margin-right: 4px; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .status-dot.offline { background: var(--warn); animation: none; }
 
-    .status-bar {
-      display: flex;
-      align-items: center;
-      gap: 20px;
-      font-size: 11px;
-      color: var(--muted);
-    }
-
-    .dot {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .dot::before {
-      content: '';
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--muted);
-      animation: none;
-    }
-
-    .dot.online::before {
-      background: var(--green);
-      box-shadow: 0 0 8px var(--green);
-      animation: pulse 2s infinite;
-    }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
+    /* ── Main layout ── */
+    .layout {
+      display: grid;
+      grid-template-columns: 220px 1fr 260px;
+      flex: 1;
+      overflow: hidden;
     }
 
     /* ── Sidebar ── */
@@ -130,171 +71,125 @@
       border-right: 1px solid var(--border);
       display: flex;
       flex-direction: column;
-      padding: 16px;
-      gap: 8px;
-      overflow-y: auto;
+      overflow: hidden;
     }
-
-    .sidebar-title {
+    .sidebar-header {
+      padding: 10px 12px;
       font-size: 10px;
       text-transform: uppercase;
-      letter-spacing: 0.15em;
+      letter-spacing: 0.12em;
       color: var(--muted);
-      margin-bottom: 4px;
-      padding-bottom: 8px;
       border-bottom: 1px solid var(--border);
-    }
-
-    .task-item {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 10px 12px;
-      cursor: pointer;
-      transition: border-color 0.15s, transform 0.1s;
-    }
-
-    .task-item:hover {
-      border-color: var(--accent);
-      transform: translateX(2px);
-    }
-
-    .task-item.active {
-      border-color: var(--accent);
-      box-shadow: var(--glow);
-    }
-
-    .task-cmd {
-      color: #fff;
-      font-size: 11px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      margin-bottom: 4px;
-    }
-
-    .task-meta {
       display: flex;
       justify-content: space-between;
-      font-size: 10px;
-      color: var(--muted);
+      align-items: center;
     }
-
-    .badge {
-      font-size: 9px;
-      padding: 1px 6px;
-      border-radius: 3px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      font-weight: 700;
+    .clear-btn {
+      background: none; border: none;
+      color: var(--warn); font-size: 9px;
+      cursor: pointer; padding: 2px 5px;
+      border-radius: 3px; font-family: inherit;
     }
+    .clear-btn:hover { background: rgba(255,107,107,0.1); }
+    .task-list { flex: 1; overflow-y: auto; padding: 6px; }
+    .task-card {
+      padding: 8px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-bottom: 4px;
+      border: 1px solid transparent;
+      transition: all 0.15s;
+      background: var(--card);
+    }
+    .task-card:hover { border-color: var(--border); }
+    .task-card.active { border-color: var(--accent); background: rgba(0,229,255,0.06); }
+    .task-title { font-size: 11px; color: var(--text); line-height: 1.4; word-break: break-word; }
+    .task-meta { display: flex; justify-content: space-between; align-items: center; margin-top: 5px; font-size: 9px; color: var(--muted); }
+    .task-badge { padding: 1px 6px; border-radius: 10px; font-size: 8px; font-weight: 700; text-transform: uppercase; }
+    .task-badge.completed { background: rgba(0,255,157,0.15); color: var(--green); }
+    .task-badge.running   { background: rgba(0,229,255,0.15); color: var(--accent); }
+    .task-badge.failed    { background: rgba(255,107,107,0.15); color: var(--warn); }
+    .task-badge.planning  { background: rgba(167,139,250,0.15); color: var(--accent2); }
+    .task-badge.cancelled { background: rgba(90,112,128,0.15); color: var(--muted); }
+    .task-row { display: flex; align-items: flex-start; gap: 4px; }
+    .task-del-btn {
+      background: none; border: none; color: var(--muted);
+      cursor: pointer; font-size: 12px; flex-shrink: 0;
+      padding: 0 3px; line-height: 1; margin-top: 1px;
+      font-family: inherit;
+    }
+    .task-del-btn:hover { color: var(--warn); }
 
-    .badge-pending  { background: rgba(74,85,104,0.3); color: var(--muted); }
-    .badge-running  { background: rgba(0,229,255,0.12); color: var(--accent); }
-    .badge-planning { background: rgba(123,97,255,0.15); color: var(--accent2); }
-    .badge-completed{ background: rgba(0,255,157,0.12); color: var(--green); }
-    .badge-failed   { background: rgba(255,107,53,0.12); color: var(--warn); }
-    .badge-cancelled{ background: rgba(74,85,104,0.2);  color: var(--muted); }
-
-    /* ── Main area ── */
-    .main {
+    /* ── Main panel ── */
+    main {
       display: flex;
       flex-direction: column;
       overflow: hidden;
       background: var(--bg);
     }
-
-    /* ── Output / log ── */
-    .output {
+    .output-area {
       flex: 1;
       overflow-y: auto;
-      padding: 20px 24px;
-      font-size: 12.5px;
+      padding: 16px 20px;
+      font-size: 12px;
       line-height: 1.7;
     }
-
-    .output::-webkit-scrollbar { width: 4px; }
-    .output::-webkit-scrollbar-track { background: transparent; }
-    .output::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
-
     .log-entry {
       display: flex;
       gap: 12px;
-      margin-bottom: 6px;
+      margin-bottom: 4px;
       opacity: 0;
       transform: translateY(4px);
-      animation: fadeUp 0.25s ease forwards;
+      animation: fadeUp 0.2s ease forwards;
     }
-
-    @keyframes fadeUp {
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    .log-time {
-      color: var(--muted);
-      white-space: nowrap;
-      min-width: 70px;
-      padding-top: 1px;
-    }
-
-    .log-msg { flex: 1; }
+    @keyframes fadeUp { to { opacity:1; transform:translateY(0); } }
+    .log-time { color: var(--muted); white-space: nowrap; min-width: 68px; padding-top: 1px; font-size: 11px; }
+    .log-msg  { flex: 1; white-space: pre-wrap; word-break: break-word; }
     .log-msg.system  { color: var(--accent); }
     .log-msg.agent   { color: var(--accent2); }
     .log-msg.result  { color: var(--green); }
     .log-msg.error   { color: var(--warn); }
+    .log-msg.chat    { color: var(--text); background: rgba(0,229,255,0.05); border-left: 2px solid var(--accent); padding: 6px 10px; border-radius: 0 6px 6px 0; }
     .log-msg.info    { color: var(--text); }
 
-    /* ── Command input ── */
+    /* ── Input row ── */
     .input-row {
       border-top: 1px solid var(--border);
-      padding: 14px 24px;
+      padding: 12px 16px;
       display: flex;
-      gap: 10px;
+      gap: 8px;
       align-items: center;
       background: var(--bg2);
+      flex-shrink: 0;
     }
-
-    .prompt {
-      color: var(--accent);
-      font-size: 14px;
-      white-space: nowrap;
-    }
-
-    #cmdInput {
+    .prompt { color: var(--accent); font-size: 13px; white-space: nowrap; }
+    .cmd-input {
       flex: 1;
       background: transparent;
       border: none;
       outline: none;
-      color: #fff;
-      font-family: 'Space Mono', monospace;
+      color: var(--text);
+      font-family: inherit;
       font-size: 13px;
-      caret-color: var(--accent);
     }
-
-    #cmdInput::placeholder { color: var(--muted); }
-
+    .cmd-input::placeholder { color: var(--muted); }
     .btn {
-      background: var(--accent);
-      color: #000;
-      border: none;
+      padding: 6px 14px;
       border-radius: 5px;
-      padding: 7px 14px;
-      font-family: 'Space Mono', monospace;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
       font-size: 11px;
       font-weight: 700;
-      cursor: pointer;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      transition: opacity 0.15s, transform 0.1s;
-      white-space: nowrap;
+      transition: opacity 0.15s;
     }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn.primary { background: var(--accent); color: #000; }
+    .btn.primary:hover:not(:disabled) { opacity: 0.85; }
+    .btn.danger  { background: var(--warn);  color: #fff; }
+    .btn.danger:hover:not(:disabled)  { opacity: 0.85; }
 
-    .btn:hover  { opacity: 0.85; }
-    .btn:active { transform: scale(0.97); }
-    .btn:disabled { opacity: 0.35; cursor: not-allowed; }
-    .btn.danger { background: var(--warn); }
-
-    /* ── Right panel (task detail) ── */
+    /* ── Right panel ── */
     .panel {
       background: var(--bg2);
       border-left: 1px solid var(--border);
@@ -302,241 +197,158 @@
       flex-direction: column;
       overflow: hidden;
     }
-
     .panel-header {
-      padding: 14px 16px;
-      border-bottom: 1px solid var(--border);
-      font-family: 'Syne', sans-serif;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-    }
-
-    .steps-list {
-      flex: 1;
-      overflow-y: auto;
-      padding: 12px;
-    }
-
-    .step {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-      padding: 10px;
-      border-radius: 6px;
-      margin-bottom: 6px;
-      background: var(--card);
-      border: 1px solid var(--border);
-      transition: border-color 0.2s;
-    }
-
-    .step.running  { border-color: var(--accent); }
-    .step.completed{ border-color: rgba(0,255,157,0.25); }
-    .step.failed   { border-color: rgba(255,107,53,0.25); }
-
-    .step-icon {
-      width: 22px;
-      height: 22px;
-      border-radius: 4px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 11px;
-      flex-shrink: 0;
-      margin-top: 1px;
-    }
-
-    .step-icon.pending   { background: var(--border); color: var(--muted); }
-    .step-icon.running   { background: rgba(0,229,255,0.15); color: var(--accent); }
-    .step-icon.completed { background: rgba(0,255,157,0.12); color: var(--green); }
-    .step-icon.failed    { background: rgba(255,107,53,0.12); color: var(--warn); }
-
-    .step-info { flex: 1; min-width: 0; }
-    .step-agent { font-size: 10px; color: var(--accent2); margin-bottom: 2px; }
-    .step-desc  { font-size: 11px; color: var(--text); line-height: 1.5; }
-    .step-output{
-      font-size: 10px; color: var(--muted);
-      margin-top: 4px;
-      line-height: 1.5;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-
-    .panel-actions {
-      padding: 12px;
-      border-top: 1px solid var(--border);
-      display: flex;
-      gap: 8px;
-    }
-
-    /* ── Devices section ── */
-    .devices-row {
       padding: 10px 12px;
-      border-bottom: 1px solid var(--border);
-      font-size: 10px;
-      color: var(--muted);
-    }
-
-    .device-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 3px 8px;
-      margin: 4px 4px 0 0;
-      font-size: 10px;
-    }
-
-    /* ── Welcome screen ── */
-    .welcome {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100%;
-      gap: 12px;
-      color: var(--muted);
-    }
-
-    .welcome-logo {
-      font-family: 'Syne', sans-serif;
-      font-size: 42px;
-      font-weight: 800;
-      background: linear-gradient(135deg, var(--accent), var(--accent2));
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      letter-spacing: -0.02em;
-    }
-
-    .welcome p { font-size: 12px; max-width: 340px; text-align: center; line-height: 1.8; }
-
-    .spinner {
-      display: inline-block;
-      width: 10px; height: 10px;
-      border: 2px solid rgba(0,229,255,0.2);
-      border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
-    }
-
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* ── Files panel ── */
-    .files-section {
-      border-top: 1px solid var(--border);
-      padding: 10px 12px;
-      max-height: 200px;
-      overflow-y: auto;
-    }
-    .files-title {
       font-size: 10px;
       text-transform: uppercase;
       letter-spacing: 0.12em;
       color: var(--muted);
-      margin-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .devices-row {
+      padding: 8px 12px;
+      font-size: 10px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+    .device-chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: rgba(0,255,157,0.1); color: var(--green);
+      border-radius: 10px; padding: 2px 8px; font-size: 9px; font-weight: 700;
+    }
+    .steps-list { flex: 1; overflow-y: auto; padding: 8px; }
+    .step-item {
+      padding: 8px 10px;
+      border-radius: 5px;
+      margin-bottom: 4px;
+      background: var(--card);
+      border: 1px solid var(--border);
+    }
+    .step-header { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+    .step-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .step-dot.pending   { background: var(--muted); }
+    .step-dot.running   { background: var(--accent); animation: pulse 1s infinite; }
+    .step-dot.completed { background: var(--green); }
+    .step-dot.failed    { background: var(--warn); }
+    .step-agent { font-size: 10px; font-weight: 700; color: var(--accent2); }
+    .step-desc  { font-size: 10px; color: var(--muted); line-height: 1.4; }
+    .step-output { font-size: 10px; color: var(--text); margin-top: 4px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+
+    /* ── Files section ── */
+    .files-section {
+      border-top: 1px solid var(--border);
+      padding: 8px 10px;
+      max-height: 220px;
+      overflow-y: auto;
+    }
+    .files-title {
+      font-size: 10px; text-transform: uppercase;
+      letter-spacing: 0.1em; color: var(--muted);
+      margin-bottom: 7px;
+      display: flex; justify-content: space-between; align-items: center;
     }
     .file-item {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 7px 8px;
+      display: flex; align-items: center; gap: 5px;
+      padding: 5px 7px;
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 5px;
-      margin-bottom: 5px;
-      gap: 8px;
-    }
-    .file-name {
-      font-size: 10px;
-      color: var(--text);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      flex: 1;
+      margin-bottom: 4px;
     }
     .file-ext {
-      font-size: 9px;
-      padding: 1px 5px;
-      border-radius: 3px;
-      font-weight: 700;
-      text-transform: uppercase;
-      flex-shrink: 0;
+      font-size: 8px; padding: 1px 4px;
+      border-radius: 3px; font-weight: 700;
+      text-transform: uppercase; flex-shrink: 0;
     }
     .ext-pptx { background: rgba(255,107,53,0.15); color: #ff6b35; }
-    .ext-docx { background: rgba(0,229,255,0.12); color: var(--accent); }
-    .ext-xlsx { background: rgba(0,255,157,0.12); color: var(--green); }
-    .file-dl {
-      font-size: 9px;
-      color: var(--accent);
-      text-decoration: none;
-      white-space: nowrap;
+    .ext-docx { background: rgba(0,229,255,0.12);  color: var(--accent); }
+    .ext-xlsx { background: rgba(0,255,157,0.12);  color: var(--green); }
+    .file-name {
+      font-size: 10px; color: var(--text);
+      white-space: nowrap; overflow: hidden;
+      text-overflow: ellipsis; flex: 1;
+    }
+    .file-dl  { font-size: 10px; color: var(--accent); text-decoration: none; flex-shrink: 0; }
+    .file-dl:hover { text-decoration: underline; }
+    .file-x   { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 11px; flex-shrink: 0; font-family: inherit; padding: 0 2px; }
+    .file-x:hover { color: var(--warn); }
+
+    .panel-actions {
+      padding: 8px;
+      border-top: 1px solid var(--border);
       flex-shrink: 0;
     }
-    .file-dl:hover { text-decoration: underline; }
+
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
   </style>
 </head>
 <body>
 
-<div class="shell">
+<!-- Topbar -->
+<div class="topbar">
+  <div class="logo">
+    <div class="logo-icon">A</div>
+    <span class="logo-text">AetherAI</span>
+  </div>
+  <div class="topbar-right">
+    <span id="statusIndicator"><span class="status-dot"></span>ONLINE</span>
+    <span id="deviceCount">0 devices</span>
+    <span id="clockDisplay"></span>
+  </div>
+</div>
 
-  <!-- ── Header ── -->
-  <header>
-    <div class="logo">
-      <div class="logo-icon">⬡</div>
-      AetherAI
-    </div>
-    <div class="status-bar">
-      <span class="dot online" id="connStatus">CONNECTED</span>
-      <span id="deviceStatus">0 devices</span>
-      <span id="clockDisplay"></span>
-    </div>
-  </header>
+<!-- Layout -->
+<div class="layout">
 
-  <!-- ── Left sidebar: task history ── -->
+  <!-- Sidebar: recent tasks -->
   <aside class="sidebar">
-    <div class="sidebar-title">Recent Tasks</div>
-    <div id="taskList"></div>
+    <div class="sidebar-header">
+      <span>Recent Tasks</span>
+      <button class="clear-btn" onclick="deleteAllTasks()" title="Clear all tasks">✕ Clear all</button>
+    </div>
+    <div class="task-list" id="taskList">
+      <div style="color:var(--muted);font-size:10px;padding:10px">No tasks yet</div>
+    </div>
   </aside>
 
-  <!-- ── Main: log output + command input ── -->
-  <main class="main">
-    <div class="output" id="output">
-      <div class="welcome">
-        <div class="welcome-logo">AetherAI</div>
-        <p>Your personal AI agent system. Type a command below and press Enter to begin.</p>
+  <!-- Main: log output + input -->
+  <main>
+    <div class="output-area" id="outputArea">
+      <div class="log-entry">
+        <span class="log-time"></span>
+        <span class="log-msg system">AetherAI Stage 3 ready. Built by Patrick Perez.</span>
       </div>
     </div>
     <div class="input-row">
       <span class="prompt">aether&gt;</span>
-      <input type="text" id="cmdInput" placeholder="Create a presentation about renewable energy..." autocomplete="off" />
-      <button class="btn" id="sendBtn" onclick="sendCommand()">Run</button>
-      <button class="btn danger" id="stopBtn" onclick="stopTask()" style="display:none">Stop</button>
+      <input class="cmd-input" id="cmdInput"
+             placeholder="Create a presentation about... / Research... / Open Chrome..."
+             autocomplete="off" />
+      <button class="btn primary" id="sendBtn" onclick="sendCommand()">Run</button>
+      <button class="btn danger"  id="stopBtn" onclick="stopTask()" style="display:none">Stop</button>
     </div>
   </main>
 
-  <!-- ── Right panel: active task detail ── -->
+  <!-- Right panel: task detail + files -->
   <aside class="panel">
     <div class="panel-header">Task Detail</div>
     <div class="devices-row" id="devicesRow">No devices connected</div>
     <div class="steps-list" id="stepsList">
-      <div style="color:var(--muted);padding:12px;font-size:11px">Select a task to see steps</div>
+      <div style="color:var(--muted);padding:10px;font-size:10px">Select a task to see steps</div>
     </div>
     <div class="files-section" id="filesSection">
-      <div class="files-title" style="display:flex;justify-content:space-between;align-items:center;">
+      <div class="files-title">
         <span>Generated Files</span>
-        <button onclick="deleteAllFiles()" style="background:none;border:none;color:var(--warn);font-size:9px;cursor:pointer;" title="Clear all files">✕ Clear</button>
+        <button class="clear-btn" onclick="deleteAllFiles()">✕ Clear</button>
       </div>
       <div id="filesList"><div style="color:var(--muted);font-size:10px">No files yet</div></div>
     </div>
     <div class="panel-actions" id="panelActions" style="display:none">
-      <button class="btn danger" style="width:100%" onclick="cancelActiveTask()">Cancel Task</button>
+      <button class="btn danger" style="width:100%;font-size:11px" onclick="cancelActiveTask()">Cancel Task</button>
     </div>
   </aside>
-
 </div>
 
 <script>
@@ -547,97 +359,130 @@ const API_KEY    = localStorage.getItem('aether_api_key') || '';
 const SESSION_ID = crypto.randomUUID();
 
 // ─── State ───────────────────────────────────────────────────────────────────
-let ws            = null;
-let activeTaskId  = null;
-let tasks         = {};
+let activeTaskId = null;
+let ws           = null;
 
 // ─── Clock ───────────────────────────────────────────────────────────────────
 function updateClock() {
   document.getElementById('clockDisplay').textContent =
-    new Date().toLocaleTimeString([], { hour12: false });
+    new Date().toLocaleTimeString('en-GB', { hour12: false });
 }
-setInterval(updateClock, 1000);
 updateClock();
+setInterval(updateClock, 1000);
 
-// ─── WebSocket (live updates) ────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function now() {
+  return new Date().toLocaleTimeString('en-GB', { hour12: false });
+}
+function timeAgo(iso) {
+  if (!iso) return '';
+  const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (diff < 60)  return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  return `${Math.floor(diff/3600)}h ago`;
+}
+
+// ─── Log output ──────────────────────────────────────────────────────────────
+function log(msg, cls = 'info') {
+  const area = document.getElementById('outputArea');
+  const el   = document.createElement('div');
+  el.className = 'log-entry';
+  el.innerHTML = `<span class="log-time">[${now()}]</span><span class="log-msg ${cls}">${escHtml(msg)}</span>`;
+  area.appendChild(el);
+  area.scrollTop = area.scrollHeight;
+}
+function clearOutput() {
+  document.getElementById('outputArea').innerHTML = '';
+}
+
+// ─── WebSocket ────────────────────────────────────────────────────────────────
 function connectWS() {
   ws = new WebSocket(`${WS_BASE}/ws/ui/${SESSION_ID}`);
-
-  ws.onopen = () => {
-    document.getElementById('connStatus').className = 'dot online';
-    document.getElementById('connStatus').textContent = 'ONLINE';
-  };
-
+  ws.onopen  = () => { document.getElementById('statusIndicator').innerHTML = '<span class="status-dot"></span>ONLINE'; };
   ws.onclose = () => {
-    document.getElementById('connStatus').className = 'dot';
-    document.getElementById('connStatus').textContent = 'OFFLINE';
+    document.getElementById('statusIndicator').innerHTML = '<span class="status-dot offline"></span>OFFLINE';
     setTimeout(connectWS, 3000);
   };
-
-  ws.onmessage = (e) => {
+  ws.onmessage = e => {
     const data = JSON.parse(e.data);
-    if (data.type === 'task_update') handleTaskUpdate(data);
-    if (data.type === 'device_connected') refreshDevices();
+    if (data.type === 'task_update')        handleTaskUpdate(data);
+    if (data.type === 'device_connected')   refreshDevices();
+    if (data.type === 'device_disconnected') refreshDevices();
     if (data.type === 'ping') ws.send(JSON.stringify({ type: 'pong' }));
   };
 }
 connectWS();
 
-// ─── Task updates ────────────────────────────────────────────────────────────
+// ─── Task updates ─────────────────────────────────────────────────────────────
 function handleTaskUpdate(data) {
   const { task_id, status, message, agent, current_step, result, plan } = data;
 
-  if (plan) renderPlan(plan);
-
+  if (plan)    renderPlan(plan);
   if (message) log(message, agentClass(agent || status));
 
+  // Chat response — show nicely inline
   if (data.is_chat && result) {
-    log('💬 ' + result, 'result');
-    sendBtn.disabled = false; stopBtn.style.display = 'none'; sendBtn.style.display = '';
-    cmdInput.disabled = false;
+    const area = document.getElementById('outputArea');
+    const el   = document.createElement('div');
+    el.className = 'log-entry';
+    el.innerHTML = `<span class="log-time">[${now()}]</span><span class="log-msg chat">💬 ${escHtml(result)}</span>`;
+    area.appendChild(el);
+    area.scrollTop = area.scrollHeight;
+    unlockInput();
+    loadTasks();
     return;
   }
-  if (result && status === 'completed') {
-    log('✓ ' + result, 'result');
-  }
+
+  if (result && status === 'completed') log('✓ ' + result, 'result');
 
   if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+    unlockInput();
     refreshFiles();
-    document.getElementById('stopBtn').style.display = 'none';
-    document.getElementById('sendBtn').disabled = false;
     if (activeTaskId === task_id) {
       document.getElementById('panelActions').style.display = 'none';
     }
   }
-
-  // Refresh task list
   loadTasks();
+  if (activeTaskId === task_id) loadSteps(task_id);
 }
 
 function agentClass(hint) {
   if (!hint) return 'info';
   if (hint.includes('agent')) return 'agent';
-  if (hint === 'planning') return 'system';
-  if (hint === 'completed') return 'result';
-  if (hint === 'failed') return 'error';
+  if (hint === 'planning')    return 'system';
+  if (hint === 'completed')   return 'result';
+  if (hint === 'failed')      return 'error';
   return 'info';
+}
+
+function unlockInput() {
+  document.getElementById('sendBtn').disabled = false;
+  document.getElementById('sendBtn').style.display = '';
+  document.getElementById('stopBtn').style.display  = 'none';
+  document.getElementById('cmdInput').disabled = false;
 }
 
 // ─── Send command ─────────────────────────────────────────────────────────────
 async function sendCommand() {
   const input = document.getElementById('cmdInput');
-  const cmd = input.value.trim();
+  const cmd   = input.value.trim();
   if (!cmd) return;
 
   input.value = '';
   document.getElementById('sendBtn').disabled = true;
   document.getElementById('stopBtn').style.display = 'inline-block';
+  document.getElementById('cmdInput').disabled = false; // keep input usable for chat
 
   clearOutput();
   log(`> ${cmd}`, 'system');
 
   try {
-    const res = await fetch(`${BASE_URL}/command`, {
+    const res  = await fetch(`${BASE_URL}/command`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Api-Key': API_KEY },
       body: JSON.stringify({ command: cmd, source: 'web' }),
@@ -648,161 +493,142 @@ async function sendCommand() {
     document.getElementById('panelActions').style.display = 'flex';
     loadTasks();
   } catch (err) {
-    log('Connection error: ' + err.message, 'error');
-    document.getElementById('sendBtn').disabled = false;
-    document.getElementById('stopBtn').style.display = 'none';
+    log(`Connection error: ${err}`, 'error');
+    unlockInput();
   }
 }
 
+// ─── Stop task ────────────────────────────────────────────────────────────────
 async function stopTask() {
   if (!activeTaskId) return;
   await fetch(`${BASE_URL}/task/${activeTaskId}/cancel`, { method: 'POST' });
-  log('Stop signal sent.', 'system');
+  log('Task cancellation requested.', 'system');
+}
+async function cancelActiveTask() { await stopTask(); }
+
+// ─── Plan visualization ───────────────────────────────────────────────────────
+function renderPlan(plan) {
+  const list = document.getElementById('stepsList');
+  list.innerHTML = plan.map(s => `
+    <div class="step-item" id="step-${s.step}">
+      <div class="step-header">
+        <div class="step-dot pending" id="dot-${s.step}"></div>
+        <span class="step-agent">${escHtml(s.agent)}</span>
+      </div>
+      <div class="step-desc">${escHtml(s.description)}</div>
+    </div>`).join('');
 }
 
-async function cancelActiveTask() {
-  await stopTask();
+async function loadSteps(taskId) {
+  try {
+    const res  = await fetch(`${BASE_URL}/task/${taskId}`);
+    const data = await res.json();
+    if (!data.steps || !data.steps.length) return;
+
+    const list = document.getElementById('stepsList');
+    list.innerHTML = data.steps.map(s => `
+      <div class="step-item">
+        <div class="step-header">
+          <div class="step-dot ${s.status || 'pending'}"></div>
+          <span class="step-agent">${escHtml(s.agent)}</span>
+        </div>
+        <div class="step-desc">${escHtml(s.description)}</div>
+        ${s.output ? `<div class="step-output">${escHtml(s.output)}</div>` : ''}
+      </div>`).join('');
+  } catch {}
 }
 
 // ─── Task list ────────────────────────────────────────────────────────────────
 async function loadTasks() {
   try {
-    const res = await fetch(`${BASE_URL}/tasks`);
-    const list = await res.json();
-    renderTaskList(list);
-  } catch {}
-}
+    const res   = await fetch(`${BASE_URL}/tasks?limit=30`);
+    const data  = await res.json();
+    const tasks = data.tasks || data || [];
+    const list  = document.getElementById('taskList');
 
-function renderTaskList(list) {
-  const el = document.getElementById('taskList');
-  el.innerHTML = '';
-  list.forEach(t => {
-    const div = document.createElement('div');
-    div.className = `task-item${t.task_id === activeTaskId ? ' active' : ''}`;
-    div.innerHTML = `
-      <div class="task-cmd">${escHtml(t.command)}</div>
-      <div class="task-meta">
-        <span>${timeAgo(t.created_at)}</span>
-        <span class="badge badge-${t.status}">${t.status}</span>
-      </div>`;
-    div.onclick = () => loadTaskDetail(t.task_id);
-    el.appendChild(div);
-  });
-}
-
-async function loadTaskDetail(taskId) {
-  activeTaskId = taskId;
-  try {
-    const res = await fetch(`${BASE_URL}/task/${taskId}`);
-    const task = await res.json();
-    renderSteps(task.steps || []);
-    const running = ['pending','planning','running'].includes(task.status);
-    document.getElementById('panelActions').style.display = running ? 'flex' : 'none';
-  } catch {}
-}
-
-function renderPlan(plan) {
-  const steps = plan.map((s, i) => ({
-    step_number: s.step || i + 1,
-    agent: s.agent,
-    description: s.description,
-    status: 'pending',
-  }));
-  renderSteps(steps);
-}
-
-function renderSteps(steps) {
-  const el = document.getElementById('stepsList');
-  el.innerHTML = '';
-  steps.forEach(s => {
-    const icon = { pending: '○', running: '◌', completed: '✓', failed: '✗' }[s.status] || '○';
-    el.innerHTML += `
-      <div class="step ${s.status}">
-        <div class="step-icon ${s.status}">${icon}</div>
-        <div class="step-info">
-          <div class="step-agent">${s.agent || ''}</div>
-          <div class="step-desc">${escHtml(s.description || '')}</div>
-          ${s.output ? `<div class="step-output">${escHtml(s.output)}</div>` : ''}
-        </div>
-      </div>`;
-  });
-}
-
-// ─── Devices ──────────────────────────────────────────────────────────────────
-async function refreshDevices() {
-  try {
-    const res = await fetch(`${BASE_URL}/devices`);
-    const data = await res.json();
-    const devices = data.devices || [];
-    const el = document.getElementById('deviceStatus');
-    el.textContent = `${devices.length} device${devices.length !== 1 ? 's' : ''}`;
-
-    const row = document.getElementById('devicesRow');
-    if (devices.length === 0) {
-      row.textContent = 'No devices connected';
-    } else {
-      row.innerHTML = devices.map(d =>
-        `<span class="device-chip"><span class="dot online"></span>${d.device_id}</span>`
-      ).join('');
+    if (!tasks.length) {
+      list.innerHTML = '<div style="color:var(--muted);font-size:10px;padding:10px">No tasks yet</div>';
+      return;
     }
+
+    list.innerHTML = tasks.map(t => `
+      <div class="task-card ${t.task_id === activeTaskId ? 'active' : ''}"
+           onclick="selectTask('${t.task_id}')">
+        <div class="task-row">
+          <div class="task-title" style="flex:1">${escHtml(t.command)}</div>
+          <button class="task-del-btn" onclick="deleteTask('${t.task_id}',event)" title="Delete">✕</button>
+        </div>
+        <div class="task-meta">
+          <span>${timeAgo(t.created_at)}</span>
+          <span class="task-badge ${t.status}">${t.status}</span>
+        </div>
+      </div>`).join('');
   } catch {}
 }
-refreshDevices();
-setInterval(refreshDevices, 10000);
-setInterval(loadTasks, 5000);
+loadTasks();
+setInterval(loadTasks, 10000);
 
-// ─── Output log ───────────────────────────────────────────────────────────────
-function log(msg, type = 'info') {
-  const output = document.getElementById('output');
-  const welcome = output.querySelector('.welcome');
-  if (welcome) welcome.remove();
-
-  const entry = document.createElement('div');
-  entry.className = 'log-entry';
-  const now = new Date().toLocaleTimeString([], { hour12: false });
-  entry.innerHTML = `<span class="log-time">[${now}]</span><span class="log-msg ${type}">${escHtml(msg)}</span>`;
-  output.appendChild(entry);
-  output.scrollTop = output.scrollHeight;
+function selectTask(taskId) {
+  activeTaskId = taskId;
+  loadSteps(taskId);
+  loadTasks();
 }
 
-function clearOutput() {
-  document.getElementById('output').innerHTML = '';
+// ─── Delete functions ─────────────────────────────────────────────────────────
+async function deleteTask(taskId, e) {
+  e.stopPropagation();
+  await fetch(`${BASE_URL}/task/${taskId}`, { method: 'DELETE' });
+  if (activeTaskId === taskId) {
+    activeTaskId = null;
+    document.getElementById('stepsList').innerHTML =
+      '<div style="color:var(--muted);padding:10px;font-size:10px">Select a task to see steps</div>';
+    document.getElementById('panelActions').style.display = 'none';
+  }
+  loadTasks();
+}
+
+async function deleteAllTasks() {
+  if (!confirm('Delete ALL tasks? This cannot be undone.')) return;
+  await fetch(`${BASE_URL}/tasks/all`, { method: 'DELETE' });
+  activeTaskId = null;
   document.getElementById('stepsList').innerHTML =
-    '<div style="color:var(--muted);padding:12px;font-size:11px">Waiting for plan...</div>';
+    '<div style="color:var(--muted);padding:10px;font-size:10px">Select a task to see steps</div>';
+  document.getElementById('panelActions').style.display = 'none';
+  loadTasks();
 }
 
-// ─── Utils ────────────────────────────────────────────────────────────────────
-function escHtml(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+async function deleteFile(filename, e) {
+  e.stopPropagation();
+  await fetch(`${BASE_URL}/files/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+  refreshFiles();
 }
 
-function timeAgo(iso) {
-  const diff = (Date.now() - new Date(iso + 'Z').getTime()) / 1000;
-  if (diff < 60) return 'just now';
-  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
-  return `${Math.floor(diff/86400)}d ago`;
+async function deleteAllFiles() {
+  if (!confirm('Delete ALL generated files?')) return;
+  await fetch(`${BASE_URL}/files/all/clear`, { method: 'DELETE' });
+  refreshFiles();
 }
 
-
-// ─── Files ───────────────────────────────────────────────────────────────────
+// ─── Files panel ─────────────────────────────────────────────────────────────
 async function refreshFiles() {
   try {
-    const res = await fetch(`${BASE_URL}/files`);
-    const data = await res.json();
+    const res   = await fetch(`${BASE_URL}/files`);
+    const data  = await res.json();
     const files = data.files || [];
-    const el = document.getElementById('filesList');
-    if (files.length === 0) {
+    const el    = document.getElementById('filesList');
+
+    if (!files.length) {
       el.innerHTML = '<div style="color:var(--muted);font-size:10px">No files yet</div>';
       return;
     }
+
     el.innerHTML = files.map(f => {
       const ext = f.name.split('.').pop().toLowerCase();
-      const extClass = `ext-${ext}`;
       return `<div class="file-item">
-        <span class="file-ext ${extClass}">${ext}</span>
+        <span class="file-ext ext-${ext}">${ext}</span>
         <span class="file-name" title="${escHtml(f.name)}">${escHtml(f.name)}</span>
-        <a class="file-dl" href="${BASE_URL}${f.url}" download="${escHtml(f.name)}">↓ Download</a>
+        <a class="file-dl" href="${BASE_URL}${f.url}" download="${escHtml(f.name)}">↓</a>
+        <button class="file-x" onclick="deleteFile('${escHtml(f.name)}',event)" title="Delete">✕</button>
       </div>`;
     }).join('');
   } catch {}
@@ -810,13 +636,31 @@ async function refreshFiles() {
 refreshFiles();
 setInterval(refreshFiles, 8000);
 
+// ─── Devices ─────────────────────────────────────────────────────────────────
+async function refreshDevices() {
+  try {
+    const res  = await fetch(`${BASE_URL}/devices`);
+    const data = await res.json();
+    const devs = data.devices || [];
+    const row  = document.getElementById('devicesRow');
+    const cnt  = document.getElementById('deviceCount');
+
+    if (!devs.length) {
+      row.textContent = 'No devices connected';
+      cnt.textContent = '0 devices';
+    } else {
+      row.innerHTML = devs.map(d => `<span class="device-chip">⬡ ${escHtml(d)}</span>`).join(' ');
+      cnt.textContent = `${devs.length} device${devs.length>1?'s':''}`;
+    }
+  } catch {}
+}
+refreshDevices();
+setInterval(refreshDevices, 15000);
+
 // ─── Keyboard shortcut ────────────────────────────────────────────────────────
 document.getElementById('cmdInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') sendCommand();
 });
-
-// ─── Initial load ─────────────────────────────────────────────────────────────
-loadTasks();
 </script>
 </body>
 </html>

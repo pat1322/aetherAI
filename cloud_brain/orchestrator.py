@@ -55,6 +55,18 @@ class Orchestrator:
 
             # ── TASK MODE: plan + execute ─────────────────────────────────
             plan = await self.qwen.plan_task(command)
+
+            # Deduplicate: if document_agent appears more than once, keep only the LAST call
+            # (the last one has the most context from previous research steps)
+            doc_indices = [i for i, s in enumerate(plan) if s.get('agent') == 'document_agent']
+            if len(doc_indices) > 1:
+                keep = doc_indices[-1]
+                plan = [s for i, s in enumerate(plan) if s.get('agent') != 'document_agent' or i == keep]
+                # Re-number steps
+                for idx, step in enumerate(plan, 1):
+                    step['step'] = idx
+                logger.info(f"[{task_id}] Deduplicated document_agent calls to 1")
+
             logger.info(f"[{task_id}] Plan: {len(plan)} steps")
 
             for step in plan:
