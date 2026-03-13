@@ -55,7 +55,6 @@
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
     .status-dot.offline { background: var(--warn); animation: none; }
 
-    /* Busy bar — thin animated stripe under topbar when a task is running */
     .busy-bar {
       height: 2px; background: var(--bg2); flex-shrink: 0; overflow: hidden;
     }
@@ -68,7 +67,6 @@
     @keyframes sweep { from { transform: translateX(-200%) } to { transform: translateX(500%) } }
     .busy-bar-inner.active { display: block; }
 
-    /* Settings gear button */
     .gear-btn {
       background: none; border: none; color: var(--muted); cursor: pointer;
       font-size: 14px; padding: 4px; border-radius: 4px; font-family: inherit;
@@ -146,7 +144,8 @@
     .log-msg  { flex: 1; white-space: pre-wrap; word-break: break-word; min-width: 0; }
     .log-msg.system  { color: var(--accent); }
     .log-msg.agent   { color: var(--accent2); }
-    .log-msg.result  { color: var(--green); }
+    /* FIX 3: Changed result color from var(--green) to var(--text) for readability on long outputs */
+    .log-msg.result  { color: var(--text); }
     .log-msg.error   { color: var(--warn); }
     .log-msg.info    { color: var(--text); }
     .log-msg.chat {
@@ -163,13 +162,11 @@
     .log-msg.chat h1, .log-msg.chat h2, .log-msg.chat h3 { color: var(--accent); margin: 8px 0 4px; }
     .log-msg.chat hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
     .log-msg.chat p  { margin-bottom: 4px; }
-    .log-msg.result white-space: normal;
-    .log-msg.result strong { color: #fff; font-weight: 700; }
+    .log-msg.result strong { color: var(--green); font-weight: 700; }
     .log-msg.result a { color: var(--accent); text-decoration: underline; }
     .log-msg.result ul, .log-msg.result ol { padding-left: 18px; margin: 4px 0; }
     .log-msg.result li { margin-bottom: 3px; }
 
-    /* Copy-result button shown on hover */
     .log-entry:hover .copy-result-btn { opacity: 1; }
     .copy-result-btn {
       background: none; border: 1px solid var(--border); color: var(--muted);
@@ -405,7 +402,7 @@
     <div class="output-area" id="outputArea">
       <div class="log-entry">
         <span class="log-time"></span>
-        <span class="log-msg system">AetherAI Stage 4 ready. Built by Patrick Perez.</span>
+        <span class="log-msg system">AetherAI Stage 5 ready. Built by Patrick Perez.</span>
       </div>
     </div>
     <div class="input-row">
@@ -474,15 +471,12 @@ let activeTaskId = null;
 let ws           = null;
 let taskRunning  = false;
 
-/* History for ↑/↓ navigation */
 let cmdHistory   = JSON.parse(localStorage.getItem('aether_cmd_history') || '[]');
 let historyIdx   = -1;
-let historyDraft = '';   // saves current input when user presses ↑
+let historyDraft = '';
 
-/* Duplicate-output guard */
 let lastShownOutput = null;
 
-/* Visibility-aware polling — pause when tab is hidden */
 let tasksInterval, filesInterval, devicesInterval;
 
 /* ── Clock ──────────────────────────────────────────────────────────────── */
@@ -502,46 +496,44 @@ function escHtml(s) {
 function now() {
   return new Date().toLocaleTimeString('en-GB', { hour12: false });
 }
+
+/* FIX 1: Append 'Z' to UTC timestamps stored by SQLite (no timezone suffix)
+   so the browser interprets them as UTC, not local time. Without this fix
+   the displayed age is offset by the local UTC offset (e.g. +8 h in Manila). */
 function timeAgo(iso) {
   if (!iso) return '';
-  const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
+  const dateStr = iso.endsWith('Z') ? iso : iso + 'Z';
+  const diff = Math.floor((Date.now() - new Date(dateStr)) / 1000);
   if (diff < 60)   return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
   return `${Math.floor(diff/3600)}h ago`;
 }
+
 function fmtSize(kb) {
   if (kb < 1024) return `${kb} KB`;
   return `${(kb / 1024).toFixed(1)} MB`;
 }
 
-/* ── Markdown renderer (lightweight, no deps) ───────────────────────────── */
+/* ── Markdown renderer ───────────────────────────────────────────────────── */
 function renderMarkdown(text) {
   let s = escHtml(text);
 
-  /* Fenced code blocks → inline code (strip fences, the orchestrator strips
-     the outer [CODE_BLOCK] markers but sometimes Qwen leaks fences into
-     result text) */
   s = s.replace(/```[\w]*\n?([\s\S]*?)```/g,
     '<code style="background:#1a2233;padding:2px 5px;border-radius:3px;font-family:inherit;display:inline-block">$1</code>');
 
-  /* Headings */
   s = s.replace(/^### (.+)$/gm, '<h3>$1</h3>');
   s = s.replace(/^## (.+)$/gm,  '<h2>$1</h2>');
   s = s.replace(/^# (.+)$/gm,   '<h1>$1</h1>');
 
-  /* Bold + italic */
   s = s.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
   s = s.replace(/\*\*(.+?)\*\*/g,     '<strong>$1</strong>');
   s = s.replace(/\*(.+?)\*/g,         '<em>$1</em>');
 
-  /* Inline code */
   s = s.replace(/`([^`]+)`/g,
     '<code style="background:#1a2233;padding:1px 5px;border-radius:3px;font-family:inherit">$1</code>');
 
-  /* Horizontal rules */
   s = s.replace(/^[-*]{3,}$/gm, '<hr>');
 
-  /* Unordered lists — group consecutive bullet lines into one <ul> */
   s = s.replace(/((?:^[•\-] .+$\n?)+)/gm, match => {
     const items = match.trim().split('\n')
       .map(l => `<li>${l.replace(/^[•\-] /, '')}</li>`)
@@ -549,7 +541,6 @@ function renderMarkdown(text) {
     return `<ul>${items}</ul>\n`;
   });
 
-  /* Ordered lists */
   s = s.replace(/((?:^\d+\. .+$\n?)+)/gm, match => {
     const items = match.trim().split('\n')
       .map(l => `<li>${l.replace(/^\d+\. /, '')}</li>`)
@@ -557,20 +548,16 @@ function renderMarkdown(text) {
     return `<ol>${items}</ol>\n`;
   });
 
-  /* Links [text](url) */
   s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
     '<a href="$2" target="_blank" rel="noopener">$1</a>');
 
-  /* Plain URLs */
   s = s.replace(/(https?:\/\/[^\s<"]+)/g,
     '<a href="$1" target="_blank" rel="noopener">$1</a>');
 
-  /* Paragraphs */
   s = s.replace(/\n\n+/g, '</p><p>');
   s = '<p>' + s + '</p>';
   s = s.replace(/\n/g, '<br>');
 
-  /* Clean up empty / redundant paragraphs */
   s = s.replace(/<p>\s*<\/p>/g, '');
   s = s.replace(/<p>(<(?:h[1-3]|ul|ol|hr)[^>]*)>/g, '$1>');
   s = s.replace(/<\/(h[1-3]|ul|ol)><\/p>/g, '</$1>');
@@ -644,7 +631,6 @@ function copyCode(id) {
 }
 
 function copyResult(btnId, rawText) {
-  /* rawText arrives HTML-escaped; decode before writing to clipboard */
   const txt = rawText.replace(/&amp;/g,'&').replace(/&lt;/g,'<')
                      .replace(/&gt;/g,'>').replace(/&quot;/g,'"');
   navigator.clipboard.writeText(txt).then(() => {
@@ -763,7 +749,6 @@ async function sendCommand() {
   const cmd   = input.value.trim();
   if (!cmd) return;
 
-  /* Add to history (deduplicate consecutive) */
   if (cmdHistory[0] !== cmd) {
     cmdHistory.unshift(cmd);
     if (cmdHistory.length > 50) cmdHistory.pop();
@@ -847,7 +832,6 @@ async function loadSteps(taskId) {
         </div>`;
     }).join('');
 
-    /* Auto-scroll to the running step */
     const running = list.querySelector('.is-running');
     if (running) running.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   } catch {}
@@ -885,10 +869,69 @@ async function loadTasks() {
 loadTasks();
 tasksInterval = setInterval(loadTasks, 10000);
 
-function selectTask(taskId) {
+/* FIX 10: Reconstruct output area from stored step data when clicking an old task.
+   Previously selectTask only updated the right-panel steps list; the main output
+   area stayed blank for historical tasks. Now we fetch the full task + steps and
+   replay each completed step's output into the output area. */
+async function selectTask(taskId) {
   activeTaskId = taskId;
-  loadSteps(taskId);
-  loadTasks();
+  loadTasks();  // refresh sidebar highlight
+
+  try {
+    const res = await fetch(`${BASE_URL}/task/${taskId}`);
+    if (!res.ok) return;
+    const task = await res.json();
+
+    // ── Render steps in right panel ──────────────────────────────────────
+    if (task.steps?.length) {
+      const list = document.getElementById('stepsList');
+      list.innerHTML = task.steps.map(s => {
+        const outputHtml = s.output
+          ? `<div class="step-output">${escHtml(s.output.slice(0, 120))}</div>`
+          : '';
+        return `
+          <div class="step-item">
+            <div class="step-header">
+              <div class="step-dot ${s.status || 'pending'}"></div>
+              <span class="step-agent">${escHtml(s.agent)}</span>
+            </div>
+            <div class="step-desc">${escHtml(s.description)}</div>
+            ${outputHtml}
+          </div>`;
+      }).join('');
+    }
+
+    // Only reconstruct output for finished tasks (running tasks use live WS)
+    if (task.status === 'running' || task.status === 'planning') return;
+
+    // ── Reconstruct output area ──────────────────────────────────────────
+    clearOutput();
+    log(`> ${task.command}`, 'system');
+    log(`Task ${taskId.slice(0,8)}… — ${task.status}`, 'info');
+
+    if (task.steps) {
+      for (const step of task.steps) {
+        if (step.output && step.status === 'completed') {
+          log(`${step.agent}: ${step.description}`, 'agent');
+          logMarkdown('✓ ' + step.output, 'result');
+          lastShownOutput = step.output;
+        }
+      }
+    }
+
+    // Show final result if it wasn't already shown via a step
+    if (task.result && task.status === 'completed') {
+      const rt = task.result.trim();
+      const lt = (lastShownOutput || '').trim();
+      const isDup = lt && (rt === lt || (lt.length > 40 && rt.startsWith(lt.slice(0, 40))));
+      if (!isDup) logMarkdown('✓ ' + task.result, 'result');
+    } else if (task.result && task.status === 'failed') {
+      log(`Failed: ${task.result}`, 'error');
+    }
+
+  } catch (e) {
+    console.error('selectTask error:', e);
+  }
 }
 
 async function deleteTask(taskId, e) {
@@ -899,6 +942,7 @@ async function deleteTask(taskId, e) {
     document.getElementById('stepsList').innerHTML =
       '<div style="color:var(--muted);padding:10px;font-size:10px">Select a task to see steps</div>';
     document.getElementById('panelActions').style.display = 'none';
+    clearOutput();
   }
   loadTasks();
 }
@@ -910,6 +954,7 @@ function confirmDeleteAllTasks() {
     document.getElementById('stepsList').innerHTML =
       '<div style="color:var(--muted);padding:10px;font-size:10px">Select a task to see steps</div>';
     document.getElementById('panelActions').style.display = 'none';
+    clearOutput();
     loadTasks();
   });
 }
@@ -981,7 +1026,6 @@ async function refreshDevices() {
 refreshDevices();
 devicesInterval = setInterval(refreshDevices, 15000);
 
-/* Pause polling when tab is hidden, resume on focus */
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { loadTasks(); refreshFiles(); refreshDevices(); }
 });
@@ -1028,7 +1072,6 @@ document.getElementById('cmdInput').addEventListener('keydown', e => {
     return;
   }
 
-  /* ↑ / ↓ — command history */
   if (e.key === 'ArrowUp') {
     e.preventDefault();
     if (historyIdx === -1) historyDraft = e.target.value;
@@ -1050,7 +1093,6 @@ document.getElementById('cmdInput').addEventListener('keydown', e => {
     return;
   }
 
-  /* Escape — clear input */
   if (e.key === 'Escape') {
     e.target.value = '';
     historyIdx = -1;
@@ -1058,7 +1100,6 @@ document.getElementById('cmdInput').addEventListener('keydown', e => {
   }
 });
 
-/* Ctrl+L — clear output */
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
     e.preventDefault();

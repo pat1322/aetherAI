@@ -1,33 +1,19 @@
 """
-AetherAI — Document Agent  (Stage 4 — hardened)
+AetherAI — Document Agent  (Stage 4 — hardened, patched)
 
-WHAT'S NEW vs the previous version
-────────────────────────────────────
-1. Unsplash image fix
-   source.unsplash.com is deprecated. Now uses the open featured endpoint
-   with Picsum Photos as a reliable fallback (no key, deterministic seed).
+Fix applied
+───────────
+FIX 9  PPTX slides were getting irrelevant stock photos (Golden Gate Bridge
+       for a Roman Empire presentation) because image keywords were constructed
+       by naively joining the slide title with the topic, producing long phrases
+       that Unsplash / Picsum couldn't interpret meaningfully.
 
-2. Image download pool (asyncio.Semaphore, max 3 concurrent)
-   Prevents rate-limiting and connection exhaustion.
-
-3. Smarter PPTX layout engine  (follows SKILL.md guidance)
-   Four distinct layouts: TITLE_CARD, IMAGE_RIGHT, ACCENT_LEFT, STAT_CARD.
-   - No accent lines under titles (hallmark of AI-generated slides)
-   - Size contrast: 28-44pt titles, 15pt body
-   - 0.5" margins, breathing room
-   - Dark title + closing, light content ("sandwich")
-   - Stat callout block on STAT_CARD slides when data available
-
-4. Better theme palettes  (aligned to SKILL.md colour table)
-   Midnight Executive, Coral Energy, Ocean Gradient, Warm Terracotta,
-   Cherry Bold, Teal Trust — each with header_font + body_font pairing.
-
-5. Font pairing  (SKILL.md typography table)
-   Georgia/Calibri, Arial Black/Arial, Trebuchet/Calibri, etc.
-
-6. Word + Excel unchanged in logic; font pairing applied consistently.
-
-7. CancelledError pass-through.
+       New approach:
+         • _build_image_query() strips English stop-words, de-duplicates tokens,
+           and keeps the 4 most meaningful (longest) content words.
+         • fetch_images_for_slides() now uses per-slide keyword construction
+           so each slide gets a targeted query rather than a generic topic dump.
+         • The Unsplash URL format is kept the same; keyword quality is the fix.
 """
 
 import asyncio
@@ -63,11 +49,43 @@ HEADERS = {
 
 _IMAGE_SEM = asyncio.Semaphore(3)
 
+# FIX 9: Stop-words to strip before building image search queries
+_STOP_WORDS = {
+    "the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "for",
+    "with", "by", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "its", "their", "our",
+    # Generic slide filler words that add no image-search value
+    "overview", "introduction", "conclusion", "summary", "impact",
+    "effects", "analysis", "history", "about", "what", "how", "why",
+    "when", "key", "main", "top", "role", "rise", "fall", "age",
+    "era", "period", "chapter", "section", "part", "slide",
+}
 
-def safe_filename(text: str, ext: str) -> str:
-    slug = re.sub(r"[^\w\s-]", "", text).strip()
-    slug = re.sub(r"[\s_-]+", "_", slug)[:50]
-    return f"{slug}_{datetime.now().strftime('%H%M%S')}.{ext}"
+
+def _build_image_query(slide_title: str, topic: str) -> str:
+    """
+    Construct a focused image search query from a slide title and the overall
+    topic. Stop-words are removed, tokens are de-duplicated, and the 4 most
+    descriptive (longest) words are selected so Unsplash gets a specific,
+    meaningful query rather than a generic phrase dump.
+    """
+    combined = f"{slide_title} {topic}".lower()
+    # Extract word tokens (3+ chars, letters only)
+    words = re.findall(r'\b[a-z]{3,}\b', combined)
+    # Remove stop-words
+    filtered = [w for w in words if w not in _STOP_WORDS]
+    # De-duplicate while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for w in filtered:
+        if w not in seen:
+            seen.add(w)
+            unique.append(w)
+    # Pick the 4 most specific (longest) words for a sharper query
+    unique.sort(key=len, reverse=True)
+    query = " ".join(unique[:4])
+    return query or slide_title[:30]
 
 
 # ── Themes ────────────────────────────────────────────────────────────────────
@@ -156,8 +174,10 @@ def pick_theme() -> dict:
 
 async def fetch_image_bytes(keyword: str, slide_index: int, timeout: float = 8.0) -> Optional[bytes]:
     async with _IMAGE_SEM:
-        words = re.sub(r"[^\w\s]", "", keyword).split()[:3]
-        query = ",".join(w for w in words if len(w) > 2) or keyword[:30]
+        # The keyword arriving here is already cleaned by _build_image_query;
+        # just take the first 3 words to stay within Unsplash query limits.
+        words = keyword.split()[:3]
+        query = ",".join(words) or keyword[:30]
 
         # Attempt 1: Unsplash featured
         try:
@@ -169,7 +189,7 @@ async def fetch_image_bytes(keyword: str, slide_index: int, timeout: float = 8.0
         except Exception as e:
             logger.debug(f"[DocumentAgent] Unsplash failed '{query}': {e}")
 
-        # Attempt 2: Picsum (deterministic)
+        # Attempt 2: Picsum (deterministic fallback)
         try:
             seed = abs(hash(keyword)) % 1000 + slide_index
             async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=timeout) as c:
@@ -184,8 +204,12 @@ async def fetch_image_bytes(keyword: str, slide_index: int, timeout: float = 8.0
 
 
 async def fetch_images_for_slides(slides: list, topic: str) -> dict[int, bytes]:
+    # FIX 9: Use _build_image_query() for each slide instead of naively joining
+    # slide title + topic. This produces focused, stop-word-free queries.
     tasks = {
-        i: asyncio.create_task(fetch_image_bytes(f"{slide.get('title','')} {topic}", i))
+        i: asyncio.create_task(
+            fetch_image_bytes(_build_image_query(slide.get("title", ""), topic), i)
+        )
         for i, slide in enumerate(slides)
         if i % 2 == 0
     }
@@ -202,6 +226,12 @@ async def fetch_images_for_slides(slides: list, topic: str) -> dict[int, bytes]:
 
 
 # ── Agent ─────────────────────────────────────────────────────────────────────
+
+def safe_filename(text: str, ext: str) -> str:
+    slug = re.sub(r"[^\w\s-]", "", text).strip()
+    slug = re.sub(r"[\s_-]+", "_", slug)[:50]
+    return f"{slug}_{datetime.now().strftime('%H%M%S')}.{ext}"
+
 
 class DocumentAgent(BaseAgent):
     name        = "document_agent"
@@ -370,7 +400,7 @@ Include a stat on at least 3 slides. Make content rich and specific."""
         rect(ts, 0, 0, 13.33, 7.5, rgb(T["bg_dark"]))
         rect(ts, 0, 6.2, 13.33, 1.3, rgb(T["accent"]))
 
-        hero = await fetch_image_bytes(topic, 99, timeout=6.0)
+        hero = await fetch_image_bytes(_build_image_query(data.get("title", topic), topic), 99, timeout=6.0)
         if hero:
             try:
                 ts.shapes.add_picture(BytesIO(hero), Inches(6.5), Inches(0),

@@ -1,35 +1,21 @@
 """
-AetherAI — Browser Agent  (Stage 4 — hardened)
+AetherAI — Browser Agent  (Stage 4 — hardened, patched)
 
-WHAT'S NEW vs the previous version
-────────────────────────────────────
-1. Invidious instance rotation with live health-check cache
-   Pre-filters instances with a fast HEAD check (2.5 s timeout),
-   caches the first healthy one for 10 minutes, invalidates on failure.
+Fixes applied
+─────────────
+FIX 7  Hacker News commands like "Go to Hacker News and summarise top stories"
+       were being routed to _web_search (DuckDuckGo) rather than
+       _hacker_news_top() because the keyword check only ran inside
+       _run_workflow, but those commands sometimes arrived as action="search"
+       (not action="workflow") from the planner. Added a HN keyword check
+       directly in run() so _hacker_news_top() is always called regardless
+       of which action the planner emitted.
 
-2. Multi-source YouTube fallback chain
-   Invidious → Piped API → DuckDuckGo scrape.
-
-3. Retry wrapper for all HTTP calls
-   _get_with_retry() attempts up to MAX_HTTP_RETRIES times with
-   exponential back-off before raising.
-
-4. Smarter page-text extraction
-   Removes cookie banners, GDPR notices, and nav/footer clutter.
-   Deduplicates repeated paragraphs (common on news sites).
-
-5. Playwright availability check cached at import time.
-
-6. Better DDG search result parsing
-   Three fallback selectors handle DDG layout changes.
-
-7. Hacker News: unchanged (Firebase API works great).
-
-8. Workflow robustness
-   Per-step async timeout, cleaner JSON parsing, better done-detection.
-
-9. Consistent output format
-   All methods return "EMOJI **Title**\n\nbody" for clean context chaining.
+FIX 8  YouTube playlist and search-result links were broken when the Invidious
+       or Piped API returned a videoId that was actually a playlist token or
+       contained extra query params. Fixed _format_yt_results() to validate
+       that videoId is a proper 11-character video ID; if not, fall back to a
+       YouTube search results URL so the link always works.
 """
 
 import asyncio
@@ -51,8 +37,8 @@ logger = logging.getLogger(__name__)
 
 PAGE_TEXT_LIMIT  = 6000
 MAX_HTTP_RETRIES = 2
-HTTP_BACKOFF     = 1.5      # seconds; doubles each retry
-INVIDIOUS_TTL    = 600      # seconds to cache a working instance
+HTTP_BACKOFF     = 1.5
+INVIDIOUS_TTL    = 600
 
 HEADERS = {
     "User-Agent": (
@@ -84,6 +70,13 @@ NOISE_TAGS = [
     "[class*='cookie']", "[class*='gdpr']", "[class*='banner']",
     "[class*='popup']", "[id*='cookie']", "[id*='modal']",
 ]
+
+# ── Hacker News keyword set (FIX 7) ───────────────────────────────────────────
+
+HN_KEYWORDS = (
+    "hacker news", "hackernews", "ycombinator",
+    "news.ycombinator", "hn top", "top stories on hn",
+)
 
 # ── Playwright availability cached at import time ─────────────────────────────
 
@@ -194,11 +187,19 @@ class BrowserAgent(BaseAgent):
         action = parameters.get("action", "search")
         url    = parameters.get("url", "")
         query  = parameters.get("query", "") or context
+        goal   = parameters.get("goal", "") or query
 
         logger.info(
             f"[BrowserAgent] action={action} playwright={PLAYWRIGHT_AVAILABLE} "
             f"query={query[:60]}"
         )
+
+        # FIX 7: Intercept Hacker News regardless of whether the planner emitted
+        # action="search" or action="workflow". The keyword check now lives here
+        # in run() so it always fires before dispatching to _web_search.
+        goal_lc = goal.lower()
+        if any(k in goal_lc for k in HN_KEYWORDS):
+            return await self._hacker_news_top()
 
         if action == "youtube":
             return await self._youtube_search(parameters.get("query") or context)
@@ -309,7 +310,7 @@ class BrowserAgent(BaseAgent):
             return self._format_yt_results(query, data, source="Invidious") if data else None
         except Exception as e:
             logger.warning(f"[BrowserAgent] Invidious search failed: {e}")
-            _invidious_cache["url"] = None   # invalidate so next call re-probes
+            _invidious_cache["url"] = None
             return None
 
     async def _youtube_via_piped(self, query: str) -> Optional[str]:
@@ -342,17 +343,30 @@ class BrowserAgent(BaseAgent):
         results = []
         for item in items[:8]:
             title  = item.get("title", "")
-            vid_id = item.get("videoId", "")
+            vid_id = item.get("videoId", "").strip()
             author = item.get("author", "")
             views  = int(item.get("viewCount", 0) or 0)
             dur    = int(item.get("lengthSeconds", 0) or 0)
             mins, secs = divmod(dur, 60)
-            if title and vid_id:
-                results.append(
-                    f"• **{title}**\n"
-                    f"  {author} | {views:,} views | {mins}:{secs:02d}\n"
-                    f"  https://youtube.com/watch?v={vid_id}"
-                )
+
+            if not title or not vid_id:
+                continue
+
+            # FIX 8: Validate that vid_id is a proper YouTube video ID (11 chars,
+            # alphanumeric + - _). Playlist tokens, full URLs, or truncated IDs
+            # produce broken watch links. Fall back to a search results URL instead
+            # so the link always opens something useful.
+            if re.match(r'^[\w\-]{11}$', vid_id):
+                link = f"https://youtube.com/watch?v={vid_id}"
+            else:
+                # vid_id is malformed — use a search URL that always works
+                link = f"https://youtube.com/results?search_query={quote_plus(title)}"
+
+            results.append(
+                f"• **{title}**\n"
+                f"  {author} | {views:,} views | {mins}:{secs:02d}\n"
+                f"  {link}"
+            )
         if not results:
             return None
         tag = f" _(via {source})_" if source else ""
@@ -404,7 +418,8 @@ class BrowserAgent(BaseAgent):
     async def _run_workflow(self, goal: str, start_url: str = "") -> str:
         goal_lc = goal.lower()
 
-        if "hacker news" in goal_lc or "ycombinator" in goal_lc:
+        # FIX 7 (secondary guard): also check here for robustness
+        if any(k in goal_lc for k in HN_KEYWORDS):
             return await self._hacker_news_top()
         if "youtube" in goal_lc:
             q = re.sub(r".*(search|find|look up|on youtube)\s*", "", goal_lc).strip() or goal

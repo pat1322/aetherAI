@@ -1,13 +1,21 @@
 """
-AetherAI — Qwen API Client  (Stage 5)
-Uses Qwen (Alibaba DashScope) via the OpenAI-compatible endpoint.
+AetherAI — Qwen API Client  (Stage 5, patched)
 
-Stage 5 changes:
-  • classify_command(), plan_task(), and answer() all accept an optional
-    user_context string that carries the user's stored preferences.
-    This is injected by the orchestrator before every call so Qwen always
-    knows things like Patrick's preferred language, timezone, etc.
-  • memory_agent added to the planner's agent roster and routing rules.
+Fixes applied
+─────────────
+FIX 2  Strip trailing research_agent steps that Qwen appends after a terminal
+       agent (document_agent / coding_agent). _strip_trailing_steps() is called
+       after plan parsing and removes any tail of research steps that follow the
+       last document_agent or coding_agent step.
+
+FIX 4  "Screenshot" commands were being routed to browser_agent by the LLM
+       planner. Added SCREENSHOT_KEYWORDS hard-route that returns a single
+       automation_agent / screenshot_and_return step, bypassing Qwen entirely.
+
+FIX 7  "Go to Hacker News" was falling through to a generic google search
+       because the dest_match regex requires a dotted domain name ("hacker news"
+       has a space). Added an explicit HN keyword check in _build_browser_plan
+       that emits an action=workflow step before the regex runs.
 """
 
 import json
@@ -80,6 +88,14 @@ class QwenClient:
         "what is my", "what's my",
     ]
 
+    # FIX 4: Screenshot commands should always go to automation_agent, not browser_agent
+    SCREENSHOT_KEYWORDS = [
+        "take a screenshot", "take screenshot", "screenshot of my screen",
+        "capture screen", "capture my screen", "screenshot now",
+        "take a screen capture", "screen capture",
+        "take a screenshoot",   # common typo
+    ]
+
     def _is_browser_task(self, cmd_lc: str) -> bool:
         return any(k in cmd_lc for k in self.BROWSER_KEYWORDS)
 
@@ -93,6 +109,10 @@ class QwenClient:
         mentions_app     = any(app in cmd_lc for app in OFFICE_APPS)
         return starts_with_open and mentions_app
 
+    # FIX 4: Detect screenshot commands
+    def _is_screenshot_task(self, cmd_lc: str) -> bool:
+        return any(k in cmd_lc for k in self.SCREENSHOT_KEYWORDS)
+
     # ── Command classifier ────────────────────────────────────────────────────
 
     async def classify_command(self, command: str, user_context: str = "") -> str:
@@ -104,6 +124,9 @@ class QwenClient:
         if any(k in cmd_lc for k in self.CODE_KEYWORDS):
             return "task"
         if self._is_browser_task(cmd_lc):
+            return "task"
+        # FIX 4: Screenshot is always a task (PC control via automation_agent)
+        if self._is_screenshot_task(cmd_lc):
             return "task"
 
         ctx_block = f"\n\nUser context:\n{user_context}" if user_context else ""
@@ -133,6 +156,14 @@ class QwenClient:
                 "step": 1, "agent": "memory_agent",
                 "description": f"Memory operation: {command}",
                 "parameters": {"query": command},
+            }]
+
+        # FIX 4: Hard-route screenshot tasks to automation_agent
+        if self._is_screenshot_task(cmd_lc):
+            return [{
+                "step": 1, "agent": "automation_agent",
+                "description": "Take a screenshot of the screen",
+                "parameters": {"action": "screenshot_and_return"},
             }]
 
         # Hard-route browser tasks
@@ -171,16 +202,19 @@ class QwenClient:
 
             "document_agent — create DOWNLOADABLE .pptx/.docx/.xlsx files\n"
             '  {"type": "presentation"|"document"|"spreadsheet", "topic": "..."}\n'
-            "  Use ONLY when user wants a file to download. NEVER if user said 'open [app]'.\n\n"
+            "  Use ONLY when user wants a file to download. NEVER if user said 'open [app]'.\n"
+            "  ⚠️ document_agent is a TERMINAL step — do NOT add research steps after it.\n\n"
 
             "coding_agent — write and save code\n"
-            '  {"task": "...", "language": "python|c|c++|javascript|..."}\n\n'
+            '  {"task": "...", "language": "python|c|c++|javascript|..."}\n'
+            "  ⚠️ coding_agent is a TERMINAL step — do NOT add research steps after it.\n\n"
 
             "automation_agent — control the PC\n"
             '  new_file: {"action":"new_file","parameters":{"app":"notepad|word|excel|powerpoint|notepad++"}}\n'
             '  type:     {"action":"type","parameters":{"text":"__GENERATED_CONTENT__"}}\n'
             '  hotkey:   {"action":"hotkey","parameters":{"keys":["ctrl","s"]}}\n'
-            '  wait:     {"action":"wait","parameters":{"ms":2000}}\n\n'
+            '  wait:     {"action":"wait","parameters":{"ms":2000}}\n'
+            '  screenshot: {"action":"screenshot_and_return"}\n\n'
 
             "memory_agent — save/recall/forget user preferences and personal facts\n"
             '  {"query": "full user statement"}\n'
@@ -189,11 +223,12 @@ class QwenClient:
             "ROUTING RULES:\n"
             "1. YouTube/Wikipedia/Chrome/URLs → browser_agent\n"
             "2. 'open word/excel/ppt and write X' → automation_agent ONLY\n"
-            "3. 'create/make a presentation/doc/spreadsheet' → document_agent\n"
-            "4. 'write a python/C program' (no app) → coding_agent\n"
+            "3. 'create/make a presentation/doc/spreadsheet' → document_agent (single step, no follow-up)\n"
+            "4. 'write a python/C program' (no app) → coding_agent (single step, no follow-up)\n"
             "5. General research/news → research_agent\n"
             "6. NEVER write long content inline in JSON — use __GENERATED_CONTENT__\n"
             "7. 'remember/recall/forget/what do you know about me' → memory_agent\n"
+            "8. 'take a screenshot / capture screen' → automation_agent with screenshot_and_return\n"
         )
 
         raw = await self.chat(
@@ -213,6 +248,11 @@ class QwenClient:
                 for idx, step in enumerate(plan, 1):
                     step["step"] = idx
 
+            # FIX 2: Strip trailing research_agent steps that Qwen appends after
+            # a terminal agent (document_agent / coding_agent). These extra steps
+            # are never meaningful — the document is already created.
+            plan = self._strip_trailing_steps(plan)
+
             return plan
         except (json.JSONDecodeError, ValueError):
             return [{
@@ -220,6 +260,37 @@ class QwenClient:
                 "description": f"Process: {command}",
                 "parameters": {"query": command},
             }]
+
+    # FIX 2: Remove trailing research steps after terminal agents
+    def _strip_trailing_steps(self, plan: list) -> list:
+        """
+        Remove any trailing research_agent steps that follow the last
+        document_agent or coding_agent step. These are spurious — the planner
+        often appends 'provide context' research after already finishing the task.
+        """
+        TERMINAL_AGENTS = {"document_agent", "coding_agent"}
+
+        if not plan:
+            return plan
+
+        # Find the index of the last terminal agent step
+        last_terminal_idx = -1
+        for i, step in enumerate(plan):
+            if step.get("agent") in TERMINAL_AGENTS:
+                last_terminal_idx = i
+
+        if last_terminal_idx < 0:
+            return plan  # no terminal agent — leave plan unchanged
+
+        trailing = plan[last_terminal_idx + 1:]
+        if not trailing:
+            return plan  # nothing to strip
+
+        # Only strip if ALL trailing steps are research_agent
+        if all(s.get("agent") == "research_agent" for s in trailing):
+            return plan[:last_terminal_idx + 1]
+
+        return plan
 
     def _build_browser_plan(self, command: str, cmd_lc: str) -> list[dict]:
         if "youtube" in cmd_lc:
@@ -242,6 +313,13 @@ class QwenClient:
             return [{"step": 1, "agent": "browser_agent",
                      "description": f"Search Wikipedia: {command}",
                      "parameters": {"action": "search", "query": command, "engine": "google"}}]
+
+        # FIX 7: Hacker News doesn't have a dotted domain so the dest_match regex
+        # below won't catch "go to hacker news". Hard-match it here first.
+        if any(k in cmd_lc for k in ("hacker news", "hackernews", "ycombinator", "news.ycombinator")):
+            return [{"step": 1, "agent": "browser_agent",
+                     "description": "Fetch top Hacker News stories",
+                     "parameters": {"action": "workflow", "goal": command}}]
 
         url_match = re.search(r"https?://[^\s]+", command)
         if url_match:

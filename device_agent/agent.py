@@ -1,45 +1,19 @@
 """
-AetherAI — Device Agent  (Stage 4 — hardened)
+AetherAI — Device Agent  (Stage 4 — hardened, patched)
 
-WHAT'S NEW vs the previous version
-────────────────────────────────────
-1. Action retry
-   Every hardware action (click, type, hotkey, etc.) is retried once on
-   failure with a short back-off before returning an error. Transient
-   pyautogui failures (e.g. window focus race conditions) no longer abort
-   the whole step.
+Fixes applied
+─────────────
+FIX 5  "Open Chrome" was failing because subprocess was called with just
+       "chrome" (not the full path). Added CHROME_PATHS with common Windows
+       install locations and a find_chrome() helper. _open_app() now tries the
+       resolved path before falling back to the generic OS open.
 
-2. COM edge-case fixes
-   open_office_via_com() now waits for the PowerShell process to finish
-   before the caller starts its sleep — prevents a race where the sleep
-   ends before COM even starts creating the window.
-
-3. Vision loop robustness
-   - Per-step timeout on the cloud response (30 s, was implicit infinite)
-   - Screenshot compression: resizes to max 1280px wide AND converts to
-     JPEG at quality=70, cutting payload size by ~60% vs PNG.
-   - Graceful `done` sent to cloud on unhandled loop errors instead of
-     silently hanging.
-
-4. Reconnect back-off
-   Reconnection delay uses exponential back-off (5 s → 10 s → 20 s → 30 s
-   cap) instead of a flat 5 s. Prevents hammering the server after a
-   deployment restart.
-
-5. type action: clipboard-paste stays but now falls back to
-   pyautogui.typewrite() for short strings if clipboard isn't available
-   (pyperclip import guard).
-
-6. new_file / open_app unified path
-   office_map centralised — no more duplicate dicts between _open_app and
-   _new_file.
-
-7. Standalone EXE / config.ini support unchanged — fully backwards-compat.
-
-8. FAILSAFE remains enabled. PAUSE reduced to 0.1 s (was 0.15) for
-   slightly snappier sequences.
-
-9. Graceful shutdown on KeyboardInterrupt and SIGTERM (Windows-safe).
+FIX 6  When Notepad (or another text editor) was opened and then a type action
+       immediately followed, the typing arrived before the window was focused.
+       The type action handler now calls activate_window_by_title() for the
+       last known app name (passed as an optional "activate_app" param) and
+       waits 400 ms before sending keystrokes. If no app hint is provided a
+       general 500 ms pause + neutral focus re-assertion is applied.
 """
 
 import asyncio
@@ -93,11 +67,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 pyautogui.FAILSAFE = True
-pyautogui.PAUSE    = 0.1   # reduced from 0.15 for snappier sequences
+pyautogui.PAUSE    = 0.1
 
 KEEPALIVE_INTERVAL  = 30
-MAX_ACTION_RETRIES  = 1    # retry once on transient failures
-MAX_RECONNECT_DELAY = 30   # seconds cap for exponential back-off
+MAX_ACTION_RETRIES  = 1
+MAX_RECONNECT_DELAY = 30
 
 # ── Notepad++ search paths ─────────────────────────────────────────────────────
 
@@ -106,6 +80,14 @@ NOTEPADPP_PATHS = [
     r"C:\Program Files (x86)\Notepad++\notepad++.exe",
     r"C:\Users\patri\AppData\Local\Programs\Notepad++\notepad++.exe",
     r"C:\Users\patri\scoop\apps\notepadplusplus\current\notepad++.exe",
+]
+
+# FIX 5: Chrome executable paths for common Windows install locations
+CHROME_PATHS = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    r"C:\Users\patri\AppData\Local\Google\Chrome\Application\chrome.exe",
+    r"C:\Users\Public\Desktop\Google Chrome.lnk",
 ]
 
 # ── Office COM scripts ─────────────────────────────────────────────────────────
@@ -175,6 +157,14 @@ def find_notepadpp() -> str | None:
     return next((p for p in NOTEPADPP_PATHS if os.path.exists(p)), None)
 
 
+# FIX 5: Resolve the Chrome executable from known paths
+def find_chrome() -> str | None:
+    for p in CHROME_PATHS:
+        if os.path.exists(p):
+            return p
+    return None
+
+
 def activate_window_by_title(title_fragment: str):
     try:
         ps_cmd = (
@@ -190,10 +180,6 @@ def activate_window_by_title(title_fragment: str):
 
 
 def capture_screen(max_width: int = 1280, jpeg_quality: int = 70) -> str:
-    """
-    Capture screen, resize to max_width, encode as JPEG (smaller than PNG).
-    Returns base64 string.
-    """
     img = ImageGrab.grab()
     w, h = img.size
     if w > max_width:
@@ -205,11 +191,6 @@ def capture_screen(max_width: int = 1280, jpeg_quality: int = 70) -> str:
 
 
 def open_office_via_com(office_key: str):
-    """
-    Launch Office app via PowerShell COM. Waits for the process to exit
-    (PowerShell COM script completes) before returning so the caller's
-    asyncio.sleep is counting real app-open time, not COM-launch time.
-    """
     script = OFFICE_COM_SCRIPTS.get(office_key, "")
     if not script:
         return
@@ -219,7 +200,6 @@ def open_office_via_com(office_key: str):
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             creationflags=flags,
         )
-        # Wait up to 8 s for the COM script to finish — don't block forever
         proc.wait(timeout=8)
     except subprocess.TimeoutExpired:
         logger.debug(f"COM script for {office_key} still running after 8s (normal)")
@@ -251,7 +231,7 @@ class DeviceAgent:
                     close_timeout=10,
                 ) as ws:
                     logger.info("✓ Connected to AetherAI Cloud Brain")
-                    delay = 5  # reset back-off on successful connect
+                    delay = 5
                     await asyncio.gather(self._listen(ws), self._keepalive(ws))
 
             except websockets.ConnectionClosed as e:
@@ -260,7 +240,7 @@ class DeviceAgent:
                 logger.error(f"Connection error: {e}. Retrying in {delay}s…")
 
             await asyncio.sleep(delay)
-            delay = min(delay * 2, MAX_RECONNECT_DELAY)  # exponential back-off
+            delay = min(delay * 2, MAX_RECONNECT_DELAY)
 
     async def _keepalive(self, ws):
         try:
@@ -326,7 +306,6 @@ class DeviceAgent:
         params     = data.get("parameters", {})
         request_id = data.get("request_id", "")
 
-        # Action aliases
         aliases = {
             "open":       "open_app",
             "launch":     "open_app",
@@ -351,7 +330,6 @@ class DeviceAgent:
 
     async def _execute_with_retry(self, ws, action: str, params: dict,
                                    request_id: str) -> str:
-        """Execute an action, retrying once on transient failure."""
         last_error = ""
         for attempt in range(MAX_ACTION_RETRIES + 1):
             if attempt > 0:
@@ -369,7 +347,6 @@ class DeviceAgent:
 
     async def _execute_action(self, ws, action: str, params: dict,
                                request_id: str) -> str:
-        """Core action executor — raises on failure (caller handles retry)."""
 
         if action == "click":
             x, y = int(params["x"]), int(params["y"])
@@ -395,6 +372,25 @@ class DeviceAgent:
             text = params.get("text", "")
             if not text:
                 return "type: no text provided"
+
+            # FIX 6: Activate target window and wait before typing so keystrokes
+            # don't land in the wrong window (e.g. Notepad opened in background).
+            activate_app = params.get("activate_app", "").strip()
+            if activate_app:
+                # Caller specified which window to focus (e.g. "Notepad")
+                activate_window_by_title(activate_app)
+                await asyncio.sleep(0.4)
+            else:
+                # General guard: small pause + re-assert focus via a neutral
+                # click at the current mouse position so any recently opened
+                # window has time to become the foreground window.
+                await asyncio.sleep(0.5)
+                try:
+                    pyautogui.click(*pyautogui.position())
+                except Exception:
+                    pass
+                await asyncio.sleep(0.2)
+
             # Try clipboard paste first (fast, handles all characters)
             try:
                 import pyperclip
@@ -403,8 +399,7 @@ class DeviceAgent:
                 pyautogui.hotkey("ctrl", "v")
                 await asyncio.sleep(0.3)
             except Exception:
-                # Fallback: typewrite (slower, ASCII only)
-                safe_text = text[:500]  # cap to avoid very long blocking calls
+                safe_text = text[:500]
                 pyautogui.typewrite(safe_text, interval=0.03)
             return f"Typed {len(text)} chars"
 
@@ -482,6 +477,20 @@ class DeviceAgent:
                 activate_window_by_title("Notepad++")
                 return "Opened Notepad++"
 
+        # FIX 5: Chrome — resolve the full executable path from known locations
+        if "chrome" in app_lc:
+            chrome_path = find_chrome()
+            if chrome_path and chrome_path.endswith(".exe"):
+                subprocess.Popen([chrome_path])
+                await asyncio.sleep(2.5)
+                activate_window_by_title("Chrome")
+                return "Opened Google Chrome"
+            # Fallback: let Windows resolve it via the shell
+            if sys.platform == "win32":
+                subprocess.Popen('start "" "chrome"', shell=True)
+                await asyncio.sleep(2.5)
+                return "Opened Chrome (shell)"
+
         # Generic OS open
         if sys.platform == "win32":
             subprocess.Popen(f'start "" "{app}"', shell=True)
@@ -522,7 +531,6 @@ class DeviceAgent:
         office_key = OFFICE_MAP.get(app_lc)
         if office_key:
             logger.info(f"Opening {office_key} via COM…")
-            # open_office_via_com blocks until PS script exits → sleep is real wait
             await asyncio.get_event_loop().run_in_executor(
                 None, open_office_via_com, office_key
             )
@@ -566,7 +574,6 @@ class DeviceAgent:
                     "goal":         goal,
                 }))
 
-                # Wait for cloud to respond with next action
                 try:
                     response_raw = await asyncio.wait_for(
                         self._wait_for_vision_response(ws, request_id),
@@ -596,7 +603,6 @@ class DeviceAgent:
                     }))
                     return
 
-                # Execute the action (with retry)
                 result = await self._execute_with_retry(ws, action_type,
                                                          response.get("parameters", {}), "")
                 logger.info(f"Vision step {step_num} ({action_type}): {result}")
@@ -615,7 +621,6 @@ class DeviceAgent:
                 }))
                 return
 
-        # max_steps reached
         await ws.send(json.dumps({
             "type":        "vision_complete",
             "task_id":     task_id,
@@ -649,7 +654,6 @@ async def main():
 
 if __name__ == "__main__":
     if sys.platform == "win32":
-        # Needed for clean Ctrl+C handling on Windows with asyncio
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     try:
         asyncio.run(main())
