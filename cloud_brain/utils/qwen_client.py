@@ -54,8 +54,9 @@ class QwenClient:
         "search youtube", "on youtube", "youtube for", "find on youtube",
         "youtube search", "youtube video", "youtube channel",
         "wikipedia", "wiki/",
-        "open chrome", "open browser", "open firefox",
-        "open chrome and", "launch chrome",
+        # "open chrome/browser/firefox" intentionally REMOVED here so that
+        # "Open Chrome" alone routes to the device agent (open_app).
+        # "open chrome and search for X" still matches via the AND-action check below.
         "go to http", "go to www", "go to reddit", "go to twitter",
         "go to facebook", "go to instagram", "go to hacker news",
         "go to github", "go to stackoverflow", "visit http",
@@ -65,6 +66,13 @@ class QwenClient:
         "scrape", "extract from", "read the article at",
         "summarize the page", "summarize the website",
         "summarize the article at",
+    ]
+
+    # "Open Chrome and search for X" — contains a browser action after the app name.
+    # These should still go to browser_agent even though "open chrome" alone doesn't.
+    CHROME_WITH_ACTION_KEYWORDS = [
+        "open chrome and", "launch chrome and", "open browser and",
+        "open firefox and", "open chrome to", "open chrome then",
     ]
 
     CODE_KEYWORDS = [
@@ -97,17 +105,28 @@ class QwenClient:
     ]
 
     def _is_browser_task(self, cmd_lc: str) -> bool:
-        return any(k in cmd_lc for k in self.BROWSER_KEYWORDS)
+        if any(k in cmd_lc for k in self.BROWSER_KEYWORDS):
+            return True
+        # "open chrome and search for X" — chrome + browser action
+        if any(k in cmd_lc for k in self.CHROME_WITH_ACTION_KEYWORDS):
+            return True
+        return False
 
     def _is_memory_task(self, cmd_lc: str) -> bool:
         return any(k in cmd_lc for k in self.MEMORY_KEYWORDS)
 
     def _is_open_app_command(self, cmd_lc: str) -> bool:
         OPEN_VERBS  = ["open ", "launch ", "start "]
-        OFFICE_APPS = ["word", "excel", "powerpoint", "ppt", "notepad", "notepad++"]
+        OFFICE_APPS = [
+            "word", "excel", "powerpoint", "ppt", "notepad", "notepad++",
+            # Chrome/Edge/Firefox — open as a PC app, not as a browser action
+            "chrome", "firefox", "edge",
+        ]
         starts_with_open = any(cmd_lc.startswith(v) or f" {v}" in cmd_lc for v in OPEN_VERBS)
         mentions_app     = any(app in cmd_lc for app in OFFICE_APPS)
-        return starts_with_open and mentions_app
+        # Don't treat "open chrome and search/navigate/go" as a plain open-app command
+        has_browser_action = any(k in cmd_lc for k in self.CHROME_WITH_ACTION_KEYWORDS)
+        return starts_with_open and mentions_app and not has_browser_action
 
     # FIX 4: Detect screenshot commands
     def _is_screenshot_task(self, cmd_lc: str) -> bool:
@@ -221,7 +240,7 @@ class QwenClient:
             "  Use for: 'remember that', 'what do you know about me', 'forget my X', 'my preference is'.\n\n"
 
             "ROUTING RULES:\n"
-            "1. YouTube/Wikipedia/Chrome/URLs → browser_agent\n"
+            "1. YouTube/Wikipedia/URLs → browser_agent. 'open chrome and search X' → browser_agent. 'open chrome' ALONE → automation_agent (open_app)\n"
             "2. 'open word/excel/ppt and write X' → automation_agent ONLY\n"
             "3. 'create/make a presentation/doc/spreadsheet' → document_agent (single step, no follow-up)\n"
             "4. 'write a python/C program' (no app) → coding_agent (single step, no follow-up)\n"

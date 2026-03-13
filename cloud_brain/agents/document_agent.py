@@ -36,9 +36,11 @@ OUTPUT_DIR = Path(__file__).parent.parent.parent / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 # ── Image sources ─────────────────────────────────────────────────────────────
-
-UNSPLASH_URL = "https://source.unsplash.com/featured/900x600/?{query}"
-PICSUM_URL   = "https://picsum.photos/seed/{seed}/900/600"
+# loremflickr returns topic-relevant photos from Flickr based on keywords.
+# It's free, no API key needed, and far more accurate than random Picsum photos.
+# URL format: https://loremflickr.com/900/600/keyword1,keyword2
+LOREMFLICKR_URL = "https://loremflickr.com/900/600/{query}?lock={seed}"
+PICSUM_URL      = "https://picsum.photos/seed/{seed}/900/600"
 
 HEADERS = {
     "User-Agent": (
@@ -172,26 +174,30 @@ def pick_theme() -> dict:
 
 # ── Image helpers ─────────────────────────────────────────────────────────────
 
-async def fetch_image_bytes(keyword: str, slide_index: int, timeout: float = 8.0) -> Optional[bytes]:
+async def fetch_image_bytes(keyword: str, slide_index: int, timeout: float = 10.0) -> Optional[bytes]:
     async with _IMAGE_SEM:
-        # The keyword arriving here is already cleaned by _build_image_query;
-        # just take the first 3 words to stay within Unsplash query limits.
-        words = keyword.split()[:3]
-        query = ",".join(words) or keyword[:30]
+        # Keyword is already cleaned by _build_image_query.
+        # loremflickr uses comma-separated keywords with no spaces.
+        words  = keyword.split()[:4]
+        query  = ",".join(words) or keyword[:40]
+        seed   = abs(hash(keyword)) % 9000 + slide_index * 13
 
-        # Attempt 1: Unsplash featured
+        # Attempt 1: loremflickr — returns a Flickr photo relevant to the keywords.
+        # The ?lock={seed} param keeps the image stable across re-fetches for the
+        # same slide while still varying images between slides.
         try:
+            url = LOREMFLICKR_URL.format(query=query, seed=seed)
             async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=timeout) as c:
-                r  = await c.get(UNSPLASH_URL.format(query=query))
+                r  = await c.get(url)
                 ct = r.headers.get("content-type", "")
                 if r.status_code == 200 and ct.startswith("image"):
+                    logger.info(f"[DocumentAgent] loremflickr OK slide {slide_index} query='{query}'")
                     return r.content
         except Exception as e:
-            logger.debug(f"[DocumentAgent] Unsplash failed '{query}': {e}")
+            logger.debug(f"[DocumentAgent] loremflickr failed '{query}': {e}")
 
-        # Attempt 2: Picsum (deterministic fallback)
+        # Attempt 2: Picsum (fully random fallback — only if loremflickr unreachable)
         try:
-            seed = abs(hash(keyword)) % 1000 + slide_index
             async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=timeout) as c:
                 r = await c.get(PICSUM_URL.format(seed=seed))
                 if r.status_code == 200:
@@ -441,7 +447,7 @@ Include a stat on at least 3 slides. Make content rich and specific."""
                     color=rgb(T["text_light"]), font=hf())
                 bullets(sl, blist, 0.5, 1.3, 7.0, 5.8)
                 add_img(sl, img, 7.8, 1.2, 5.0, 6.0)
-                txt(sl, "Photo: Unsplash / Picsum", 7.8, 7.1, 4.5, 0.3, 8,
+                txt(sl, "Photo: loremflickr.com", 7.8, 7.1, 4.5, 0.3, 8,
                     italic=True, color=rgb(T["muted"]))
 
             else:

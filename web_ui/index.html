@@ -1,284 +1,340 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
   <title>AetherAI — Command Center</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-    :root {
-      --bg:      #0d1117;
-      --bg2:     #161b22;
-      --bg3:     #1c2330;
-      --card:    #1e2736;
-      --border:  #2a3444;
-      --accent:  #00e5ff;
-      --accent2: #a78bfa;
-      --green:   #00ff9d;
-      --warn:    #ff6b6b;
-      --orange:  #ffaa40;
-      --text:    #e2e8f0;
-      --muted:   #5a7080;
+    /* ── Theme tokens ──────────────────────────────────────────────── */
+    :root[data-theme="dark"] {
+      --bg:       #0d1117;
+      --bg2:      #161b22;
+      --bg3:      #1c2330;
+      --card:     #1e2736;
+      --border:   #2a3444;
+      --accent:   #00e5ff;
+      --accent2:  #a78bfa;
+      --green:    #00e896;
+      --warn:     #ff6b6b;
+      --orange:   #ffaa40;
+      --text:     #edf2f7;
+      --muted:    #7a8fa0;
+      --shadow:   rgba(0,0,0,0.45);
+      --code-bg:  #111820;
+      --overlay:  rgba(0,0,0,0.72);
+    }
+    :root[data-theme="light"] {
+      --bg:       #f0f4f8;
+      --bg2:      #ffffff;
+      --bg3:      #e8edf5;
+      --card:     #ffffff;
+      --border:   #d0dae6;
+      --accent:   #0077cc;
+      --accent2:  #7c3aed;
+      --green:    #059669;
+      --warn:     #dc2626;
+      --orange:   #d97706;
+      --text:     #1a2130;
+      --muted:    #6b7a8d;
+      --shadow:   rgba(0,0,0,0.12);
+      --code-bg:  #f5f7fa;
+      --overlay:  rgba(0,0,0,0.5);
     }
 
     body {
-      font-family: 'Consolas', 'Monaco', monospace;
+      font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
       background: var(--bg);
       color: var(--text);
-      height: 100vh;
+      height: 100dvh;
       display: flex;
       flex-direction: column;
       overflow: hidden;
+      transition: background 0.25s, color 0.25s;
     }
 
-    /* ── Topbar ─────────────────────────────────────────────────────────── */
+    /* ── Topbar ──────────────────────────────────────────────────────── */
     .topbar {
       display: flex; align-items: center; justify-content: space-between;
-      padding: 0 20px; height: 48px;
-      background: var(--bg2); border-bottom: 1px solid var(--border); flex-shrink: 0;
+      padding: 0 16px; height: 52px;
+      background: var(--bg2); border-bottom: 1px solid var(--border);
+      flex-shrink: 0; gap: 10px;
     }
-    .logo { display: flex; align-items: center; gap: 10px; }
+    .logo { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
     .logo-icon {
-      width: 28px; height: 28px;
+      width: 32px; height: 32px;
       background: linear-gradient(135deg, var(--accent), var(--accent2));
-      border-radius: 7px; display: flex; align-items: center; justify-content: center;
-      font-size: 14px; font-weight: 900; color: #000;
+      border-radius: 9px; display: flex; align-items: center; justify-content: center;
+      font-size: 15px; font-weight: 900; color: #000;
     }
-    .logo-text { font-size: 15px; font-weight: 700; color: var(--text); letter-spacing: 0.05em; }
-    .topbar-right { display: flex; align-items: center; gap: 16px; font-size: 11px; color: var(--muted); }
+    .logo-text { font-size: 16px; font-weight: 700; color: var(--text); letter-spacing: 0.04em; }
+    .topbar-right { display: flex; align-items: center; gap: 10px; }
+
+    .status-pill {
+      display: flex; align-items: center; gap: 5px;
+      background: var(--bg3); border: 1px solid var(--border);
+      border-radius: 20px; padding: 3px 10px; font-size: 11px; color: var(--muted);
+    }
     .status-dot {
-      width: 7px; height: 7px; border-radius: 50%;
-      background: var(--green); display: inline-block; margin-right: 4px;
+      width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0;
       animation: pulse 2s infinite;
     }
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
-    .status-dot.offline { background: var(--warn); animation: none; }
+    .status-dot.offline { background: var(--warn);   animation: none; }
+    .status-dot.error   { background: var(--orange); animation: none; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
 
-    .busy-bar {
-      height: 2px; background: var(--bg2); flex-shrink: 0; overflow: hidden;
+    #clockDisplay { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    #deviceCount  { font-size: 12px; color: var(--muted); }
+
+    .icon-btn {
+      background: none; border: 1px solid transparent; color: var(--muted);
+      cursor: pointer; font-size: 16px; padding: 5px 7px;
+      border-radius: 7px; font-family: inherit; line-height: 1;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+      display: flex; align-items: center; justify-content: center;
     }
+    .icon-btn:hover { color: var(--accent); border-color: var(--border); background: var(--bg3); }
+
+    /* Only shown on mobile */
+    .mobile-only { display: none; }
+
+    /* ── Busy bar ────────────────────────────────────────────────────── */
+    .busy-bar { height: 2px; background: transparent; flex-shrink: 0; overflow: hidden; }
     .busy-bar-inner {
-      height: 100%; width: 30%;
-      background: linear-gradient(90deg, transparent, var(--accent), transparent);
+      height: 100%; width: 35%;
+      background: linear-gradient(90deg, transparent, var(--accent), var(--accent2), transparent);
       display: none;
-      animation: sweep 1.4s linear infinite;
+      animation: sweep 1.6s ease-in-out infinite;
     }
-    @keyframes sweep { from { transform: translateX(-200%) } to { transform: translateX(500%) } }
+    @keyframes sweep { from{transform:translateX(-200%)} to{transform:translateX(500%)} }
     .busy-bar-inner.active { display: block; }
 
-    .gear-btn {
-      background: none; border: none; color: var(--muted); cursor: pointer;
-      font-size: 14px; padding: 4px; border-radius: 4px; font-family: inherit;
-      transition: color 0.15s;
-    }
-    .gear-btn:hover { color: var(--accent); }
+    /* ── 3-col layout ────────────────────────────────────────────────── */
+    .layout { display: grid; grid-template-columns: 230px 1fr 270px; flex: 1; overflow: hidden; }
 
-    /* ── Layout ─────────────────────────────────────────────────────────── */
-    .layout {
-      display: grid; grid-template-columns: 220px 1fr 260px;
-      flex: 1; overflow: hidden;
-    }
-
-    /* ── Sidebar ────────────────────────────────────────────────────────── */
+    /* ── Sidebar ─────────────────────────────────────────────────────── */
     .sidebar {
       background: var(--bg2); border-right: 1px solid var(--border);
       display: flex; flex-direction: column; overflow: hidden;
+      transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
     }
     .sidebar-header {
-      padding: 10px 12px; font-size: 10px; text-transform: uppercase;
-      letter-spacing: 0.12em; color: var(--muted); border-bottom: 1px solid var(--border);
-      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 14px; font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
     }
     .clear-btn {
-      background: none; border: none; color: var(--warn); font-size: 9px;
-      cursor: pointer; padding: 2px 5px; border-radius: 3px; font-family: inherit;
+      background: none; border: none; color: var(--warn); font-size: 10px;
+      cursor: pointer; padding: 2px 6px; border-radius: 4px; font-family: inherit;
+      transition: background 0.15s;
     }
-    .clear-btn:hover { background: rgba(255,107,107,0.1); }
-    .task-list { flex: 1; overflow-y: auto; padding: 6px; }
+    .clear-btn:hover { background: rgba(220,38,38,0.1); }
+    .task-list { flex: 1; overflow-y: auto; padding: 8px; }
     .task-card {
-      padding: 8px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 4px;
-      border: 1px solid transparent; transition: border-color 0.15s, background 0.15s;
-      background: var(--card);
+      padding: 10px 12px; border-radius: 8px; cursor: pointer; margin-bottom: 5px;
+      border: 1px solid transparent; background: var(--card);
+      transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
     }
-    .task-card:hover { border-color: var(--border); }
+    .task-card:hover { border-color: var(--border); box-shadow: 0 2px 8px var(--shadow); }
     .task-card.active { border-color: var(--accent); background: rgba(0,229,255,0.06); }
-    .task-title { font-size: 11px; color: var(--text); line-height: 1.4; word-break: break-word; }
+    :root[data-theme="light"] .task-card.active { background: rgba(0,119,204,0.06); }
+    .task-title { font-size: 13px; color: var(--text); line-height: 1.45; word-break: break-word; }
     .task-meta {
       display: flex; justify-content: space-between; align-items: center;
-      margin-top: 5px; font-size: 9px; color: var(--muted);
+      margin-top: 6px; font-size: 10px; color: var(--muted);
     }
     .task-badge {
-      padding: 1px 6px; border-radius: 10px;
-      font-size: 8px; font-weight: 700; text-transform: uppercase;
+      padding: 2px 8px; border-radius: 10px;
+      font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
     }
-    .task-badge.completed { background: rgba(0,255,157,0.15);  color: var(--green); }
-    .task-badge.running   { background: rgba(0,229,255,0.15);  color: var(--accent); }
-    .task-badge.failed    { background: rgba(255,107,107,0.15); color: var(--warn); }
-    .task-badge.planning  { background: rgba(167,139,250,0.15); color: var(--accent2); }
-    .task-badge.cancelled { background: rgba(90,112,128,0.15); color: var(--muted); }
+    .task-badge.completed { background: rgba(0,232,150,0.12); color: var(--green); }
+    .task-badge.running   { background: rgba(0,229,255,0.12); color: var(--accent); }
+    .task-badge.failed    { background: rgba(220,38,38,0.12); color: var(--warn); }
+    .task-badge.planning  { background: rgba(167,139,250,0.12); color: var(--accent2); }
+    .task-badge.cancelled { background: rgba(107,122,141,0.12); color: var(--muted); }
     .task-row { display: flex; align-items: flex-start; gap: 4px; }
     .task-del-btn {
       background: none; border: none; color: var(--muted); cursor: pointer;
-      font-size: 12px; flex-shrink: 0; padding: 0 3px; line-height: 1;
-      margin-top: 1px; font-family: inherit;
+      font-size: 13px; flex-shrink: 0; padding: 0 3px; line-height: 1;
+      font-family: inherit; transition: color 0.15s; margin-top: 1px;
     }
     .task-del-btn:hover { color: var(--warn); }
 
-    /* ── Main / Output ──────────────────────────────────────────────────── */
+    /* ── Main output ─────────────────────────────────────────────────── */
     main { display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
     .output-area {
-      flex: 1; overflow-y: auto; padding: 16px 20px;
-      font-size: 12px; line-height: 1.7;
+      flex: 1; overflow-y: auto; padding: 18px 22px;
+      font-size: 14px; line-height: 1.75;
     }
     .log-entry {
-      display: flex; gap: 12px; margin-bottom: 4px;
-      opacity: 0; transform: translateY(4px);
-      animation: fadeUp 0.2s ease forwards;
+      display: flex; gap: 14px; margin-bottom: 5px;
+      opacity: 0; transform: translateY(5px);
+      animation: fadeUp 0.22s ease forwards;
     }
     @keyframes fadeUp { to { opacity:1; transform:translateY(0); } }
     .log-time {
-      color: var(--muted); white-space: nowrap; min-width: 68px;
-      padding-top: 1px; font-size: 11px; flex-shrink: 0;
+      color: var(--muted); white-space: nowrap; min-width: 72px;
+      padding-top: 2px; font-size: 12px; flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+      font-family: 'Consolas','Monaco',monospace;
     }
-    .log-msg  { flex: 1; white-space: pre-wrap; word-break: break-word; min-width: 0; }
-    .log-msg.system  { color: var(--accent); }
-    .log-msg.agent   { color: var(--accent2); }
-    /* FIX 3: Changed result color from var(--green) to var(--text) for readability on long outputs */
-    .log-msg.result  { color: var(--text); }
-    .log-msg.error   { color: var(--warn); }
-    .log-msg.info    { color: var(--text); }
+    .log-msg { flex: 1; white-space: pre-wrap; word-break: break-word; min-width: 0; }
+    .log-msg.system { color: var(--accent); font-weight: 600; }
+    .log-msg.agent  { color: var(--accent2); font-weight: 500; }
+    .log-msg.result { color: var(--text); }
+    .log-msg.error  { color: var(--warn); }
+    .log-msg.info   { color: var(--muted); }
     .log-msg.chat {
-      color: var(--text);
-      background: rgba(0,229,255,0.05);
-      border-left: 2px solid var(--accent);
-      padding: 8px 12px; border-radius: 0 6px 6px 0; white-space: normal;
+      color: var(--text); background: rgba(0,229,255,0.05);
+      border-left: 3px solid var(--accent);
+      padding: 10px 14px; border-radius: 0 8px 8px 0; white-space: normal;
     }
+    :root[data-theme="light"] .log-msg.chat { background: rgba(0,119,204,0.05); }
     .log-msg.chat strong { color: var(--accent); font-weight: 700; }
     .log-msg.chat em     { color: var(--accent2); font-style: italic; }
     .log-msg.chat a      { color: var(--accent); text-decoration: underline; }
-    .log-msg.chat ul, .log-msg.chat ol { padding-left: 18px; margin: 4px 0; }
-    .log-msg.chat li     { margin-bottom: 3px; }
-    .log-msg.chat h1, .log-msg.chat h2, .log-msg.chat h3 { color: var(--accent); margin: 8px 0 4px; }
-    .log-msg.chat hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
-    .log-msg.chat p  { margin-bottom: 4px; }
+    .log-msg.chat ul,
+    .log-msg.chat ol     { padding-left: 20px; margin: 6px 0; }
+    .log-msg.chat li     { margin-bottom: 4px; }
+    .log-msg.chat h1,.log-msg.chat h2,.log-msg.chat h3 { color: var(--accent); margin: 10px 0 5px; }
+    .log-msg.chat hr     { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+    .log-msg.chat p      { margin-bottom: 5px; }
     .log-msg.result strong { color: var(--green); font-weight: 700; }
-    .log-msg.result a { color: var(--accent); text-decoration: underline; }
-    .log-msg.result ul, .log-msg.result ol { padding-left: 18px; margin: 4px 0; }
-    .log-msg.result li { margin-bottom: 3px; }
+    .log-msg.result a    { color: var(--accent); text-decoration: underline; }
+    .log-msg.result ul,
+    .log-msg.result ol   { padding-left: 20px; margin: 6px 0; }
+    .log-msg.result li   { margin-bottom: 4px; }
 
     .log-entry:hover .copy-result-btn { opacity: 1; }
     .copy-result-btn {
       background: none; border: 1px solid var(--border); color: var(--muted);
-      border-radius: 3px; padding: 1px 6px; font-size: 9px; cursor: pointer;
-      font-family: inherit; opacity: 0; transition: opacity 0.15s, color 0.1s;
-      flex-shrink: 0; align-self: flex-start; margin-top: 2px;
+      border-radius: 4px; padding: 2px 8px; font-size: 10px; cursor: pointer;
+      font-family: inherit; opacity: 0;
+      transition: opacity 0.15s, color 0.1s, border-color 0.1s;
+      flex-shrink: 0; align-self: flex-start; margin-top: 3px;
     }
     .copy-result-btn:hover { color: var(--accent); border-color: var(--accent); }
 
-    /* ── Code blocks ────────────────────────────────────────────────────── */
-    .code-block-wrapper { width: 100%; margin: 4px 0; }
+    /* ── Code blocks ─────────────────────────────────────────────────── */
+    .code-block-wrapper { width: 100%; margin: 6px 0; }
     .code-block-header {
       display: flex; justify-content: space-between; align-items: center;
-      background: #1a2233; border: 1px solid var(--border);
-      border-bottom: none; border-radius: 6px 6px 0 0;
-      padding: 5px 12px; font-size: 10px;
+      background: var(--bg3); border: 1px solid var(--border);
+      border-bottom: none; border-radius: 8px 8px 0 0;
+      padding: 6px 14px; font-size: 11px;
     }
-    .code-lang { color: var(--accent2); font-weight: 700; text-transform: uppercase; }
+    .code-lang { color: var(--accent2); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
     .code-copy-btn {
       background: none; border: 1px solid var(--border); color: var(--muted);
-      border-radius: 3px; padding: 2px 8px; font-size: 9px; cursor: pointer; font-family: inherit;
+      border-radius: 4px; padding: 2px 10px; font-size: 10px; cursor: pointer; font-family: inherit;
+      transition: color 0.15s, border-color 0.15s;
     }
     .code-copy-btn:hover { color: var(--accent); border-color: var(--accent); }
     .code-block-body {
-      background: #0d1117; border: 1px solid var(--border);
-      border-radius: 0 0 6px 6px; padding: 12px 14px; overflow-x: auto;
-      font-size: 11.5px; line-height: 1.6; color: #c9d1d9; white-space: pre;
-      max-height: 420px; overflow-y: auto;
+      background: var(--code-bg); border: 1px solid var(--border);
+      border-radius: 0 0 8px 8px; padding: 14px 16px; overflow-x: auto;
+      font-family: 'Consolas','Monaco',monospace;
+      font-size: 13px; line-height: 1.6; color: var(--text); white-space: pre;
+      max-height: 440px; overflow-y: auto;
     }
 
-    /* ── Input row ──────────────────────────────────────────────────────── */
+    /* ── Input row ───────────────────────────────────────────────────── */
     .input-row {
       border-top: 1px solid var(--border); padding: 12px 16px;
       display: flex; gap: 8px; align-items: center;
       background: var(--bg2); flex-shrink: 0;
     }
-    .prompt { color: var(--accent); font-size: 13px; white-space: nowrap; }
+    .prompt {
+      color: var(--accent); font-size: 14px; white-space: nowrap;
+      font-family: 'Consolas','Monaco',monospace; font-weight: 700;
+    }
     .cmd-input {
       flex: 1; background: transparent; border: none; outline: none;
-      color: var(--text); font-family: inherit; font-size: 13px;
+      color: var(--text); font-family: inherit; font-size: 14px;
     }
     .cmd-input::placeholder { color: var(--muted); }
     .btn {
-      padding: 6px 14px; border-radius: 5px; border: none; cursor: pointer;
-      font-family: inherit; font-size: 11px; font-weight: 700; transition: opacity 0.15s;
+      padding: 7px 16px; border-radius: 7px; border: none; cursor: pointer;
+      font-family: inherit; font-size: 12px; font-weight: 700;
+      transition: opacity 0.15s, transform 0.1s;
     }
+    .btn:active { transform: scale(0.96); }
     .btn:disabled { opacity: 0.4; cursor: not-allowed; }
     .btn.primary { background: var(--accent); color: #000; }
     .btn.primary:hover:not(:disabled) { opacity: 0.85; }
     .btn.danger  { background: var(--warn); color: #fff; }
-    .btn.danger:hover:not(:disabled)  { opacity: 0.85; }
+    .btn.danger:hover:not(:disabled) { opacity: 0.85; }
 
-    /* ── Right panel ────────────────────────────────────────────────────── */
+    /* ── Right panel ─────────────────────────────────────────────────── */
     .panel {
       background: var(--bg2); border-left: 1px solid var(--border);
       display: flex; flex-direction: column; overflow: hidden;
+      transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
     }
     .panel-header {
-      padding: 10px 12px; font-size: 10px; text-transform: uppercase;
-      letter-spacing: 0.12em; color: var(--muted); border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
+      padding: 10px 14px; font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted);
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+      display: flex; justify-content: space-between; align-items: center;
     }
     .devices-row {
-      padding: 8px 12px; font-size: 10px; color: var(--muted);
+      padding: 8px 14px; font-size: 11px; color: var(--muted);
       border-bottom: 1px solid var(--border); flex-shrink: 0;
     }
     .device-chip {
       display: inline-flex; align-items: center; gap: 5px;
-      background: rgba(0,255,157,0.1); color: var(--green);
-      border-radius: 10px; padding: 2px 8px; font-size: 9px; font-weight: 700;
+      background: rgba(0,232,150,0.1); color: var(--green);
+      border-radius: 10px; padding: 3px 10px; font-size: 10px; font-weight: 700;
+      border: 1px solid rgba(0,232,150,0.2);
     }
     .steps-list { flex: 1; overflow-y: auto; padding: 8px; }
     .step-item {
-      padding: 8px 10px; border-radius: 5px; margin-bottom: 4px;
+      padding: 10px 12px; border-radius: 7px; margin-bottom: 5px;
       background: var(--card); border: 1px solid var(--border);
-      transition: border-color 0.2s;
+      transition: border-color 0.2s, box-shadow 0.2s;
     }
-    .step-item.is-running { border-color: var(--accent); }
-    .step-header { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
-    .step-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .step-item.is-running {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(0,229,255,0.1);
+    }
+    .step-header { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; }
+    .step-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
     .step-dot.pending   { background: var(--muted); }
     .step-dot.running   { background: var(--accent); animation: pulse 1s infinite; }
     .step-dot.completed { background: var(--green); }
     .step-dot.failed    { background: var(--warn); }
-    .step-agent { font-size: 10px; font-weight: 700; color: var(--accent2); }
-    .step-desc  { font-size: 10px; color: var(--muted); line-height: 1.4; }
+    .step-agent { font-size: 11px; font-weight: 700; color: var(--accent2); }
+    .step-desc  { font-size: 11px; color: var(--muted); line-height: 1.5; }
     .step-output {
-      font-size: 10px; color: var(--text); margin-top: 4px;
-      line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+      font-size: 11px; color: var(--text); margin-top: 5px;
+      line-height: 1.5; white-space: pre-wrap; word-break: break-word; opacity: 0.85;
     }
 
-    /* ── Files section ──────────────────────────────────────────────────── */
+    /* ── Files section ───────────────────────────────────────────────── */
     .files-section {
-      border-top: 1px solid var(--border); padding: 8px 10px;
+      border-top: 1px solid var(--border); padding: 10px 12px;
       max-height: 220px; overflow-y: auto; flex-shrink: 0;
     }
     .files-title {
-      font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted);
-      margin-bottom: 7px; display: flex; justify-content: space-between; align-items: center;
+      font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em;
+      color: var(--muted); margin-bottom: 8px;
+      display: flex; justify-content: space-between; align-items: center;
     }
     .file-item {
-      display: flex; align-items: center; gap: 5px; padding: 5px 7px;
+      display: flex; align-items: center; gap: 6px; padding: 6px 9px;
       background: var(--card); border: 1px solid var(--border);
-      border-radius: 5px; margin-bottom: 4px;
+      border-radius: 6px; margin-bottom: 5px; transition: border-color 0.15s;
     }
+    .file-item:hover { border-color: var(--accent); }
     .file-ext {
-      font-size: 8px; padding: 1px 4px; border-radius: 3px;
-      font-weight: 700; text-transform: uppercase; flex-shrink: 0;
+      font-size: 8px; padding: 2px 5px; border-radius: 4px;
+      font-weight: 700; text-transform: uppercase; flex-shrink: 0; letter-spacing: 0.04em;
     }
     .ext-pptx { background: rgba(255,107,53,0.15);  color: #ff6b35; }
     .ext-docx { background: rgba(0,229,255,0.12);   color: var(--accent); }
-    .ext-xlsx { background: rgba(0,255,157,0.12);   color: var(--green); }
+    .ext-xlsx { background: rgba(0,232,150,0.12);   color: var(--green); }
     .ext-py   { background: rgba(167,139,250,0.15); color: var(--accent2); }
     .ext-js   { background: rgba(255,170,64,0.15);  color: var(--orange); }
     .ext-ts   { background: rgba(0,229,255,0.12);   color: var(--accent); }
@@ -286,114 +342,186 @@
     .ext-cpp  { background: rgba(0,229,255,0.12);   color: var(--accent); }
     .ext-rs   { background: rgba(255,107,53,0.15);  color: #ff6b35; }
     .ext-go   { background: rgba(0,229,255,0.12);   color: var(--accent); }
-    .ext-sh   { background: rgba(0,255,157,0.12);   color: var(--green); }
+    .ext-sh   { background: rgba(0,232,150,0.12);   color: var(--green); }
+    .ext-jpg,.ext-jpeg,.ext-png,.ext-gif,.ext-webp {
+      background: rgba(255,170,64,0.15); color: var(--orange);
+    }
     .file-name {
-      font-size: 10px; color: var(--text); white-space: nowrap;
+      font-size: 11px; color: var(--text); white-space: nowrap;
       overflow: hidden; text-overflow: ellipsis; flex: 1;
     }
-    .file-size { font-size: 9px; color: var(--muted); flex-shrink: 0; }
-    .file-dl   { font-size: 10px; color: var(--accent); text-decoration: none; flex-shrink: 0; }
-    .file-dl:hover { text-decoration: underline; }
+    .file-size { font-size: 10px; color: var(--muted); flex-shrink: 0; }
+    .file-dl   { font-size: 14px; color: var(--accent); text-decoration: none; flex-shrink: 0; transition: opacity 0.15s; }
+    .file-dl:hover { opacity: 0.7; }
     .file-x {
       background: none; border: none; color: var(--muted); cursor: pointer;
-      font-size: 11px; flex-shrink: 0; font-family: inherit; padding: 0 2px;
+      font-size: 12px; flex-shrink: 0; font-family: inherit; padding: 0 3px;
+      transition: color 0.15s;
     }
     .file-x:hover { color: var(--warn); }
 
-    .panel-actions { padding: 8px; border-top: 1px solid var(--border); flex-shrink: 0; }
+    .panel-actions { padding: 10px; border-top: 1px solid var(--border); flex-shrink: 0; }
 
-    /* ── Settings modal ─────────────────────────────────────────────────── */
+    /* ── Settings modal ──────────────────────────────────────────────── */
     .modal-overlay {
-      position: fixed; inset: 0; background: rgba(0,0,0,0.65);
+      position: fixed; inset: 0; background: var(--overlay);
       display: none; align-items: center; justify-content: center;
-      z-index: 100;
+      z-index: 100; backdrop-filter: blur(4px);
     }
     .modal-overlay.open { display: flex; }
     .modal {
       background: var(--bg2); border: 1px solid var(--border);
-      border-radius: 10px; padding: 20px; width: 340px; max-width: 90vw;
+      border-radius: 12px; padding: 24px; width: 360px; max-width: 92vw;
+      box-shadow: 0 16px 48px var(--shadow);
+      animation: modalIn 0.2s ease;
     }
+    @keyframes modalIn { from{opacity:0;transform:scale(0.95) translateY(-8px)} to{opacity:1;transform:none} }
     .modal-title {
-      font-size: 13px; font-weight: 700; color: var(--text);
-      margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;
+      font-size: 15px; font-weight: 700; color: var(--text);
+      margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;
     }
     .modal-close {
       background: none; border: none; color: var(--muted); cursor: pointer;
-      font-size: 16px; font-family: inherit; padding: 0 2px;
+      font-size: 18px; font-family: inherit; padding: 0 3px; transition: color 0.15s;
     }
     .modal-close:hover { color: var(--text); }
     .field-label {
-      font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em;
-      color: var(--muted); margin-bottom: 5px;
+      display: block; font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.1em;
+      color: var(--muted); margin-bottom: 6px;
     }
     .field-input {
       width: 100%; background: var(--bg); border: 1px solid var(--border);
-      color: var(--text); font-family: inherit; font-size: 12px;
-      padding: 6px 10px; border-radius: 5px; outline: none; margin-bottom: 14px;
+      color: var(--text); font-family: inherit; font-size: 13px;
+      padding: 8px 12px; border-radius: 7px; outline: none; margin-bottom: 18px;
+      transition: border-color 0.15s;
     }
     .field-input:focus { border-color: var(--accent); }
     .modal-save {
       width: 100%; background: var(--accent); color: #000; border: none;
-      border-radius: 5px; padding: 8px; font-family: inherit;
-      font-size: 12px; font-weight: 700; cursor: pointer;
+      border-radius: 7px; padding: 10px; font-family: inherit;
+      font-size: 13px; font-weight: 700; cursor: pointer; transition: opacity 0.15s;
     }
     .modal-save:hover { opacity: 0.85; }
 
-    /* ── Confirm dialog ─────────────────────────────────────────────────── */
+    /* ── Confirm dialog ──────────────────────────────────────────────── */
     .confirm-overlay {
-      position: fixed; inset: 0; background: rgba(0,0,0,0.65);
-      display: none; align-items: center; justify-content: center; z-index: 110;
+      position: fixed; inset: 0; background: var(--overlay);
+      display: none; align-items: center; justify-content: center;
+      z-index: 110; backdrop-filter: blur(4px);
     }
     .confirm-overlay.open { display: flex; }
     .confirm-box {
       background: var(--bg2); border: 1px solid var(--border);
-      border-radius: 10px; padding: 20px; width: 280px; max-width: 90vw; text-align: center;
+      border-radius: 12px; padding: 24px; width: 300px; max-width: 90vw; text-align: center;
+      box-shadow: 0 16px 48px var(--shadow); animation: modalIn 0.2s ease;
     }
-    .confirm-msg { font-size: 12px; color: var(--text); margin-bottom: 16px; line-height: 1.5; }
-    .confirm-btns { display: flex; gap: 8px; justify-content: center; }
+    .confirm-msg { font-size: 14px; color: var(--text); margin-bottom: 20px; line-height: 1.6; }
+    .confirm-btns { display: flex; gap: 10px; justify-content: center; }
     .confirm-btns button {
-      padding: 6px 18px; border-radius: 5px; border: none;
-      font-family: inherit; font-size: 11px; font-weight: 700; cursor: pointer;
+      padding: 8px 22px; border-radius: 7px; border: none;
+      font-family: inherit; font-size: 12px; font-weight: 700; cursor: pointer; transition: opacity 0.15s;
     }
-    .confirm-yes { background: var(--warn); color: #fff; }
+    .confirm-btns button:hover { opacity: 0.85; }
+    .confirm-yes { background: var(--warn);   color: #fff; }
     .confirm-no  { background: var(--border); color: var(--text); }
 
-    /* ── Scrollbar ──────────────────────────────────────────────────────── */
-    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    /* ── Scrollbar ───────────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+    /* ── Mobile drawer overlay ───────────────────────────────────────── */
+    .drawer-overlay {
+      position: fixed; inset: 0; background: var(--overlay);
+      z-index: 40; display: none; opacity: 0; transition: opacity 0.25s;
+    }
+    .drawer-overlay.open { display: block; opacity: 1; }
+
+    /* ── Mobile responsive ───────────────────────────────────────────── */
+    @media (max-width: 768px) {
+      .mobile-only  { display: flex; }
+      .desktop-only { display: none !important; }
+
+      /* Single-column layout */
+      .layout { grid-template-columns: 1fr; }
+
+      /* Sidebar → fixed left drawer */
+      .sidebar {
+        position: fixed; top: 0; left: 0; bottom: 0;
+        width: min(280px, 85vw); z-index: 50;
+        transform: translateX(-100%);
+        box-shadow: 4px 0 24px var(--shadow);
+      }
+      .sidebar.open { transform: translateX(0); }
+
+      /* Right panel → fixed right drawer */
+      .panel {
+        position: fixed; top: 0; right: 0; bottom: 0;
+        width: min(280px, 85vw); z-index: 50;
+        transform: translateX(110%);
+        box-shadow: -4px 0 24px var(--shadow);
+      }
+      .panel.open { transform: translateX(0); }
+
+      /* main takes full width */
+      main { grid-column: 1; }
+
+      .output-area  { padding: 14px 16px; font-size: 14px; }
+      .input-row    { padding: 10px 12px; }
+      .cmd-input    { font-size: 16px; } /* prevents iOS auto-zoom */
+      .logo-text    { display: none; }
+      #clockDisplay { display: none; }
+      .topbar       { padding: 0 12px; }
+    }
+
+    @media (max-width: 480px) {
+      #deviceCount { display: none; }
+    }
   </style>
 </head>
 <body>
 
-<!-- ── Topbar ─────────────────────────────────────────────────────────────── -->
+<!-- ── Topbar ──────────────────────────────────────────────────────────────── -->
 <div class="topbar">
-  <div class="logo">
-    <div class="logo-icon">A</div>
-    <span class="logo-text">AetherAI</span>
+  <div style="display:flex;align-items:center;gap:8px">
+    <button class="icon-btn mobile-only" onclick="toggleSidebar()" aria-label="Tasks">☰</button>
+    <div class="logo">
+      <div class="logo-icon">A</div>
+      <span class="logo-text">AetherAI</span>
+    </div>
   </div>
   <div class="topbar-right">
-    <span id="statusIndicator"><span class="status-dot"></span>ONLINE</span>
-    <span id="deviceCount">0 devices</span>
-    <span id="clockDisplay"></span>
-    <button class="gear-btn" onclick="openSettings()" title="Settings">&#9881;</button>
+    <div class="status-pill">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">ONLINE</span>
+    </div>
+    <span id="deviceCount" class="desktop-only">0 devices</span>
+    <span id="clockDisplay" class="desktop-only"></span>
+    <button class="icon-btn" onclick="toggleTheme()" id="themeBtn" title="Toggle light/dark mode">🌙</button>
+    <button class="icon-btn" onclick="openSettings()" title="Settings">⚙</button>
+    <button class="icon-btn mobile-only" onclick="togglePanel()" aria-label="Task detail">⊞</button>
   </div>
 </div>
 
 <!-- Busy bar -->
 <div class="busy-bar"><div class="busy-bar-inner" id="busyBar"></div></div>
 
-<!-- ── Layout ─────────────────────────────────────────────────────────────── -->
+<!-- Mobile drawer overlay -->
+<div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawers()"></div>
+
+<!-- ── Layout ──────────────────────────────────────────────────────────────── -->
 <div class="layout">
 
   <!-- Sidebar -->
-  <aside class="sidebar">
+  <aside class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <span>Recent Tasks</span>
       <button class="clear-btn" onclick="confirmDeleteAllTasks()">✕ Clear all</button>
     </div>
     <div class="task-list" id="taskList">
-      <div style="color:var(--muted);font-size:10px;padding:10px">No tasks yet</div>
+      <div style="color:var(--muted);font-size:12px;padding:14px">No tasks yet</div>
     </div>
   </aside>
 
@@ -402,54 +530,57 @@
     <div class="output-area" id="outputArea">
       <div class="log-entry">
         <span class="log-time"></span>
-        <span class="log-msg system">AetherAI Stage 5 ready. Built by Patrick Perez.</span>
+        <span class="log-msg system">⬡ AetherAI Stage 5 ready. Built by Patrick Perez.</span>
       </div>
     </div>
     <div class="input-row">
       <span class="prompt">aether&gt;</span>
       <input class="cmd-input" id="cmdInput"
-             placeholder="Create a presentation... / Research... / Open Chrome..."
-             autocomplete="off" />
+             placeholder="Create a presentation… / Research… / Open Chrome…"
+             autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
       <button class="btn primary" id="sendBtn" onclick="sendCommand()">Run</button>
       <button class="btn danger"  id="stopBtn" onclick="stopTask()" style="display:none">Stop</button>
     </div>
   </main>
 
   <!-- Right panel -->
-  <aside class="panel">
-    <div class="panel-header">Task Detail</div>
+  <aside class="panel" id="panel">
+    <div class="panel-header">
+      <span>Task Detail</span>
+      <button class="icon-btn mobile-only" onclick="closeDrawers()" style="font-size:13px;padding:3px 6px">✕</button>
+    </div>
     <div class="devices-row" id="devicesRow">No devices connected</div>
     <div class="steps-list" id="stepsList">
-      <div style="color:var(--muted);padding:10px;font-size:10px">Select a task to see steps</div>
+      <div style="color:var(--muted);padding:14px;font-size:12px">Select a task to see steps</div>
     </div>
-    <div class="files-section" id="filesSection">
+    <div class="files-section">
       <div class="files-title">
         <span>Generated Files</span>
         <button class="clear-btn" onclick="confirmDeleteAllFiles()">✕ Clear</button>
       </div>
-      <div id="filesList"><div style="color:var(--muted);font-size:10px">No files yet</div></div>
+      <div id="filesList"><div style="color:var(--muted);font-size:11px">No files yet</div></div>
     </div>
     <div class="panel-actions" id="panelActions" style="display:none">
-      <button class="btn danger" style="width:100%;font-size:11px" onclick="cancelActiveTask()">Cancel Task</button>
+      <button class="btn danger" style="width:100%;font-size:12px" onclick="cancelActiveTask()">Cancel Task</button>
     </div>
   </aside>
 </div>
 
-<!-- ── Settings modal ───────────────────────────────────────────────────── -->
+<!-- ── Settings modal ─────────────────────────────────────────────────────── -->
 <div class="modal-overlay" id="settingsOverlay" onclick="closeSettingsOnBg(event)">
   <div class="modal">
     <div class="modal-title">
-      <span>Settings</span>
+      <span>⚙ Settings</span>
       <button class="modal-close" onclick="closeSettings()">✕</button>
     </div>
-    <div class="field-label">API Key</div>
+    <label class="field-label" for="settingsApiKey">API Key</label>
     <input class="field-input" id="settingsApiKey" type="password"
            placeholder="Leave blank if no key is set" />
-    <button class="modal-save" onclick="saveSettings()">Save</button>
+    <button class="modal-save" onclick="saveSettings()">Save Settings</button>
   </div>
 </div>
 
-<!-- ── Confirm dialog ────────────────────────────────────────────────────── -->
+<!-- ── Confirm dialog ─────────────────────────────────────────────────────── -->
 <div class="confirm-overlay" id="confirmOverlay">
   <div class="confirm-box">
     <div class="confirm-msg" id="confirmMsg">Are you sure?</div>
@@ -470,22 +601,55 @@ let API_KEY      = localStorage.getItem('aether_api_key') || '';
 let activeTaskId = null;
 let ws           = null;
 let taskRunning  = false;
-
 let cmdHistory   = JSON.parse(localStorage.getItem('aether_cmd_history') || '[]');
 let historyIdx   = -1;
 let historyDraft = '';
-
 let lastShownOutput = null;
 
-let tasksInterval, filesInterval, devicesInterval;
+/* ── Theme ──────────────────────────────────────────────────────────────── */
+(function initTheme() {
+  const t = localStorage.getItem('aether_theme') || 'dark';
+  document.documentElement.setAttribute('data-theme', t);
+  document.getElementById('themeBtn').textContent = t === 'dark' ? '🌙' : '☀️';
+})();
+
+function toggleTheme() {
+  const cur  = document.documentElement.getAttribute('data-theme');
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('aether_theme', next);
+  document.getElementById('themeBtn').textContent = next === 'dark' ? '🌙' : '☀️';
+}
+
+/* ── Mobile drawers ─────────────────────────────────────────────────────── */
+function toggleSidebar() {
+  const s = document.getElementById('sidebar');
+  const p = document.getElementById('panel');
+  const o = document.getElementById('drawerOverlay');
+  p.classList.remove('open');
+  s.classList.toggle('open');
+  o.classList.toggle('open', s.classList.contains('open'));
+}
+function togglePanel() {
+  const p = document.getElementById('panel');
+  const s = document.getElementById('sidebar');
+  const o = document.getElementById('drawerOverlay');
+  s.classList.remove('open');
+  p.classList.toggle('open');
+  o.classList.toggle('open', p.classList.contains('open'));
+}
+function closeDrawers() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('panel').classList.remove('open');
+  document.getElementById('drawerOverlay').classList.remove('open');
+}
 
 /* ── Clock ──────────────────────────────────────────────────────────────── */
 function updateClock() {
   document.getElementById('clockDisplay').textContent =
     new Date().toLocaleTimeString('en-GB', { hour12: false });
 }
-updateClock();
-setInterval(updateClock, 1000);
+updateClock(); setInterval(updateClock, 1000);
 
 /* ── Utilities ──────────────────────────────────────────────────────────── */
 function escHtml(s) {
@@ -493,13 +657,9 @@ function escHtml(s) {
     .replace(/&/g,'&amp;').replace(/</g,'&lt;')
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
-function now() {
-  return new Date().toLocaleTimeString('en-GB', { hour12: false });
-}
+function now() { return new Date().toLocaleTimeString('en-GB',{hour12:false}); }
 
-/* FIX 1: Append 'Z' to UTC timestamps stored by SQLite (no timezone suffix)
-   so the browser interprets them as UTC, not local time. Without this fix
-   the displayed age is offset by the local UTC offset (e.g. +8 h in Manila). */
+/* FIX 1: append 'Z' to SQLite UTC strings so the browser treats them as UTC */
 function timeAgo(iso) {
   if (!iso) return '';
   const dateStr = iso.endsWith('Z') ? iso : iso + 'Z';
@@ -508,89 +668,86 @@ function timeAgo(iso) {
   if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
   return `${Math.floor(diff/3600)}h ago`;
 }
-
 function fmtSize(kb) {
-  if (kb < 1024) return `${kb} KB`;
-  return `${(kb / 1024).toFixed(1)} MB`;
+  return kb < 1024 ? `${kb} KB` : `${(kb/1024).toFixed(1)} MB`;
 }
 
-/* ── Markdown renderer ───────────────────────────────────────────────────── */
+/* ── Markdown renderer ──────────────────────────────────────────────────── */
 function renderMarkdown(text) {
   let s = escHtml(text);
 
+  // Code fences
   s = s.replace(/```[\w]*\n?([\s\S]*?)```/g,
-    '<code style="background:#1a2233;padding:2px 5px;border-radius:3px;font-family:inherit;display:inline-block">$1</code>');
+    '<code style="background:var(--code-bg);padding:2px 6px;border-radius:4px;font-family:Consolas,Monaco,monospace;display:inline-block;white-space:pre-wrap">$1</code>');
 
-  s = s.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-  s = s.replace(/^## (.+)$/gm,  '<h2>$1</h2>');
-  s = s.replace(/^# (.+)$/gm,   '<h1>$1</h1>');
+  // Headings
+  s = s.replace(/^### (.+)$/gm, '<h3 style="color:var(--accent);margin:10px 0 5px">$1</h3>');
+  s = s.replace(/^## (.+)$/gm,  '<h2 style="color:var(--accent);margin:10px 0 5px">$1</h2>');
+  s = s.replace(/^# (.+)$/gm,   '<h1 style="color:var(--accent);margin:10px 0 5px">$1</h1>');
 
+  // Bold / italic
   s = s.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
   s = s.replace(/\*\*(.+?)\*\*/g,     '<strong>$1</strong>');
   s = s.replace(/\*(.+?)\*/g,         '<em>$1</em>');
 
+  // Inline code
   s = s.replace(/`([^`]+)`/g,
-    '<code style="background:#1a2233;padding:1px 5px;border-radius:3px;font-family:inherit">$1</code>');
+    '<code style="background:var(--code-bg);padding:1px 6px;border-radius:4px;font-family:Consolas,Monaco,monospace">$1</code>');
 
-  s = s.replace(/^[-*]{3,}$/gm, '<hr>');
+  // Horizontal rule
+  s = s.replace(/^[-*]{3,}$/gm, '<hr style="border:none;border-top:1px solid var(--border);margin:8px 0">');
 
-  s = s.replace(/((?:^[•\-] .+$\n?)+)/gm, match => {
-    const items = match.trim().split('\n')
-      .map(l => `<li>${l.replace(/^[•\-] /, '')}</li>`)
-      .join('');
-    return `<ul>${items}</ul>\n`;
+  // Unordered lists
+  s = s.replace(/((?:^[•\-] .+$\n?)+)/gm, m => {
+    const items = m.trim().split('\n').map(l => `<li>${l.replace(/^[•\-] /,'')}</li>`).join('');
+    return `<ul style="padding-left:20px;margin:6px 0">${items}</ul>\n`;
   });
 
-  s = s.replace(/((?:^\d+\. .+$\n?)+)/gm, match => {
-    const items = match.trim().split('\n')
-      .map(l => `<li>${l.replace(/^\d+\. /, '')}</li>`)
-      .join('');
-    return `<ol>${items}</ol>\n`;
+  // Ordered lists
+  s = s.replace(/((?:^\d+\. .+$\n?)+)/gm, m => {
+    const items = m.trim().split('\n').map(l => `<li>${l.replace(/^\d+\. /,'')}</li>`).join('');
+    return `<ol style="padding-left:20px;margin:6px 0">${items}</ol>\n`;
   });
 
+  // Links
   s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
     '<a href="$2" target="_blank" rel="noopener">$1</a>');
-
   s = s.replace(/(https?:\/\/[^\s<"]+)/g,
     '<a href="$1" target="_blank" rel="noopener">$1</a>');
 
-  s = s.replace(/\n\n+/g, '</p><p>');
+  // Paragraphs
+  s = s.replace(/\n\n+/g,'</p><p>');
   s = '<p>' + s + '</p>';
-  s = s.replace(/\n/g, '<br>');
-
-  s = s.replace(/<p>\s*<\/p>/g, '');
-  s = s.replace(/<p>(<(?:h[1-3]|ul|ol|hr)[^>]*)>/g, '$1>');
-  s = s.replace(/<\/(h[1-3]|ul|ol)><\/p>/g, '</$1>');
-  s = s.replace(/<p>(<hr>)<\/p>/g, '$1');
+  s = s.replace(/\n/g,'<br>');
+  s = s.replace(/<p>\s*<\/p>/g,'');
+  s = s.replace(/<p>(<(?:h[1-3]|ul|ol|hr)[^>]*)>/g,'$1>');
+  s = s.replace(/<\/(h[1-3]|ul|ol)><\/p>/g,'</$1>');
+  s = s.replace(/<p>(<hr[^>]*>)<\/p>/g,'$1');
 
   return s;
 }
 
-/* ── Busy bar ────────────────────────────────────────────────────────────── */
+/* ── Busy bar ───────────────────────────────────────────────────────────── */
 function setBusy(on) {
   taskRunning = on;
   document.getElementById('busyBar').classList.toggle('active', on);
 }
 
-/* ── Log helpers ─────────────────────────────────────────────────────────── */
-function log(msg, cls = 'info') {
+/* ── Log helpers ────────────────────────────────────────────────────────── */
+function log(msg, cls='info') {
   appendLog(`<span class="log-msg ${cls}">${escHtml(msg)}</span>`);
 }
-
-function logMarkdown(msg, cls = 'result') {
-  const copyId = 'cr_' + Math.random().toString(36).slice(2);
-  const rawText = msg;
+function logMarkdown(msg, cls='result') {
+  const id = 'cr_' + Math.random().toString(36).slice(2);
   appendLog(`
     <span class="log-msg ${cls}">${renderMarkdown(msg)}</span>
-    <button class="copy-result-btn" id="${copyId}" onclick="copyResult('${copyId}','${escHtml(rawText).replace(/'/g,"\\'")}')" title="Copy">⎘</button>
-  `);
+    <button class="copy-result-btn" id="${id}"
+      onclick="copyResult('${id}','${escHtml(msg).replace(/'/g,"\\'")}')"
+      title="Copy">⎘</button>`);
 }
-
 function logCodeBlock(summary, language, code) {
-  if (summary) {
-    appendLog(`<span class="log-msg result">${escHtml(summary)}</span>`);
-  }
-  const blockId = 'cb_' + Math.random().toString(36).slice(2);
+  if (summary) appendLog(`<span class="log-msg result">${escHtml(summary)}</span>`);
+  const bid  = 'cb_' + Math.random().toString(36).slice(2);
   const area = document.getElementById('outputArea');
   const el   = document.createElement('div');
   el.className = 'log-entry';
@@ -599,141 +756,128 @@ function logCodeBlock(summary, language, code) {
     <div class="code-block-wrapper">
       <div class="code-block-header">
         <span class="code-lang">${escHtml(language)}</span>
-        <button class="code-copy-btn" onclick="copyCode('${blockId}')">Copy</button>
+        <button class="code-copy-btn" onclick="copyCode('${bid}')">Copy</button>
       </div>
-      <pre class="code-block-body" id="${blockId}">${escHtml(code)}</pre>
+      <pre class="code-block-body" id="${bid}">${escHtml(code)}</pre>
     </div>`;
   area.appendChild(el);
   area.scrollTop = area.scrollHeight;
 }
-
-function appendLog(innerHtml) {
+function appendLog(inner) {
   const area = document.getElementById('outputArea');
   const el   = document.createElement('div');
   el.className = 'log-entry';
-  el.innerHTML = `<span class="log-time">[${now()}]</span>${innerHtml}`;
+  el.innerHTML = `<span class="log-time">[${now()}]</span>${inner}`;
   area.appendChild(el);
   area.scrollTop = area.scrollHeight;
 }
-
 function clearOutput() {
   document.getElementById('outputArea').innerHTML = '';
   lastShownOutput = null;
 }
-
 function copyCode(id) {
   const el = document.getElementById(id);
   if (!el) return;
   navigator.clipboard.writeText(el.textContent).then(() => {
     const btn = el.closest('.code-block-wrapper')?.querySelector('.code-copy-btn');
-    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = 'Copy', 1500); }
+    if (btn) { btn.textContent='Copied!'; setTimeout(()=>btn.textContent='Copy',1500); }
   });
 }
-
-function copyResult(btnId, rawText) {
-  const txt = rawText.replace(/&amp;/g,'&').replace(/&lt;/g,'<')
-                     .replace(/&gt;/g,'>').replace(/&quot;/g,'"');
+function copyResult(btnId, raw) {
+  const txt = raw.replace(/&amp;/g,'&').replace(/&lt;/g,'<')
+                  .replace(/&gt;/g,'>').replace(/&quot;/g,'"');
   navigator.clipboard.writeText(txt).then(() => {
     const btn = document.getElementById(btnId);
-    if (btn) { btn.textContent = '✓'; setTimeout(() => btn.textContent = '⎘', 1500); }
+    if (btn) { btn.textContent='✓'; setTimeout(()=>btn.textContent='⎘',1500); }
   });
 }
 
-/* ── WebSocket ───────────────────────────────────────────────────────────── */
-let wsReconnectDelay = 3000;
-
+/* ── WebSocket ──────────────────────────────────────────────────────────── */
+let wsDelay = 3000;
 function connectWS() {
   ws = new WebSocket(`${WS_BASE}/ws/ui/${SESSION_ID}`);
-  ws.onopen = () => {
-    wsReconnectDelay = 3000;
-    document.getElementById('statusIndicator').innerHTML =
-      '<span class="status-dot"></span>ONLINE';
+  ws.onopen  = () => {
+    wsDelay = 3000;
+    document.getElementById('statusDot').className = 'status-dot';
+    document.getElementById('statusText').textContent = 'ONLINE';
   };
   ws.onclose = () => {
-    document.getElementById('statusIndicator').innerHTML =
-      '<span class="status-dot offline"></span>OFFLINE';
-    setTimeout(connectWS, wsReconnectDelay);
-    wsReconnectDelay = Math.min(wsReconnectDelay * 1.5, 30000);
+    document.getElementById('statusDot').className = 'status-dot offline';
+    document.getElementById('statusText').textContent = 'OFFLINE';
+    setTimeout(connectWS, wsDelay);
+    wsDelay = Math.min(wsDelay * 1.5, 30000);
   };
   ws.onerror = () => {
-    document.getElementById('statusIndicator').innerHTML =
-      '<span class="status-dot offline"></span>ERROR';
+    document.getElementById('statusDot').className = 'status-dot error';
+    document.getElementById('statusText').textContent = 'ERROR';
   };
   ws.onmessage = e => {
-    let data;
-    try { data = JSON.parse(e.data); } catch { return; }
-    if (data.type === 'task_update')         handleTaskUpdate(data);
-    if (data.type === 'device_connected')    refreshDevices();
-    if (data.type === 'device_disconnected') refreshDevices();
-    if (data.type === 'ping')                ws.send(JSON.stringify({ type: 'pong' }));
+    let data; try { data = JSON.parse(e.data); } catch { return; }
+    if (data.type==='task_update')         handleTaskUpdate(data);
+    if (data.type==='device_connected')    refreshDevices();
+    if (data.type==='device_disconnected') refreshDevices();
+    if (data.type==='ping')                ws.send(JSON.stringify({type:'pong'}));
   };
 }
 connectWS();
 
-/* ── Task updates ────────────────────────────────────────────────────────── */
+/* ── Task updates ───────────────────────────────────────────────────────── */
 function handleTaskUpdate(data) {
   const { task_id, status, message, agent, result, plan, code_block } = data;
 
   if (plan)    renderPlan(plan);
   if (message) log(message, agentClass(agent || status));
 
-  if (code_block && code_block.code) {
-    logCodeBlock(data.output || '', code_block.language, code_block.code);
-    lastShownOutput = data.output || '';
+  if (code_block?.code) {
+    logCodeBlock(data.output||'', code_block.language, code_block.code);
+    lastShownOutput = data.output||'';
     refreshFiles();
   }
 
   if (data.is_chat && result) {
-    const area = document.getElementById('outputArea');
-    const copyId = 'cr_' + Math.random().toString(36).slice(2);
-    const el   = document.createElement('div');
+    const area  = document.getElementById('outputArea');
+    const id    = 'cr_' + Math.random().toString(36).slice(2);
+    const el    = document.createElement('div');
     el.className = 'log-entry';
     el.innerHTML = `
       <span class="log-time">[${now()}]</span>
       <span class="log-msg chat">&#x1F4AC; ${renderMarkdown(result)}</span>
-      <button class="copy-result-btn" id="${copyId}"
-              onclick="copyResult('${copyId}','${escHtml(result).replace(/'/g,"\\'")}')">⎘</button>`;
+      <button class="copy-result-btn" id="${id}"
+        onclick="copyResult('${id}','${escHtml(result).replace(/'/g,"\\'")}')">⎘</button>`;
     area.appendChild(el);
     area.scrollTop = area.scrollHeight;
     lastShownOutput = result;
-    unlockInput();
-    loadTasks();
-    return;
+    unlockInput(); loadTasks(); return;
   }
 
-  if (data.output && !code_block && data.step_status === 'completed') {
+  if (data.output && !code_block && data.step_status==='completed') {
     logMarkdown('✓ ' + data.output, 'result');
     lastShownOutput = data.output;
   }
 
-  if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+  if (status==='completed' || status==='failed' || status==='cancelled') {
     if (result && !code_block) {
-      const rt = result.trim();
-      const lt = (lastShownOutput || '').trim();
-      const isDup = lt && (rt === lt || (lt.length > 40 && rt.startsWith(lt.slice(0, 40))));
-      if (!isDup) logMarkdown('✓ ' + result, 'result');
+      const rt = result.trim(), lt = (lastShownOutput||'').trim();
+      const dup = lt && (rt===lt || (lt.length>40 && rt.startsWith(lt.slice(0,40))));
+      if (!dup) logMarkdown('✓ ' + result, 'result');
     }
-    setBusy(false);
-    unlockInput();
-    refreshFiles();
-    if (activeTaskId === task_id) {
-      document.getElementById('panelActions').style.display = 'none';
-    }
+    setBusy(false); unlockInput(); refreshFiles();
+    if (activeTaskId===task_id)
+      document.getElementById('panelActions').style.display='none';
   }
 
   loadTasks();
-  if (activeTaskId === task_id) loadSteps(task_id);
+  if (activeTaskId===task_id) loadSteps(task_id);
 }
 
 function agentClass(hint) {
   if (!hint) return 'info';
   if (hint.includes('agent')) return 'agent';
-  if (hint === 'planning')    return 'system';
-  if (hint === 'completed')   return 'result';
-  if (hint === 'failed')      return 'error';
+  if (hint==='planning')  return 'system';
+  if (hint==='completed') return 'result';
+  if (hint==='failed')    return 'error';
   return 'info';
 }
-
 function unlockInput() {
   setBusy(false);
   document.getElementById('sendBtn').disabled = false;
@@ -743,7 +887,7 @@ function unlockInput() {
   document.getElementById('cmdInput').focus();
 }
 
-/* ── Send command ────────────────────────────────────────────────────────── */
+/* ── Send command ───────────────────────────────────────────────────────── */
 async function sendCommand() {
   const input = document.getElementById('cmdInput');
   const cmd   = input.value.trim();
@@ -754,51 +898,45 @@ async function sendCommand() {
     if (cmdHistory.length > 50) cmdHistory.pop();
     localStorage.setItem('aether_cmd_history', JSON.stringify(cmdHistory));
   }
-  historyIdx   = -1;
-  historyDraft = '';
+  historyIdx = -1; historyDraft = '';
 
   input.value = '';
   document.getElementById('sendBtn').disabled = true;
   document.getElementById('stopBtn').style.display = 'inline-block';
-  input.disabled = false;
   setBusy(true);
-
+  closeDrawers();
   clearOutput();
   log(`> ${cmd}`, 'system');
 
   try {
-    const res  = await fetch(`${BASE_URL}/command`, {
+    const res = await fetch(`${BASE_URL}/command`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Api-Key': API_KEY },
       body: JSON.stringify({ command: cmd, source: 'web' }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    const data   = await res.json();
     activeTaskId = data.task_id;
     log(`Task ${data.task_id.slice(0,8)}…`, 'info');
     document.getElementById('panelActions').style.display = 'flex';
     loadTasks();
-  } catch (err) {
+  } catch(err) {
     log(`Connection error: ${err}`, 'error');
     unlockInput();
   }
 }
-
 async function stopTask() {
   if (!activeTaskId) return;
   try {
-    await fetch(`${BASE_URL}/task/${activeTaskId}/cancel`, { method: 'POST' });
+    await fetch(`${BASE_URL}/task/${activeTaskId}/cancel`, { method:'POST' });
     log('Task cancellation requested.', 'system');
-  } catch (e) {
-    log(`Cancel failed: ${e}`, 'error');
-  }
+  } catch(e) { log(`Cancel failed: ${e}`, 'error'); }
 }
 async function cancelActiveTask() { await stopTask(); }
 
-/* ── Plan visualization ──────────────────────────────────────────────────── */
+/* ── Plan visualization ─────────────────────────────────────────────────── */
 function renderPlan(plan) {
-  const list = document.getElementById('stepsList');
-  list.innerHTML = plan.map(s => `
+  document.getElementById('stepsList').innerHTML = plan.map(s => `
     <div class="step-item" id="step-${s.step}">
       <div class="step-header">
         <div class="step-dot pending" id="dot-${s.step}"></div>
@@ -813,31 +951,26 @@ async function loadSteps(taskId) {
     const res  = await fetch(`${BASE_URL}/task/${taskId}`);
     if (!res.ok) return;
     const data = await res.json();
-    if (!data.steps || !data.steps.length) return;
-
+    if (!data.steps?.length) return;
     const list = document.getElementById('stepsList');
     list.innerHTML = data.steps.map(s => {
-      const isRunning = s.status === 'running';
-      const outputHtml = s.output
-        ? `<div class="step-output">${escHtml(s.output.split('\n')[0])}</div>`
-        : '';
-      return `
-        <div class="step-item${isRunning ? ' is-running' : ''}">
-          <div class="step-header">
-            <div class="step-dot ${s.status || 'pending'}"></div>
-            <span class="step-agent">${escHtml(s.agent)}</span>
-          </div>
-          <div class="step-desc">${escHtml(s.description)}</div>
-          ${outputHtml}
-        </div>`;
+      const isRun  = s.status==='running';
+      const outHtml = s.output
+        ? `<div class="step-output">${escHtml(s.output.split('\n')[0])}</div>` : '';
+      return `<div class="step-item${isRun?' is-running':''}">
+        <div class="step-header">
+          <div class="step-dot ${s.status||'pending'}"></div>
+          <span class="step-agent">${escHtml(s.agent)}</span>
+        </div>
+        <div class="step-desc">${escHtml(s.description)}</div>
+        ${outHtml}</div>`;
     }).join('');
-
-    const running = list.querySelector('.is-running');
-    if (running) running.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    const run = list.querySelector('.is-running');
+    if (run) run.scrollIntoView({block:'nearest',behavior:'smooth'});
   } catch {}
 }
 
-/* ── Task list ───────────────────────────────────────────────────────────── */
+/* ── Task list ──────────────────────────────────────────────────────────── */
 async function loadTasks() {
   if (document.hidden) return;
   try {
@@ -846,14 +979,12 @@ async function loadTasks() {
     const data  = await res.json();
     const tasks = data.tasks || data || [];
     const list  = document.getElementById('taskList');
-
     if (!tasks.length) {
-      list.innerHTML = '<div style="color:var(--muted);font-size:10px;padding:10px">No tasks yet</div>';
+      list.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:14px">No tasks yet</div>';
       return;
     }
-
     list.innerHTML = tasks.map(t => `
-      <div class="task-card ${t.task_id === activeTaskId ? 'active' : ''}"
+      <div class="task-card${t.task_id===activeTaskId?' active':''}"
            onclick="selectTask('${t.task_id}')">
         <div class="task-row">
           <div class="task-title" style="flex:1">${escHtml(t.command)}</div>
@@ -867,112 +998,90 @@ async function loadTasks() {
   } catch {}
 }
 loadTasks();
-tasksInterval = setInterval(loadTasks, 10000);
+setInterval(loadTasks, 10000);
 
-/* FIX 10: Reconstruct output area from stored step data when clicking an old task.
-   Previously selectTask only updated the right-panel steps list; the main output
-   area stayed blank for historical tasks. Now we fetch the full task + steps and
-   replay each completed step's output into the output area. */
+/* FIX 10: Reconstruct output area from stored step data when clicking old task */
 async function selectTask(taskId) {
   activeTaskId = taskId;
-  loadTasks();  // refresh sidebar highlight
-
+  loadTasks();
+  closeDrawers();
   try {
     const res = await fetch(`${BASE_URL}/task/${taskId}`);
     if (!res.ok) return;
     const task = await res.json();
 
-    // ── Render steps in right panel ──────────────────────────────────────
     if (task.steps?.length) {
-      const list = document.getElementById('stepsList');
-      list.innerHTML = task.steps.map(s => {
-        const outputHtml = s.output
-          ? `<div class="step-output">${escHtml(s.output.slice(0, 120))}</div>`
-          : '';
-        return `
-          <div class="step-item">
-            <div class="step-header">
-              <div class="step-dot ${s.status || 'pending'}"></div>
-              <span class="step-agent">${escHtml(s.agent)}</span>
-            </div>
-            <div class="step-desc">${escHtml(s.description)}</div>
-            ${outputHtml}
-          </div>`;
+      document.getElementById('stepsList').innerHTML = task.steps.map(s => {
+        const outHtml = s.output
+          ? `<div class="step-output">${escHtml(s.output.slice(0,120))}</div>` : '';
+        return `<div class="step-item">
+          <div class="step-header">
+            <div class="step-dot ${s.status||'pending'}"></div>
+            <span class="step-agent">${escHtml(s.agent)}</span>
+          </div>
+          <div class="step-desc">${escHtml(s.description)}</div>
+          ${outHtml}</div>`;
       }).join('');
     }
 
-    // Only reconstruct output for finished tasks (running tasks use live WS)
-    if (task.status === 'running' || task.status === 'planning') return;
+    if (task.status==='running' || task.status==='planning') return;
 
-    // ── Reconstruct output area ──────────────────────────────────────────
     clearOutput();
     log(`> ${task.command}`, 'system');
     log(`Task ${taskId.slice(0,8)}… — ${task.status}`, 'info');
 
-    if (task.steps) {
-      for (const step of task.steps) {
-        if (step.output && step.status === 'completed') {
-          log(`${step.agent}: ${step.description}`, 'agent');
-          logMarkdown('✓ ' + step.output, 'result');
-          lastShownOutput = step.output;
-        }
+    for (const step of (task.steps||[])) {
+      if (step.output && step.status==='completed') {
+        log(`${step.agent}: ${step.description}`, 'agent');
+        logMarkdown('✓ ' + step.output, 'result');
+        lastShownOutput = step.output;
       }
     }
-
-    // Show final result if it wasn't already shown via a step
-    if (task.result && task.status === 'completed') {
-      const rt = task.result.trim();
-      const lt = (lastShownOutput || '').trim();
-      const isDup = lt && (rt === lt || (lt.length > 40 && rt.startsWith(lt.slice(0, 40))));
-      if (!isDup) logMarkdown('✓ ' + task.result, 'result');
-    } else if (task.result && task.status === 'failed') {
+    if (task.result && task.status==='completed') {
+      const rt = task.result.trim(), lt = (lastShownOutput||'').trim();
+      const dup = lt && (rt===lt || (lt.length>40 && rt.startsWith(lt.slice(0,40))));
+      if (!dup) logMarkdown('✓ ' + task.result, 'result');
+    } else if (task.result && task.status==='failed') {
       log(`Failed: ${task.result}`, 'error');
     }
-
-  } catch (e) {
-    console.error('selectTask error:', e);
-  }
+  } catch(e) { console.error('selectTask:', e); }
 }
 
 async function deleteTask(taskId, e) {
   e.stopPropagation();
-  await fetch(`${BASE_URL}/task/${taskId}`, { method: 'DELETE' });
-  if (activeTaskId === taskId) {
+  await fetch(`${BASE_URL}/task/${taskId}`, { method:'DELETE' });
+  if (activeTaskId===taskId) {
     activeTaskId = null;
     document.getElementById('stepsList').innerHTML =
-      '<div style="color:var(--muted);padding:10px;font-size:10px">Select a task to see steps</div>';
+      '<div style="color:var(--muted);padding:14px;font-size:12px">Select a task to see steps</div>';
     document.getElementById('panelActions').style.display = 'none';
     clearOutput();
   }
   loadTasks();
 }
-
 function confirmDeleteAllTasks() {
   showConfirm('Delete ALL tasks? This cannot be undone.', async () => {
-    await fetch(`${BASE_URL}/tasks/all`, { method: 'DELETE' });
+    await fetch(`${BASE_URL}/tasks/all`, { method:'DELETE' });
     activeTaskId = null;
     document.getElementById('stepsList').innerHTML =
-      '<div style="color:var(--muted);padding:10px;font-size:10px">Select a task to see steps</div>';
+      '<div style="color:var(--muted);padding:14px;font-size:12px">Select a task to see steps</div>';
     document.getElementById('panelActions').style.display = 'none';
-    clearOutput();
-    loadTasks();
+    clearOutput(); loadTasks();
   });
 }
 
-/* ── Files ───────────────────────────────────────────────────────────────── */
+/* ── Files ──────────────────────────────────────────────────────────────── */
 async function deleteFile(filename, e) {
   e.stopPropagation();
-  await fetch(`${BASE_URL}/files/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+  await fetch(`${BASE_URL}/files/${encodeURIComponent(filename)}`, { method:'DELETE' });
   refreshFiles();
 }
-
 function confirmDeleteAllFiles() {
   showConfirm('Delete ALL generated files?', async () => {
-    await fetch(`${BASE_URL}/files/all/clear`, { method: 'DELETE' });
+    await fetch(`${BASE_URL}/files/all/clear`, { method:'DELETE' });
     refreshFiles();
   });
 }
-
 async function refreshFiles() {
   if (document.hidden) return;
   try {
@@ -981,29 +1090,28 @@ async function refreshFiles() {
     const data  = await res.json();
     const files = data.files || [];
     const el    = document.getElementById('filesList');
-
     if (!files.length) {
-      el.innerHTML = '<div style="color:var(--muted);font-size:10px">No files yet</div>';
+      el.innerHTML = '<div style="color:var(--muted);font-size:11px">No files yet</div>';
       return;
     }
-
     el.innerHTML = files.map(f => {
-      const ext = f.name.split('.').pop().toLowerCase();
-      const sz  = f.size_kb != null ? fmtSize(f.size_kb) : '';
+      const ext     = f.name.split('.').pop().toLowerCase();
+      const sz      = f.size_kb != null ? fmtSize(f.size_kb) : '';
+      const isImage = ['jpg','jpeg','png','gif','webp'].includes(ext);
       return `<div class="file-item">
-        <span class="file-ext ext-${ext}">${ext}</span>
+        <span class="file-ext ext-${ext}">${isImage?'🖼':ext}</span>
         <span class="file-name" title="${escHtml(f.name)}">${escHtml(f.name)}</span>
-        ${sz ? `<span class="file-size">${sz}</span>` : ''}
-        <a class="file-dl" href="${BASE_URL}${f.url}" download="${escHtml(f.name)}">↓</a>
+        ${sz?`<span class="file-size">${sz}</span>`:''}
+        <a class="file-dl" href="${BASE_URL}${f.url}" download="${escHtml(f.name)}" title="Download">↓</a>
         <button class="file-x" onclick="deleteFile('${escHtml(f.name)}',event)">✕</button>
       </div>`;
     }).join('');
   } catch {}
 }
 refreshFiles();
-filesInterval = setInterval(refreshFiles, 8000);
+setInterval(refreshFiles, 8000);
 
-/* ── Devices ─────────────────────────────────────────────────────────────── */
+/* ── Devices ────────────────────────────────────────────────────────────── */
 async function refreshDevices() {
   if (document.hidden) return;
   try {
@@ -1011,100 +1119,63 @@ async function refreshDevices() {
     if (!res.ok) return;
     const data = await res.json();
     const devs = data.devices || [];
-    const row  = document.getElementById('devicesRow');
-    const cnt  = document.getElementById('deviceCount');
-
-    if (!devs.length) {
-      row.textContent = 'No devices connected';
-      cnt.textContent = '0 devices';
-    } else {
-      row.innerHTML = devs.map(d => `<span class="device-chip">&#x2B21; ${escHtml(d)}</span>`).join(' ');
-      cnt.textContent = `${devs.length} device${devs.length > 1 ? 's' : ''}`;
-    }
+    document.getElementById('devicesRow').innerHTML = devs.length
+      ? devs.map(d=>`<span class="device-chip">⬡ ${escHtml(d)}</span>`).join(' ')
+      : 'No devices connected';
+    document.getElementById('deviceCount').textContent =
+      devs.length ? `${devs.length} device${devs.length>1?'s':''}` : '0 devices';
   } catch {}
 }
 refreshDevices();
-devicesInterval = setInterval(refreshDevices, 15000);
-
+setInterval(refreshDevices, 15000);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { loadTasks(); refreshFiles(); refreshDevices(); }
 });
 
-/* ── Settings modal ──────────────────────────────────────────────────────── */
+/* ── Settings modal ─────────────────────────────────────────────────────── */
 function openSettings() {
   document.getElementById('settingsApiKey').value = API_KEY;
   document.getElementById('settingsOverlay').classList.add('open');
 }
-function closeSettings() {
-  document.getElementById('settingsOverlay').classList.remove('open');
-}
-function closeSettingsOnBg(e) {
-  if (e.target === document.getElementById('settingsOverlay')) closeSettings();
-}
+function closeSettings() { document.getElementById('settingsOverlay').classList.remove('open'); }
+function closeSettingsOnBg(e) { if (e.target.id==='settingsOverlay') closeSettings(); }
 function saveSettings() {
   API_KEY = document.getElementById('settingsApiKey').value.trim();
   localStorage.setItem('aether_api_key', API_KEY);
-  closeSettings();
-  log('Settings saved.', 'system');
+  closeSettings(); log('Settings saved.', 'system');
 }
 
-/* ── Confirm dialog ──────────────────────────────────────────────────────── */
-let _confirmCallback = null;
+/* ── Confirm dialog ─────────────────────────────────────────────────────── */
+let _confirmCb = null;
 function showConfirm(msg, cb) {
   document.getElementById('confirmMsg').textContent = msg;
-  _confirmCallback = cb;
+  _confirmCb = cb;
   document.getElementById('confirmOverlay').classList.add('open');
 }
-function closeConfirm() {
-  _confirmCallback = null;
-  document.getElementById('confirmOverlay').classList.remove('open');
-}
+function closeConfirm() { _confirmCb=null; document.getElementById('confirmOverlay').classList.remove('open'); }
 document.getElementById('confirmYes').addEventListener('click', () => {
-  if (_confirmCallback) _confirmCallback();
-  closeConfirm();
+  if (_confirmCb) _confirmCb(); closeConfirm();
 });
 
-/* ── Keyboard shortcuts ──────────────────────────────────────────────────── */
+/* ── Keyboard shortcuts ─────────────────────────────────────────────────── */
 document.getElementById('cmdInput').addEventListener('keydown', e => {
-  if (e.key === 'Enter') {
+  if (e.key==='Enter') { e.preventDefault(); sendCommand(); return; }
+  if (e.key==='ArrowUp') {
     e.preventDefault();
-    sendCommand();
+    if (historyIdx===-1) historyDraft = e.target.value;
+    if (historyIdx < cmdHistory.length-1) { historyIdx++; e.target.value=cmdHistory[historyIdx]; }
     return;
   }
-
-  if (e.key === 'ArrowUp') {
+  if (e.key==='ArrowDown') {
     e.preventDefault();
-    if (historyIdx === -1) historyDraft = e.target.value;
-    if (historyIdx < cmdHistory.length - 1) {
-      historyIdx++;
-      e.target.value = cmdHistory[historyIdx];
-    }
+    if (historyIdx>0) { historyIdx--; e.target.value=cmdHistory[historyIdx]; }
+    else if (historyIdx===0) { historyIdx=-1; e.target.value=historyDraft; }
     return;
   }
-  if (e.key === 'ArrowDown') {
-    e.preventDefault();
-    if (historyIdx > 0) {
-      historyIdx--;
-      e.target.value = cmdHistory[historyIdx];
-    } else if (historyIdx === 0) {
-      historyIdx = -1;
-      e.target.value = historyDraft;
-    }
-    return;
-  }
-
-  if (e.key === 'Escape') {
-    e.target.value = '';
-    historyIdx = -1;
-    return;
-  }
+  if (e.key==='Escape') { e.target.value=''; historyIdx=-1; }
 });
-
 document.addEventListener('keydown', e => {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
-    e.preventDefault();
-    clearOutput();
-  }
+  if ((e.ctrlKey||e.metaKey) && e.key==='l') { e.preventDefault(); clearOutput(); }
 });
 </script>
 </body>

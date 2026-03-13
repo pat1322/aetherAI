@@ -288,6 +288,14 @@ class BrowserAgent(BaseAgent):
     # ── YouTube ───────────────────────────────────────────────────────────────
 
     async def _youtube_search(self, query: str) -> str:
+        """Search YouTube with a hard 20-second global timeout to prevent hanging."""
+        try:
+            return await asyncio.wait_for(self._youtube_search_inner(query), timeout=20.0)
+        except asyncio.TimeoutError:
+            logger.warning("[BrowserAgent] YouTube search timed out — falling back to web search")
+            return await self._web_search(f"youtube {query} videos site:youtube.com")
+
+    async def _youtube_search_inner(self, query: str) -> str:
         result = await self._youtube_via_invidious(query)
         if result:
             return result
@@ -317,7 +325,7 @@ class BrowserAgent(BaseAgent):
         for base in PIPED_INSTANCES:
             try:
                 url  = f"{base}/search?q={quote_plus(query)}&filter=videos"
-                r    = await _get_with_retry(url, timeout=8.0)
+                r    = await _get_with_retry(url, timeout=5.0)
                 items = r.json().get("items", [])
                 if not items:
                     continue
