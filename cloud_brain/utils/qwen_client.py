@@ -104,6 +104,17 @@ class QwenClient:
         "take a screenshoot",   # common typo
     ]
 
+    # Real-time queries: current time, date, weather need browser_agent, not chat
+    REALTIME_KEYWORDS = [
+        "what time is it", "what's the time", "current time",
+        "what time in ", "time in ", "time now in", "time right now",
+        "what day is it", "what's today", "today's date", "current date",
+        "what date is it", "what year is it",
+        "weather in ", "current weather", "what's the weather",
+        "temperature in ", "forecast for",
+        "what is the time", "tell me the time",
+    ]
+
     def _is_browser_task(self, cmd_lc: str) -> bool:
         if any(k in cmd_lc for k in self.BROWSER_KEYWORDS):
             return True
@@ -132,6 +143,10 @@ class QwenClient:
     def _is_screenshot_task(self, cmd_lc: str) -> bool:
         return any(k in cmd_lc for k in self.SCREENSHOT_KEYWORDS)
 
+    def _is_realtime_task(self, cmd_lc: str) -> bool:
+        """Queries that need live data (time, weather) must use browser_agent."""
+        return any(k in cmd_lc for k in self.REALTIME_KEYWORDS)
+
     # ── Command classifier ────────────────────────────────────────────────────
 
     async def classify_command(self, command: str, user_context: str = "") -> str:
@@ -146,6 +161,9 @@ class QwenClient:
             return "task"
         # FIX 4: Screenshot is always a task (PC control via automation_agent)
         if self._is_screenshot_task(cmd_lc):
+            return "task"
+        # Real-time queries need browser_agent, not a static chat answer
+        if self._is_realtime_task(cmd_lc):
             return "task"
 
         ctx_block = f"\n\nUser context:\n{user_context}" if user_context else ""
@@ -167,6 +185,13 @@ class QwenClient:
         is_open_app = self._is_open_app_command(cmd_lc)
         is_browser  = self._is_browser_task(cmd_lc)
         is_coding   = any(k in cmd_lc for k in self.CODE_KEYWORDS)
+
+        # FIX: Real-time queries always go straight to browser_agent search
+        if self._is_realtime_task(cmd_lc) and not is_browser:
+            query = command  # pass the whole command as the search query
+            return [{"step": 1, "agent": "browser_agent",
+                     "description": f"Search for: {command}",
+                     "parameters": {"action": "search", "query": query, "engine": "google"}}]
         is_memory   = self._is_memory_task(cmd_lc)
 
         # Hard-route memory tasks
@@ -229,6 +254,7 @@ class QwenClient:
             "  ⚠️ coding_agent is a TERMINAL step — do NOT add research steps after it.\n\n"
 
             "automation_agent — control the PC\n"
+            '  open_app: {"action":"open_app","parameters":{"app":"chrome|edge|firefox|calculator|paint|explorer|notepad|word|excel|powerpoint|vlc|any-app-name"}}\n'
             '  new_file: {"action":"new_file","parameters":{"app":"notepad|word|excel|powerpoint|notepad++"}}\n'
             '  type:     {"action":"type","parameters":{"text":"__GENERATED_CONTENT__"}}\n'
             '  hotkey:   {"action":"hotkey","parameters":{"keys":["ctrl","s"]}}\n'
@@ -312,11 +338,43 @@ class QwenClient:
         return plan
 
     def _build_browser_plan(self, command: str, cmd_lc: str) -> list[dict]:
+        # ── Common site name → URL map (no TLD required) ──────────────────────
+        SITE_MAP = {
+            "youtube": "https://youtube.com", "facebook": "https://facebook.com",
+            "twitter": "https://twitter.com", "instagram": "https://instagram.com",
+            "reddit": "https://reddit.com",   "github": "https://github.com",
+            "stackoverflow": "https://stackoverflow.com",
+            "netflix": "https://netflix.com", "amazon": "https://amazon.com",
+            "gmail": "https://gmail.com",     "linkedin": "https://linkedin.com",
+            "tiktok": "https://tiktok.com",   "spotify": "https://spotify.com",
+        }
+
         if "youtube" in cmd_lc:
-            query = re.sub(
-                r".*(search youtube for|on youtube|youtube for|find.*youtube|youtube search)\s*",
-                "", cmd_lc, flags=re.IGNORECASE
-            ).strip() or command
+            # Navigation vs search:
+            YOUTUBE_NAV    = ["go to youtube", "open youtube", "navigate to youtube",
+                              "visit youtube", "and go to youtube", "go on youtube"]
+            YOUTUBE_SEARCH = ["search youtube for", "youtube for", "on youtube",
+                               "find on youtube", "youtube search", "search on youtube"]
+            has_nav    = any(k in cmd_lc for k in YOUTUBE_NAV)
+            has_search = any(k in cmd_lc for k in YOUTUBE_SEARCH)
+
+            if has_nav and not has_search:
+                return [{"step": 1, "agent": "browser_agent",
+                         "description": "Navigate to YouTube",
+                         "parameters": {"action": "workflow", "goal": "open youtube",
+                                        "url": "https://youtube.com"}}]
+
+            # Extract actual search query
+            query = cmd_lc
+            for pat in YOUTUBE_SEARCH + ["open chrome and", "launch chrome and",
+                                          "open browser and", "search youtube"]:
+                query = re.sub(rf".*{re.escape(pat)}\s*", "", query,
+                               flags=re.IGNORECASE).strip()
+            if not query or len(query) < 2:
+                return [{"step": 1, "agent": "browser_agent",
+                         "description": "Navigate to YouTube",
+                         "parameters": {"action": "workflow", "goal": "open youtube",
+                                        "url": "https://youtube.com"}}]
             return [{"step": 1, "agent": "browser_agent",
                      "description": f"Search YouTube for: {query}",
                      "parameters": {"action": "youtube", "query": query}}]
@@ -367,6 +425,16 @@ class QwenClient:
             return [{"step": 1, "agent": "browser_agent",
                      "description": f"Browser workflow: {command}",
                      "parameters": {"action": "workflow", "goal": command, "url": url}}]
+
+        # Check common site names without TLD ("go to reddit", "open netflix")
+        nav_plain = re.search(r"(?:go to|open|visit|navigate to|launch)\s+(\w+)", cmd_lc)
+        if nav_plain:
+            site_key = nav_plain.group(1).lower()
+            if site_key in SITE_MAP:
+                return [{"step": 1, "agent": "browser_agent",
+                         "description": f"Navigate to {site_key.capitalize()}",
+                         "parameters": {"action": "workflow", "goal": f"open {site_key}",
+                                        "url": SITE_MAP[site_key]}}]
 
         return [{"step": 1, "agent": "browser_agent",
                  "description": f"Browser search: {command}",

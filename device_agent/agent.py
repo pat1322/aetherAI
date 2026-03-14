@@ -150,6 +150,27 @@ OFFICE_MAP = {
     "powerpoint": "powerpoint", "ppt": "powerpoint",
 }
 
+# Windows built-in and common apps — launched directly without COM
+BUILTIN_APP_MAP = {
+    "calculator": "calc.exe",
+    "calc":       "calc.exe",
+    "paint":      "mspaint.exe",
+    "mspaint":    "mspaint.exe",
+    "explorer":   "explorer.exe",
+    "files":      "explorer.exe",
+    "file explorer": "explorer.exe",
+    "wordpad":    "wordpad.exe",
+    "cmd":        "cmd.exe",
+    "terminal":   "wt.exe",          # Windows Terminal
+    "powershell": "powershell.exe",
+    "task manager": "taskmgr.exe",
+    "taskmgr":    "taskmgr.exe",
+    "snipping tool": "SnippingTool.exe",
+    "snip":       "SnippingTool.exe",
+    "settings":   "ms-settings:",    # ms-settings URI
+    "store":      "ms-windows-store:",
+}
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -463,7 +484,7 @@ class DeviceAgent:
     async def _open_app(self, app: str) -> str:
         app_lc = app.lower().strip()
 
-        # Office apps → delegate to _new_file
+        # Office apps → delegate to _new_file (opens new doc via COM)
         office_key = OFFICE_MAP.get(app_lc)
         if office_key:
             return await self._new_file(office_key)
@@ -477,6 +498,10 @@ class DeviceAgent:
                 activate_window_by_title("Notepad++")
                 return "Opened Notepad++"
 
+        # Notepad (plain)
+        if app_lc == "notepad":
+            return await self._new_file("notepad")
+
         # FIX 5: Chrome — resolve the full executable path from known locations
         if "chrome" in app_lc:
             chrome_path = find_chrome()
@@ -485,13 +510,42 @@ class DeviceAgent:
                 await asyncio.sleep(2.5)
                 activate_window_by_title("Chrome")
                 return "Opened Google Chrome"
-            # Fallback: let Windows resolve it via the shell
             if sys.platform == "win32":
                 subprocess.Popen('start "" "chrome"', shell=True)
                 await asyncio.sleep(2.5)
                 return "Opened Chrome (shell)"
 
-        # Generic OS open
+        # Edge
+        if "edge" in app_lc:
+            if sys.platform == "win32":
+                subprocess.Popen('start "" "msedge"', shell=True)
+                await asyncio.sleep(2.5)
+                return "Opened Microsoft Edge"
+
+        # Firefox
+        if "firefox" in app_lc:
+            if sys.platform == "win32":
+                subprocess.Popen('start "" "firefox"', shell=True)
+                await asyncio.sleep(2.5)
+                return "Opened Firefox"
+
+        # Windows built-in apps (calculator, paint, explorer, etc.)
+        for key, exe in BUILTIN_APP_MAP.items():
+            if key in app_lc:
+                if exe.endswith(":"):
+                    # ms-uri scheme (settings, store)
+                    subprocess.Popen(f'start "" "{exe}"', shell=True)
+                    await asyncio.sleep(1.5)
+                    return f"Opened {key}"
+                if sys.platform == "win32":
+                    try:
+                        subprocess.Popen([exe])
+                    except FileNotFoundError:
+                        subprocess.Popen(f'start "" "{exe}"', shell=True)
+                    await asyncio.sleep(1.5)
+                    return f"Opened {key}"
+
+        # Generic OS open fallback
         if sys.platform == "win32":
             subprocess.Popen(f'start "" "{app}"', shell=True)
         elif sys.platform == "darwin":

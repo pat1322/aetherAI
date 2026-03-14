@@ -25,6 +25,7 @@ from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -36,20 +37,30 @@ OUTPUT_DIR = Path(__file__).parent.parent.parent / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 # ── Image sources ─────────────────────────────────────────────────────────────
-# loremflickr returns topic-relevant photos from Flickr based on keywords.
-# It's free, no API key needed, and far more accurate than random Picsum photos.
-# URL format: https://loremflickr.com/900/600/keyword1,keyword2
+#
+# Source priority:
+#   1. Wikimedia REST API  — returns the actual Wikipedia article image for a
+#      topic/keyword. Highly accurate, free, no key, no rate limit for small use.
+#      URL: https://en.wikipedia.org/api/rest_v1/page/summary/{keyword}
+#           → response.thumbnail.source
+#
+#   2. loremflickr         — Flickr photos tagged with the keyword. Decent relevance,
+#      occasionally returns cached/repeated images for close queries.
+#
+#   3. Picsum              — Fully random. Absolute last resort.
+#
+WIKIMEDIA_URL   = "https://en.wikipedia.org/api/rest_v1/page/summary/{keyword}"
 LOREMFLICKR_URL = "https://loremflickr.com/900/600/{query}?lock={seed}"
 PICSUM_URL      = "https://picsum.photos/seed/{seed}/900/600"
 
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "AetherAI-DocumentAgent/1.0 (https://github.com/pat1322/aetherAI; "
+        "contact via GitHub) python-httpx"
     )
 }
 
-_IMAGE_SEM = asyncio.Semaphore(3)
+_IMAGE_SEM = asyncio.Semaphore(4)  # up from 3 — all slides now fetch images
 
 # FIX 9: Stop-words to strip before building image search queries
 _STOP_WORDS = {
@@ -175,30 +186,67 @@ def pick_theme() -> dict:
 # ── Image helpers ─────────────────────────────────────────────────────────────
 
 async def fetch_image_bytes(keyword: str, slide_index: int, timeout: float = 10.0) -> Optional[bytes]:
+    """
+    Fetch a topic-relevant image for a slide.
+    Tries Wikimedia (Wikipedia article thumbnail) first — most accurate.
+    Falls back to loremflickr, then Picsum.
+    Each source uses a different keyword form for best results.
+    """
     async with _IMAGE_SEM:
-        # Keyword is already cleaned by _build_image_query.
-        # loremflickr uses comma-separated keywords with no spaces.
-        words  = keyword.split()[:4]
-        query  = ",".join(words) or keyword[:40]
-        seed   = abs(hash(keyword)) % 9000 + slide_index * 13
+        words = keyword.split()
+        seed  = abs(hash(keyword)) % 9000 + slide_index * 17
 
-        # Attempt 1: loremflickr — returns a Flickr photo relevant to the keywords.
-        # The ?lock={seed} param keeps the image stable across re-fetches for the
-        # same slide while still varying images between slides.
+        # ── Attempt 1: Wikimedia REST API ──────────────────────────────────────
+        # Try each word combo from most-specific to least until we get a thumbnail.
+        # Wikipedia's summary endpoint returns the article's main image, which is
+        # always directly relevant to the search term.
+        wiki_candidates = []
+        if len(words) >= 2:
+            wiki_candidates.append("_".join(words[:2]))   # e.g. "solar_system"
+        wiki_candidates.append(words[0])                   # e.g. "solar"
+        if len(words) >= 3:
+            wiki_candidates.append("_".join(words[:3]))   # e.g. "solar_system_planets"
+
+        for wkw in wiki_candidates:
+            try:
+                wkw_encoded = quote(wkw.replace(" ", "_"), safe="")
+                wiki_url = WIKIMEDIA_URL.format(keyword=wkw_encoded)
+                async with httpx.AsyncClient(
+                    headers={"User-Agent": HEADERS["User-Agent"]},
+                    follow_redirects=True, timeout=timeout
+                ) as c:
+                    r = await c.get(wiki_url)
+                    if r.status_code == 200:
+                        data = r.json()
+                        thumb = data.get("thumbnail", {}).get("source", "")
+                        if thumb:
+                            # Download the actual image from the thumbnail URL
+                            r2 = await c.get(thumb)
+                            if r2.status_code == 200 and r2.headers.get("content-type","").startswith("image"):
+                                logger.info(f"[DocumentAgent] Wikimedia OK slide {slide_index} kw='{wkw}'")
+                                return r2.content
+            except Exception as e:
+                logger.debug(f"[DocumentAgent] Wikimedia failed '{wkw}': {e}")
+
+        # ── Attempt 2: loremflickr ─────────────────────────────────────────────
         try:
-            url = LOREMFLICKR_URL.format(query=query, seed=seed)
-            async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=timeout) as c:
+            query = ",".join(words[:4]) or keyword[:40]
+            url   = LOREMFLICKR_URL.format(query=query, seed=seed)
+            async with httpx.AsyncClient(
+                headers={"User-Agent": "Mozilla/5.0"},
+                follow_redirects=True, timeout=timeout
+            ) as c:
                 r  = await c.get(url)
                 ct = r.headers.get("content-type", "")
                 if r.status_code == 200 and ct.startswith("image"):
                     logger.info(f"[DocumentAgent] loremflickr OK slide {slide_index} query='{query}'")
                     return r.content
         except Exception as e:
-            logger.debug(f"[DocumentAgent] loremflickr failed '{query}': {e}")
+            logger.debug(f"[DocumentAgent] loremflickr failed: {e}")
 
-        # Attempt 2: Picsum (fully random fallback — only if loremflickr unreachable)
+        # ── Attempt 3: Picsum (random — last resort) ───────────────────────────
         try:
-            async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=timeout) as c:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as c:
                 r = await c.get(PICSUM_URL.format(seed=seed))
                 if r.status_code == 200:
                     logger.info(f"[DocumentAgent] Picsum fallback OK slide {slide_index}")
@@ -210,14 +258,17 @@ async def fetch_image_bytes(keyword: str, slide_index: int, timeout: float = 10.
 
 
 async def fetch_images_for_slides(slides: list, topic: str) -> dict[int, bytes]:
-    # FIX 9: Use _build_image_query() for each slide instead of naively joining
-    # slide title + topic. This produces focused, stop-word-free queries.
+    """
+    Fetch a relevant image for EVERY content slide.
+    Each slide gets its own focused keyword from its title + the overall topic.
+    Removed the old `if i % 2 == 0` filter that caused alternate slides to be text-only.
+    """
     tasks = {
         i: asyncio.create_task(
             fetch_image_bytes(_build_image_query(slide.get("title", ""), topic), i)
         )
         for i, slide in enumerate(slides)
-        if i % 2 == 0
+        # All slides get an image — removed `if i % 2 == 0`
     }
     images: dict[int, bytes] = {}
     for i, task in tasks.items():
@@ -447,7 +498,7 @@ Include a stat on at least 3 slides. Make content rich and specific."""
                     color=rgb(T["text_light"]), font=hf())
                 bullets(sl, blist, 0.5, 1.3, 7.0, 5.8)
                 add_img(sl, img, 7.8, 1.2, 5.0, 6.0)
-                txt(sl, "Photo: loremflickr.com", 7.8, 7.1, 4.5, 0.3, 8,
+                txt(sl, "Photo: Wikimedia / loremflickr", 7.8, 7.1, 4.5, 0.3, 8,
                     italic=True, color=rgb(T["muted"]))
 
             else:
