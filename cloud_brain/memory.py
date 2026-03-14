@@ -1,44 +1,14 @@
 """
-AetherAI — Memory Manager  (Stage 4 — hardened)
+AetherAI — Memory Manager  (Stage 5, patched)
 
-WHAT'S NEW vs the previous version
-────────────────────────────────────
-1. Database indexes
-   Added indexes on tasks(created_at), tasks(status), steps(task_id),
-   steps(task_id, step_number), and preferences(key).
-   list_tasks() and get_task() were doing full table scans — indexes make
-   them instant even with thousands of rows.
-
-2. Auto-cleanup of old tasks
-   purge_old_tasks(days=30) deletes tasks (and their steps) older than N
-   days. Called automatically on __init__ so the database never grows
-   unbounded. Configurable via settings.TASK_RETENTION_DAYS.
-
-3. File registry
-   New `files` table tracks every generated file: name, path, size,
-   task_id (which task created it), and created_at.
-   register_file() / list_files() / delete_file_record() / purge_orphaned_files()
-   give the orchestrator and main.py a single source of truth for output
-   files, replacing the current ad-hoc directory scan in main.py.
-
-4. Task result truncation guard
-   update_task_status() now enforces a 2000-char cap on result so SQLite
-   rows don't balloon with full research summaries.
-
-5. Connection pooling via check_same_thread=False + WAL mode
-   SQLite WAL journal mode allows concurrent reads without blocking writes.
-   Useful when multiple orchestrator tasks run in parallel (Stage 4+).
-
-6. delete_tasks_by_status(status)
-   Convenience method for bulk-deleting all cancelled/failed tasks.
-
-7. get_task_stats()
-   Returns counts by status — used by the health endpoint to show a
-   dashboard summary without a full table scan.
-
-8. All public methods are synchronous (unchanged interface).
-   Async wrappers are not needed because SQLite calls are fast
-   and the orchestrator already runs them in the event loop thread.
+Patch applied
+─────────────
+FIX 2  Added delete_preference(key) — performs a real SQL DELETE instead of
+       storing JSON null. The old approach left zombie rows in the preferences
+       table forever and made the index grow with dead keys on every "forget"
+       command.
+       memory_agent.py and main.py now call delete_preference() instead of
+       set_preference(key, None).
 """
 
 import json
@@ -52,7 +22,6 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-# Result stored in DB is capped to this length
 RESULT_MAX_CHARS = 2000
 
 
@@ -71,11 +40,10 @@ class MemoryManager:
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(
             self.db_path,
-            check_same_thread=False,   # safe: we use one conn per call
+            check_same_thread=False,
             timeout=10.0,
         )
         conn.row_factory = sqlite3.Row
-        # WAL mode: readers don't block writers, writers don't block readers
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         return conn
@@ -85,8 +53,6 @@ class MemoryManager:
     def _init_db(self):
         with self._conn() as conn:
             conn.executescript("""
-                -- ── Core tables ────────────────────────────────────────────
-
                 CREATE TABLE IF NOT EXISTS tasks (
                     task_id     TEXT PRIMARY KEY,
                     command     TEXT NOT NULL,
@@ -116,35 +82,26 @@ class MemoryManager:
                     updated_at  TEXT NOT NULL
                 );
 
-                -- ── File registry (new) ─────────────────────────────────────
-
                 CREATE TABLE IF NOT EXISTS files (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
                     filename    TEXT NOT NULL UNIQUE,
                     filepath    TEXT NOT NULL,
                     size_bytes  INTEGER DEFAULT 0,
-                    task_id     TEXT,               -- nullable: manually uploaded files
+                    task_id     TEXT,
                     created_at  TEXT NOT NULL,
                     FOREIGN KEY (task_id) REFERENCES tasks(task_id)
                 );
 
-                -- ── Indexes ─────────────────────────────────────────────────
-
                 CREATE INDEX IF NOT EXISTS idx_tasks_created
                     ON tasks(created_at DESC);
-
                 CREATE INDEX IF NOT EXISTS idx_tasks_status
                     ON tasks(status);
-
                 CREATE INDEX IF NOT EXISTS idx_steps_task
                     ON steps(task_id);
-
                 CREATE INDEX IF NOT EXISTS idx_steps_task_num
                     ON steps(task_id, step_number);
-
                 CREATE INDEX IF NOT EXISTS idx_files_task
                     ON files(task_id);
-
                 CREATE INDEX IF NOT EXISTS idx_files_created
                     ON files(created_at DESC);
             """)
@@ -183,7 +140,6 @@ class MemoryManager:
 
     def update_task_status(self, task_id: str, status: str, result: str = None):
         now = datetime.utcnow().isoformat()
-        # Enforce result length cap
         if result and len(result) > RESULT_MAX_CHARS:
             result = result[:RESULT_MAX_CHARS] + "…"
         with self._conn() as conn:
@@ -219,7 +175,6 @@ class MemoryManager:
             return count
 
     def delete_tasks_by_status(self, status: str) -> int:
-        """Delete all tasks with a given status (e.g. 'failed', 'cancelled')."""
         with self._conn() as conn:
             ids = [
                 r[0] for r in conn.execute(
@@ -234,7 +189,6 @@ class MemoryManager:
             return len(ids)
 
     def purge_old_tasks(self, days: int = 30) -> int:
-        """Delete tasks (and steps) older than `days` days. Returns count deleted."""
         cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
         with self._conn() as conn:
             ids = [
@@ -250,7 +204,6 @@ class MemoryManager:
             return len(ids)
 
     def get_task_stats(self) -> dict:
-        """Returns task counts grouped by status."""
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT status, COUNT(*) as cnt FROM tasks GROUP BY status"
@@ -290,7 +243,6 @@ class MemoryManager:
 
     def register_file(self, filename: str, filepath: str,
                       task_id: Optional[str] = None, size_bytes: int = 0):
-        """Record a newly generated file in the registry."""
         now = datetime.utcnow().isoformat()
         with self._conn() as conn:
             conn.execute(
@@ -301,7 +253,6 @@ class MemoryManager:
             )
 
     def list_files(self, limit: int = 50) -> list:
-        """Return recently generated files, newest first."""
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM files ORDER BY created_at DESC LIMIT ?", (limit,)
@@ -309,7 +260,6 @@ class MemoryManager:
             return [dict(r) for r in rows]
 
     def delete_file_record(self, filename: str) -> bool:
-        """Remove a file from the registry (does NOT delete the file on disk)."""
         with self._conn() as conn:
             result = conn.execute(
                 "DELETE FROM files WHERE filename=?", (filename,)
@@ -317,10 +267,6 @@ class MemoryManager:
             return result.rowcount > 0
 
     def purge_orphaned_files(self, output_dir: str) -> int:
-        """
-        Remove registry entries whose file no longer exists on disk.
-        Returns count of records cleaned up.
-        """
         records = self.list_files(limit=1000)
         cleaned = 0
         with self._conn() as conn:
@@ -337,6 +283,7 @@ class MemoryManager:
     # ── Preferences ────────────────────────────────────────────────────────────
 
     def set_preference(self, key: str, value):
+        """Upsert a preference value."""
         now = datetime.utcnow().isoformat()
         with self._conn() as conn:
             conn.execute(
@@ -352,3 +299,15 @@ class MemoryManager:
             if not row:
                 return default
             return json.loads(row["value"])
+
+    def delete_preference(self, key: str) -> bool:
+        """
+        FIX 2: Permanently remove a preference row from the DB.
+        Previously callers used set_preference(key, None) which stored JSON
+        'null' and left a zombie row. This does a real DELETE.
+        """
+        with self._conn() as conn:
+            result = conn.execute(
+                "DELETE FROM preferences WHERE key=?", (key,)
+            )
+            return result.rowcount > 0

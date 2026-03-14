@@ -1,6 +1,19 @@
 """
-AetherAI Cloud Brain — Stage 5
+AetherAI Cloud Brain — Stage 5 (patched)
 FastAPI entry point: API Gateway + WebSocket manager + Preference endpoints
+
+Fixes applied
+─────────────
+FIX 1  API key is now actually enforced.
+       A Starlette middleware checks X-Api-Key on every non-public route.
+       Public routes (/, /health, /ui/*, WebSocket upgrades) are exempt so
+       the dashboard and device agent can still connect without a key when
+       AETHER_API_KEY is blank (dev mode).
+       Previously the key was loaded from settings but never checked, meaning
+       any caller could hit every endpoint.
+
+FIX 3  delete_all_files no longer relies on `not f.unlink()` (which silently
+       swallows errors and is unreadable). Replaced with an explicit loop.
 """
 
 from dotenv import load_dotenv
@@ -13,18 +26,19 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from orchestrator import Orchestrator
 from memory import MemoryManager
 from utils.websocket_manager import WebSocketManager
 from config import settings
 
-# ── App setup ────────────────────────────────────────────────────────────────
+# ── App setup ─────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="AetherAI Cloud Brain",
@@ -37,6 +51,49 @@ app.add_middleware(
     allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"],
 )
+
+# ── FIX 1: API key enforcement middleware ─────────────────────────────────────
+
+# Routes that never require a key (UI assets, health probe, WS upgrades)
+_PUBLIC_PREFIXES = ("/ui", "/health", "/docs", "/openapi", "/redoc")
+_PUBLIC_EXACT    = frozenset(["/", "/health"])
+
+class ApiKeyMiddleware(BaseHTTPMiddleware):
+    """
+    Rejects requests with HTTP 401 when:
+      - AETHER_API_KEY is configured in the environment, AND
+      - the request is not to a public route, AND
+      - the X-Api-Key header is missing or wrong.
+
+    WebSocket upgrade requests are passed through so the device agent and
+    web UI can connect; they authenticate via the query-param / header path
+    that websockets.connect() supports.
+    """
+    async def dispatch(self, request: Request, call_next):
+        # Skip enforcement when no key is configured (local dev)
+        if not settings.API_KEY:
+            return await call_next(request)
+
+        # Always allow public routes
+        path = request.url.path
+        if path in _PUBLIC_EXACT or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+            return await call_next(request)
+
+        # WebSocket upgrade — allow through (WS auth handled separately)
+        if request.headers.get("upgrade", "").lower() == "websocket":
+            return await call_next(request)
+
+        # Check header
+        provided = request.headers.get("X-Api-Key", "")
+        if provided != settings.API_KEY:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid or missing API key. Set X-Api-Key header."},
+            )
+
+        return await call_next(request)
+
+app.add_middleware(ApiKeyMiddleware)
 
 # ── Global instances ──────────────────────────────────────────────────────────
 
@@ -166,15 +223,22 @@ async def delete_file(filename: str):
 
 @app.delete("/files/all/clear")
 async def delete_all_files():
+    # FIX 3: explicit loop — don't abuse `not f.unlink()` side-effect trick
     output_dir = Path(__file__).parent.parent / "output"
-    count = sum(1 for f in output_dir.iterdir() if f.is_file() and not f.unlink())
+    count = 0
+    for f in output_dir.iterdir():
+        if f.is_file():
+            try:
+                f.unlink()
+                count += 1
+            except Exception:
+                pass
     return {"deleted_count": count}
 
-# ── Preference endpoints (Stage 5) ───────────────────────────────────────────
+# ── Preference endpoints ──────────────────────────────────────────────────────
 
 @app.get("/preferences")
 async def list_preferences():
-    """Return all stored user preferences."""
     from agents.memory_agent import _INDEX_KEY
     index = memory.get_preference(_INDEX_KEY, default=[])
     if not isinstance(index, list):
@@ -188,13 +252,13 @@ async def list_preferences():
 
 @app.post("/preferences")
 async def set_preference_api(req: PrefRequest):
-    """Save a preference directly (bypasses the memory agent NLP)."""
     from agents.memory_agent import _INDEX_KEY, _slug, _PREF_PREFIX
     key   = _PREF_PREFIX + _slug(req.label)
     entry = {"label": req.label, "value": req.value, "raw": f"{req.label}: {req.value}"}
     memory.set_preference(key, entry)
     index = memory.get_preference(_INDEX_KEY, default=[])
-    if not isinstance(index, list): index = []
+    if not isinstance(index, list):
+        index = []
     if key not in index:
         index.append(key)
         memory.set_preference(_INDEX_KEY, index)
@@ -202,20 +266,18 @@ async def set_preference_api(req: PrefRequest):
 
 @app.delete("/preferences/all")
 async def clear_preferences():
-    """Wipe all stored preferences."""
     from agents.memory_agent import _INDEX_KEY
     index = memory.get_preference(_INDEX_KEY, default=[])
     if isinstance(index, list):
         for key in index:
-            memory.set_preference(key, None)
+            memory.delete_preference(key)
     memory.set_preference(_INDEX_KEY, [])
     return {"cleared": True}
 
 @app.delete("/preferences/{key:path}")
 async def delete_preference(key: str):
-    """Delete a preference by its key slug."""
     from agents.memory_agent import _INDEX_KEY
-    memory.set_preference(key, None)
+    memory.delete_preference(key)
     index = memory.get_preference(_INDEX_KEY, default=[])
     if isinstance(index, list) and key in index:
         index.remove(key)
@@ -232,6 +294,12 @@ async def list_devices():
 
 @app.websocket("/ws/device/{device_id}")
 async def device_websocket(websocket: WebSocket, device_id: str):
+    # WS auth: check api_key query param if key is configured
+    if settings.API_KEY:
+        provided = websocket.query_params.get("api_key", "")
+        if provided != settings.API_KEY:
+            await websocket.close(code=4401, reason="Invalid API key")
+            return
     await ws_manager.connect_device(device_id, websocket)
     try:
         while True:

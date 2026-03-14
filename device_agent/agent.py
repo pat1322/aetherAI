@@ -1,19 +1,35 @@
 """
-AetherAI — Device Agent  (Stage 4 — hardened, patched)
+AetherAI — Device Agent  (Stage 4, patched)
 
-Fixes applied
-─────────────
-FIX 5  "Open Chrome" was failing because subprocess was called with just
-       "chrome" (not the full path). Added CHROME_PATHS with common Windows
-       install locations and a find_chrome() helper. _open_app() now tries the
-       resolved path before falling back to the generic OS open.
+Fix applied
+───────────
+FIX 3  Vision loop WebSocket race condition eliminated.
 
-FIX 6  When Notepad (or another text editor) was opened and then a type action
-       immediately followed, the typing arrived before the window was focused.
-       The type action handler now calls activate_window_by_title() for the
-       last known app name (passed as an optional "activate_app" param) and
-       waits 400 ms before sending keystrokes. If no app hint is provided a
-       general 500 ms pause + neutral focus re-assertion is applied.
+       ROOT CAUSE
+       ──────────
+       The old code ran two concurrent coroutines that both consumed from the
+       same WebSocket stream:
+         • _listen() — main receive loop, handles all message types
+         • _vision_loop() → _wait_for_vision_response() — also `async for raw in ws`
+
+       Because WebSocket messages are consumed once, whichever coroutine reached
+       `receive()` first would get the message. During a vision loop, a
+       `vision_action` reply from the cloud might be silently swallowed by
+       _listen() (which didn't know what to do with it), leaving
+       _wait_for_vision_response() blocked forever until it timed out.
+
+       FIX
+       ───
+       _listen() is now the single consumer of the WebSocket stream.
+       _wait_for_vision_response() is removed entirely.
+
+       For each in-flight vision loop we create an asyncio.Queue keyed by
+       request_id. When _listen() receives a `vision_action` message it looks
+       up the queue and puts the raw JSON string there. _vision_loop() awaits
+       that queue instead of reading from the WebSocket directly.
+
+       All other message types continue to be handled inside _listen() as
+       before. No message is ever "stolen" by the wrong coroutine.
 """
 
 import asyncio
@@ -73,7 +89,7 @@ KEEPALIVE_INTERVAL  = 30
 MAX_ACTION_RETRIES  = 1
 MAX_RECONNECT_DELAY = 30
 
-# ── Notepad++ search paths ─────────────────────────────────────────────────────
+# ── App paths ──────────────────────────────────────────────────────────────────
 
 NOTEPADPP_PATHS = [
     r"C:\Program Files\Notepad++\notepad++.exe",
@@ -82,15 +98,12 @@ NOTEPADPP_PATHS = [
     r"C:\Users\patri\scoop\apps\notepadplusplus\current\notepad++.exe",
 ]
 
-# FIX 5: Chrome executable paths for common Windows install locations
 CHROME_PATHS = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     r"C:\Users\patri\AppData\Local\Google\Chrome\Application\chrome.exe",
     r"C:\Users\Public\Desktop\Google Chrome.lnk",
 ]
-
-# ── Office COM scripts ─────────────────────────────────────────────────────────
 
 OFFICE_COM_SCRIPTS = {
     "word": """
@@ -132,25 +145,14 @@ $app.Activate()
 """,
 }
 
-OFFICE_TITLES = {
-    "word":       "Word",
-    "excel":      "Excel",
-    "powerpoint": "PowerPoint",
-}
-
-OFFICE_BODY_Y = {
-    "word":       0.50,
-    "excel":      0.45,
-    "powerpoint": 0.55,
-}
-
-OFFICE_MAP = {
+OFFICE_TITLES = {"word": "Word", "excel": "Excel", "powerpoint": "PowerPoint"}
+OFFICE_BODY_Y = {"word": 0.50, "excel": 0.45, "powerpoint": 0.55}
+OFFICE_MAP    = {
     "word": "word", "winword": "word",
     "excel": "excel",
     "powerpoint": "powerpoint", "ppt": "powerpoint",
 }
 
-# Windows built-in and common apps — launched directly without COM
 BUILTIN_APP_MAP = {
     "calculator": "calc.exe",
     "calc":       "calc.exe",
@@ -161,30 +163,23 @@ BUILTIN_APP_MAP = {
     "file explorer": "explorer.exe",
     "wordpad":    "wordpad.exe",
     "cmd":        "cmd.exe",
-    "terminal":   "wt.exe",          # Windows Terminal
+    "terminal":   "wt.exe",
     "powershell": "powershell.exe",
     "task manager": "taskmgr.exe",
     "taskmgr":    "taskmgr.exe",
     "snipping tool": "SnippingTool.exe",
     "snip":       "SnippingTool.exe",
-    "settings":   "ms-settings:",    # ms-settings URI
+    "settings":   "ms-settings:",
     "store":      "ms-windows-store:",
 }
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def find_notepadpp() -> str | None:
     return next((p for p in NOTEPADPP_PATHS if os.path.exists(p)), None)
 
-
-# FIX 5: Resolve the Chrome executable from known paths
 def find_chrome() -> str | None:
-    for p in CHROME_PATHS:
-        if os.path.exists(p):
-            return p
-    return None
-
+    return next((p for p in CHROME_PATHS if os.path.exists(p)), None)
 
 def activate_window_by_title(title_fragment: str):
     try:
@@ -199,7 +194,6 @@ def activate_window_by_title(title_fragment: str):
     except Exception as e:
         logger.debug(f"activate_window_by_title failed: {e}")
 
-
 def capture_screen(max_width: int = 1280, jpeg_quality: int = 70) -> str:
     img = ImageGrab.grab()
     w, h = img.size
@@ -209,7 +203,6 @@ def capture_screen(max_width: int = 1280, jpeg_quality: int = 70) -> str:
     buf = BytesIO()
     img.convert("RGB").save(buf, format="JPEG", quality=jpeg_quality, optimize=True)
     return base64.b64encode(buf.getvalue()).decode()
-
 
 def open_office_via_com(office_key: str):
     script = OFFICE_COM_SCRIPTS.get(office_key, "")
@@ -235,6 +228,9 @@ class DeviceAgent:
     def __init__(self):
         self.ws_url  = f"{CLOUD_BRAIN_URL}/ws/device/{DEVICE_ID}"
         self.running = True
+        # FIX 3: per-request queues for vision loop responses.
+        # Key: request_id  Value: asyncio.Queue[str]
+        self._vision_queues: dict[str, asyncio.Queue] = {}
 
     # ── Connection management ──────────────────────────────────────────────────
 
@@ -243,15 +239,17 @@ class DeviceAgent:
         while self.running:
             try:
                 logger.info(f"Connecting to {self.ws_url} as '{DEVICE_ID}'")
-                headers = {"X-Api-Key": API_KEY} if API_KEY else {}
+                # FIX 2: append api_key as query param so the server can validate it
+                url = self.ws_url
+                if API_KEY:
+                    url = f"{url}?api_key={API_KEY}"
                 async with websockets.connect(
-                    self.ws_url,
-                    additional_headers=headers,
+                    url,
                     ping_interval=None,
                     ping_timeout=None,
                     close_timeout=10,
                 ) as ws:
-                    logger.info("✓ Connected to AetherAI Cloud Brain")
+                    logger.info("Connected to AetherAI Cloud Brain")
                     delay = 5
                     await asyncio.gather(self._listen(ws), self._keepalive(ws))
 
@@ -271,7 +269,13 @@ class DeviceAgent:
         except Exception:
             pass
 
+    # ── FIX 3: single-consumer listen loop ────────────────────────────────────
+
     async def _listen(self, ws):
+        """
+        The ONLY coroutine that reads from the WebSocket.
+        All message routing happens here — no other coroutine touches ws directly.
+        """
         async for raw in ws:
             try:
                 data     = json.loads(raw)
@@ -279,14 +283,19 @@ class DeviceAgent:
 
                 if msg_type == "ping":
                     await ws.send(json.dumps({"type": "pong"}))
+
                 elif msg_type == "pong":
                     pass
+
                 elif msg_type == "screenshot":
                     await self._handle_screenshot(ws, data)
+
                 elif msg_type == "action":
                     await self._handle_action(ws, data)
+
                 elif msg_type == "vision_task":
                     asyncio.create_task(self._vision_loop(ws, data))
+
                 elif msg_type == "get_screen_info":
                     w, h = pyautogui.size()
                     await ws.send(json.dumps({
@@ -295,6 +304,18 @@ class DeviceAgent:
                         "height":     h,
                         "request_id": data.get("request_id", ""),
                     }))
+
+                elif msg_type == "vision_action":
+                    # FIX 3: route to the waiting vision loop via its queue
+                    request_id = data.get("request_id", "")
+                    q = self._vision_queues.get(request_id)
+                    if q:
+                        await q.put(raw)
+                    else:
+                        logger.debug(
+                            f"[Listen] vision_action for unknown request_id={request_id!r} — ignored"
+                        )
+
                 else:
                     logger.debug(f"Unknown message type: {msg_type}")
 
@@ -320,7 +341,7 @@ class DeviceAgent:
                 "error":      str(e),
             }))
 
-    # ── Action dispatch (with retry) ───────────────────────────────────────────
+    # ── Action dispatch ────────────────────────────────────────────────────────
 
     async def _handle_action(self, ws, data: dict):
         action     = data.get("action", "")
@@ -339,7 +360,6 @@ class DeviceAgent:
             "screenshot": "screenshot_and_return",
         }
         action = aliases.get(action, action)
-
         result = await self._execute_with_retry(ws, action, params, request_id)
 
         if request_id and action != "screenshot_and_return":
@@ -363,7 +383,6 @@ class DeviceAgent:
             except Exception as e:
                 last_error = str(e)
                 logger.warning(f"Action '{action}' attempt {attempt} failed: {e}")
-
         return f"Error after {MAX_ACTION_RETRIES + 1} attempts: {last_error}"
 
     async def _execute_action(self, ws, action: str, params: dict,
@@ -393,26 +412,17 @@ class DeviceAgent:
             text = params.get("text", "")
             if not text:
                 return "type: no text provided"
-
-            # FIX 6: Activate target window and wait before typing so keystrokes
-            # don't land in the wrong window (e.g. Notepad opened in background).
             activate_app = params.get("activate_app", "").strip()
             if activate_app:
-                # Caller specified which window to focus (e.g. "Notepad")
                 activate_window_by_title(activate_app)
                 await asyncio.sleep(0.4)
             else:
-                # General guard: small pause + re-assert focus via a neutral
-                # click at the current mouse position so any recently opened
-                # window has time to become the foreground window.
                 await asyncio.sleep(0.5)
                 try:
                     pyautogui.click(*pyautogui.position())
                 except Exception:
                     pass
                 await asyncio.sleep(0.2)
-
-            # Try clipboard paste first (fast, handles all characters)
             try:
                 import pyperclip
                 pyperclip.copy(text)
@@ -420,8 +430,7 @@ class DeviceAgent:
                 pyautogui.hotkey("ctrl", "v")
                 await asyncio.sleep(0.3)
             except Exception:
-                safe_text = text[:500]
-                pyautogui.typewrite(safe_text, interval=0.03)
+                pyautogui.typewrite(text[:500], interval=0.03)
             return f"Typed {len(text)} chars"
 
         elif action == "type_special":
@@ -483,13 +492,10 @@ class DeviceAgent:
 
     async def _open_app(self, app: str) -> str:
         app_lc = app.lower().strip()
-
-        # Office apps → delegate to _new_file (opens new doc via COM)
         office_key = OFFICE_MAP.get(app_lc)
         if office_key:
             return await self._new_file(office_key)
 
-        # Notepad++
         if "notepad++" in app_lc or "notepadpp" in app_lc:
             npp = find_notepadpp()
             if npp:
@@ -498,11 +504,9 @@ class DeviceAgent:
                 activate_window_by_title("Notepad++")
                 return "Opened Notepad++"
 
-        # Notepad (plain)
         if app_lc == "notepad":
             return await self._new_file("notepad")
 
-        # FIX 5: Chrome — resolve the full executable path from known locations
         if "chrome" in app_lc:
             chrome_path = find_chrome()
             if chrome_path and chrome_path.endswith(".exe"):
@@ -515,25 +519,21 @@ class DeviceAgent:
                 await asyncio.sleep(2.5)
                 return "Opened Chrome (shell)"
 
-        # Edge
         if "edge" in app_lc:
             if sys.platform == "win32":
                 subprocess.Popen('start "" "msedge"', shell=True)
                 await asyncio.sleep(2.5)
                 return "Opened Microsoft Edge"
 
-        # Firefox
         if "firefox" in app_lc:
             if sys.platform == "win32":
                 subprocess.Popen('start "" "firefox"', shell=True)
                 await asyncio.sleep(2.5)
                 return "Opened Firefox"
 
-        # Windows built-in apps (calculator, paint, explorer, etc.)
         for key, exe in BUILTIN_APP_MAP.items():
             if key in app_lc:
                 if exe.endswith(":"):
-                    # ms-uri scheme (settings, store)
                     subprocess.Popen(f'start "" "{exe}"', shell=True)
                     await asyncio.sleep(1.5)
                     return f"Opened {key}"
@@ -545,7 +545,6 @@ class DeviceAgent:
                     await asyncio.sleep(1.5)
                     return f"Opened {key}"
 
-        # Generic OS open fallback
         if sys.platform == "win32":
             subprocess.Popen(f'start "" "{app}"', shell=True)
         elif sys.platform == "darwin":
@@ -590,14 +589,12 @@ class DeviceAgent:
             )
             wait = 5.0 if office_key in ("word", "powerpoint") else 4.0
             await asyncio.sleep(wait)
-
             title_hint = OFFICE_TITLES[office_key]
             activate_window_by_title(title_hint)
             await asyncio.sleep(0.8)
-
-            sw, sh   = pyautogui.size()
-            body_y   = OFFICE_BODY_Y.get(office_key, 0.50)
-            click_y  = int(sh * body_y)
+            sw, sh  = pyautogui.size()
+            body_y  = OFFICE_BODY_Y.get(office_key, 0.50)
+            click_y = int(sh * body_y)
             pyautogui.click(sw // 2, click_y)
             await asyncio.sleep(0.4)
             activate_window_by_title(title_hint)
@@ -610,87 +607,94 @@ class DeviceAgent:
     # ── Vision loop ────────────────────────────────────────────────────────────
 
     async def _vision_loop(self, ws, data: dict):
+        """
+        FIX 3: Vision loop no longer reads from the WebSocket directly.
+        Instead it writes to ws (sending screenshots) and waits on a
+        per-request asyncio.Queue that _listen() populates when it receives
+        a vision_action reply for this request_id.
+        """
         goal       = data.get("goal", "")
         task_id    = data.get("task_id", "")
         max_steps  = data.get("max_steps", 10)
         request_id = data.get("request_id", "")
+
         logger.info(f"Vision loop started. Goal: {goal}")
 
-        for step_num in range(1, max_steps + 1):
-            try:
-                img_b64 = capture_screen()
-                await ws.send(json.dumps({
-                    "type":         "vision_step",
-                    "task_id":      task_id,
-                    "request_id":   request_id,
-                    "step":         step_num,
-                    "image_base64": img_b64,
-                    "goal":         goal,
-                }))
+        # Register the response queue BEFORE sending the first screenshot
+        # so that a very fast cloud response can never be missed.
+        q: asyncio.Queue[str] = asyncio.Queue()
+        self._vision_queues[request_id] = q
 
+        try:
+            for step_num in range(1, max_steps + 1):
                 try:
-                    response_raw = await asyncio.wait_for(
-                        self._wait_for_vision_response(ws, request_id),
-                        timeout=30.0,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(f"Vision step {step_num}: cloud response timed out")
+                    img_b64 = capture_screen()
                     await ws.send(json.dumps({
-                        "type":       "vision_complete",
-                        "task_id":    task_id,
-                        "request_id": request_id,
-                        "message":    "Vision loop timed out waiting for cloud response",
-                        "steps_taken": step_num,
+                        "type":         "vision_step",
+                        "task_id":      task_id,
+                        "request_id":   request_id,
+                        "step":         step_num,
+                        "image_base64": img_b64,
+                        "goal":         goal,
                     }))
-                    return
 
-                response    = json.loads(response_raw)
-                action_type = response.get("action")
+                    # Wait for the cloud to reply via the queue
+                    try:
+                        response_raw = await asyncio.wait_for(q.get(), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Vision step {step_num}: cloud response timed out")
+                        await ws.send(json.dumps({
+                            "type":        "vision_complete",
+                            "task_id":     task_id,
+                            "request_id":  request_id,
+                            "message":     "Vision loop timed out waiting for cloud response",
+                            "steps_taken": step_num,
+                        }))
+                        return
 
-                if action_type == "done":
+                    response    = json.loads(response_raw)
+                    action_type = response.get("action")
+
+                    if action_type == "done":
+                        await ws.send(json.dumps({
+                            "type":        "vision_complete",
+                            "task_id":     task_id,
+                            "request_id":  request_id,
+                            "message":     response.get("message", "Task complete"),
+                            "steps_taken": step_num,
+                        }))
+                        return
+
+                    result = await self._execute_with_retry(
+                        ws, action_type, response.get("parameters", {}), ""
+                    )
+                    logger.info(f"Vision step {step_num} ({action_type}): {result}")
+                    await asyncio.sleep(0.8)
+
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.error(f"Vision loop error at step {step_num}: {e}", exc_info=True)
                     await ws.send(json.dumps({
                         "type":        "vision_complete",
                         "task_id":     task_id,
                         "request_id":  request_id,
-                        "message":     response.get("message", "Task complete"),
+                        "message":     f"Vision loop error: {e}",
                         "steps_taken": step_num,
                     }))
                     return
 
-                result = await self._execute_with_retry(ws, action_type,
-                                                         response.get("parameters", {}), "")
-                logger.info(f"Vision step {step_num} ({action_type}): {result}")
-                await asyncio.sleep(0.8)
+            await ws.send(json.dumps({
+                "type":        "vision_complete",
+                "task_id":     task_id,
+                "request_id":  request_id,
+                "message":     f"Vision loop reached max steps ({max_steps})",
+                "steps_taken": max_steps,
+            }))
 
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.error(f"Vision loop error at step {step_num}: {e}", exc_info=True)
-                await ws.send(json.dumps({
-                    "type":        "vision_complete",
-                    "task_id":     task_id,
-                    "request_id":  request_id,
-                    "message":     f"Vision loop error: {e}",
-                    "steps_taken": step_num,
-                }))
-                return
-
-        await ws.send(json.dumps({
-            "type":        "vision_complete",
-            "task_id":     task_id,
-            "request_id":  request_id,
-            "message":     f"Vision loop reached max steps ({max_steps})",
-            "steps_taken": max_steps,
-        }))
-
-    async def _wait_for_vision_response(self, ws, request_id: str) -> str:
-        async for raw in ws:
-            data = json.loads(raw)
-            if (data.get("type") == "vision_action"
-                    and data.get("request_id") == request_id):
-                return raw
-            elif data.get("type") == "ping":
-                await ws.send(json.dumps({"type": "pong"}))
+        finally:
+            # Always clean up the queue so _listen() doesn't accumulate stale entries
+            self._vision_queues.pop(request_id, None)
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
