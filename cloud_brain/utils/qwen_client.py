@@ -1,17 +1,21 @@
 """
-AetherAI — Qwen API Client  (Stage 6 — patch 6)
+AetherAI — Qwen API Client  (Stage 5 — patch 8)
 
-Fixes applied
-─────────────
-FIX 1  "open chrome and go to X" now uses `navigate_chrome` action instead
-       of open_app + wait + type + enter. The new action presses Ctrl+L first
-       to focus the address bar before typing.
+Fixes
+─────
+FIX 1  "open word and write a letter" was going to CHAT because
+       _is_creative_chat ("write a letter to") fired before
+       _is_open_app_command. Added open_app check FIRST in
+       classify_command so it correctly routes to task/automation.
 
-FIX 2  Calculator math: "open calculator and calculate 25 * 4" now produces
-       a proper sequence: open_app(calculator) + wait + calculator_input(expression).
+FIX 2  Notepad loop: _build_open_app_write_plan now hard-routes
+       "open [app] and write/type X" commands, producing a clean
+       sequence that never generates both open_app + new_file.
 
-FIX 3  All other Stage 6 patch 5 fixes retained (file/folder hard-routing,
-       currency before stock check, etc.)
+FIX 3  Chrome navigation wait reduced from 2500ms → 1000ms.
+
+FIX 4  Calculator keywords broadened so "calculate X" works without
+       needing "open calculator and" prefix.
 """
 
 import json
@@ -129,6 +133,8 @@ class QwenClient:
         "capture screen", "capture my screen", "screenshot now",
         "take a screen capture", "screen capture", "take a screenshoot",
     ]
+    # FIX 1: These are creative chat ONLY when there's no app open command
+    # They're checked with _is_open_app_command guard below
     CREATIVE_CHAT_KEYWORDS = [
         "write me a haiku", "write a haiku",
         "write me a poem", "write a poem", "compose a poem",
@@ -136,10 +142,19 @@ class QwenClient:
         "write me a story", "write a short story", "tell me a story",
         "write me a joke", "tell me a joke", "tell me a riddle",
         "write me a limerick", "write a limerick",
-        "write a letter to ", "write me a letter",
-        "write an essay about", "write me an essay",
-        "write a paragraph about",
         "write me a rap", "write a rap about",
+        # Letters/essays only count as creative if no app is mentioned
+        "write me a letter", "write an essay about", "write me an essay",
+        "write a paragraph about",
+    ]
+    # FIX 2: "open [app] and write/type X" keywords — always task
+    APP_WRITE_KEYWORDS = [
+        "open notepad and write", "open notepad and type",
+        "open notepad++ and write", "open notepad++ and type",
+        "open word and write", "open word and type",
+        "open word and create", "write a letter in word",
+        "open excel and", "open powerpoint and",
+        "open notepad and", "notepad and write", "notepad and type",
     ]
     CHROME_AUTOMATION_KEYWORDS = [
         "open chrome and", "launch chrome and", "open browser and",
@@ -215,9 +230,9 @@ class QwenClient:
     FINANCE_KEYWORDS = [
         "convert ", " to php", " to usd", " to eur",
         "exchange rate", "currency rate", "currency conversion",
-        "how much is ", "usd to php", "php to usd",
+        "usd to php", "php to usd",
         "dollar to peso", "peso to dollar",
-        "stock price", "share price", "nasdaq:", "nyse:",
+        "stock price", "share price", "nasdaq:",
         "apple stock", "tesla stock", "google stock", "amazon stock",
         "microsoft stock", "meta stock", "nvidia stock",
         "stock today", "stock market",
@@ -238,12 +253,11 @@ class QwenClient:
         "locate the file", "where is the file",
         "open file explorer", "open explorer",
     ]
-
-    # FIX 2: Calculator math keywords
+    # FIX 4: Broadened calculator keywords
     CALCULATOR_KEYWORDS = [
-        "calculate ", "calculator ", "compute ", "open calculator and",
-        "use calculator", "what is the result of", "solve ",
-        "open calc and",
+        "open calculator and", "open calc and",
+        "calculate ", "compute ", "use calculator",
+        "calculator: ", "calc: ",
     ]
 
     SITE_URL_MAP = {
@@ -264,21 +278,27 @@ class QwenClient:
 
     # ── Routing helpers ───────────────────────────────────────────────────────
 
-    def _is_creative_chat(self, c):     return any(k in c for k in self.CREATIVE_CHAT_KEYWORDS)
-    def _is_memory_task(self, c):       return any(k in c for k in self.MEMORY_KEYWORDS)
-    def _is_screenshot_task(self, c):   return any(k in c for k in self.SCREENSHOT_KEYWORDS)
+    def _is_creative_chat(self, c):
+        # FIX 1: Only creative if NOT paired with app-open command
+        if any(k in c for k in self.APP_WRITE_KEYWORDS):
+            return False
+        return any(k in c for k in self.CREATIVE_CHAT_KEYWORDS)
+
+    def _is_app_write(self, c):       return any(k in c for k in self.APP_WRITE_KEYWORDS)
+    def _is_memory_task(self, c):     return any(k in c for k in self.MEMORY_KEYWORDS)
+    def _is_screenshot_task(self, c): return any(k in c for k in self.SCREENSHOT_KEYWORDS)
     def _is_chrome_automation(self, c): return any(k in c for k in self.CHROME_AUTOMATION_KEYWORDS)
-    def _is_pc_nav(self, c):            return any(k in c for k in self.PC_NAV_KEYWORDS)
-    def _is_browser_task(self, c):      return any(k in c for k in self.BROWSER_KEYWORDS)
-    def _is_research_task(self, c):     return any(k in c for k in self.RESEARCH_KEYWORDS)
-    def _is_code_task(self, c):         return any(k in c for k in self.CODE_KEYWORDS)
-    def _is_realtime_task(self, c):     return any(k in c for k in self.REALTIME_KEYWORDS)
-    def _is_weather_task(self, c):      return any(k in c for k in self.WEATHER_KEYWORDS)
-    def _is_crypto_task(self, c):       return any(k in c for k in self.CRYPTO_KEYWORDS)
-    def _is_news_task(self, c):         return any(k in c for k in self.NEWS_KEYWORDS)
-    def _is_finance_task(self, c):      return any(k in c for k in self.FINANCE_KEYWORDS)
-    def _is_file_folder_task(self, c):  return any(k in c for k in self.FILE_FOLDER_KEYWORDS)
-    def _is_calculator_task(self, c):   return any(k in c for k in self.CALCULATOR_KEYWORDS)
+    def _is_pc_nav(self, c):          return any(k in c for k in self.PC_NAV_KEYWORDS)
+    def _is_browser_task(self, c):    return any(k in c for k in self.BROWSER_KEYWORDS)
+    def _is_research_task(self, c):   return any(k in c for k in self.RESEARCH_KEYWORDS)
+    def _is_code_task(self, c):       return any(k in c for k in self.CODE_KEYWORDS)
+    def _is_realtime_task(self, c):   return any(k in c for k in self.REALTIME_KEYWORDS)
+    def _is_weather_task(self, c):    return any(k in c for k in self.WEATHER_KEYWORDS)
+    def _is_crypto_task(self, c):     return any(k in c for k in self.CRYPTO_KEYWORDS)
+    def _is_news_task(self, c):       return any(k in c for k in self.NEWS_KEYWORDS)
+    def _is_finance_task(self, c):    return any(k in c for k in self.FINANCE_KEYWORDS)
+    def _is_file_folder_task(self, c): return any(k in c for k in self.FILE_FOLDER_KEYWORDS)
+    def _is_calculator_task(self, c): return any(k in c for k in self.CALCULATOR_KEYWORDS)
 
     def _is_open_app_command(self, c):
         OPEN_VERBS  = ["open ", "launch ", "start "]
@@ -289,8 +309,7 @@ class QwenClient:
         return (starts and app
                 and not self._is_chrome_automation(c)
                 and not self._is_pc_nav(c)
-                and not self._is_file_folder_task(c)
-                and not self._is_calculator_task(c))
+                and not self._is_file_folder_task(c))
 
     # =========================================================================
     # COMMAND CLASSIFIER
@@ -299,8 +318,11 @@ class QwenClient:
     async def classify_command(self, command: str, user_context: str = "") -> str:
         c = command.lower()
 
+        # Hard task routes — checked in strict priority order
         if self._is_memory_task(c):        return "task"
         if self._is_screenshot_task(c):    return "task"
+        if self._is_app_write(c):          return "task"   # FIX 1: before creative chat
+        if self._is_open_app_command(c):   return "task"   # FIX 1: before creative chat
         if self._is_chrome_automation(c):  return "task"
         if self._is_pc_nav(c):             return "task"
         if self._is_code_task(c):          return "task"
@@ -318,8 +340,8 @@ class QwenClient:
         ctx_block = f"\n\nUser context:\n{user_context}" if user_context else ""
         system = (
             "Classify as 'chat' or 'task'.\n\n"
-            "'chat': questions, explanations, creative writing, math questions, translations.\n"
-            "'task': create files, control PC, write code, web browsing, file operations.\n"
+            "'chat': questions, explanations, creative writing, math, translations.\n"
+            "'task': create files, control PC, write code programs/scripts, web browsing.\n"
             "Return ONLY: chat OR task"
         )
         result = await self.chat(system, command + ctx_block, temperature=0.0)
@@ -342,7 +364,10 @@ class QwenClient:
                      "description":"Take a screenshot",
                      "parameters":{"action":"screenshot_and_return"}}]
 
-        # FIX 1: Chrome navigation uses navigate_chrome action
+        # FIX 2: "open [app] and write X" — clean single sequence, no duplicate open
+        if self._is_app_write(c):
+            return self._build_app_write_plan(command, c)
+
         if self._is_chrome_automation(c):
             return self._build_chrome_automation_plan(command, c)
 
@@ -352,7 +377,6 @@ class QwenClient:
         if self._is_file_folder_task(c):
             return self._build_file_folder_plan(command, c)
 
-        # FIX 2: Calculator math
         if self._is_calculator_task(c):
             return self._build_calculator_plan(command, c)
 
@@ -395,10 +419,11 @@ class QwenClient:
                      "description":f"Write code: {command}",
                      "parameters":{"task":command,"language":lang}}]
 
-        # LLM planner for remaining commands
+        # LLM planner for remaining
         is_open_app = self._is_open_app_command(c)
         no_doc_rule = (
             "\n⚠️ CRITICAL: 'open [app]' — use automation_agent ONLY, NEVER document_agent.\n"
+            "NEVER generate both open_app AND new_file for the same app in the same plan.\n"
         ) if is_open_app else ""
 
         ctx_block = f"\n\nUser preferences:\n{user_context}" if user_context else ""
@@ -406,38 +431,32 @@ class QwenClient:
         system_prompt = (
             "You are AetherAI's task planner. Return ONLY a valid JSON array.\n\n"
             + no_doc_rule +
-            "IMPORTANT: 'parameters' MUST always be a JSON object {}, NEVER a string.\n\n"
-            "AGENTS:\n"
-            "weather_agent, crypto_agent, news_agent, finance_agent, "
-            "research_agent, browser_agent, document_agent, coding_agent,\n"
-            "automation_agent, memory_agent\n\n"
+            "IMPORTANT: 'parameters' MUST be a JSON object {}, NEVER a string.\n"
+            "IMPORTANT: Do NOT generate both open_app and new_file for the same app.\n\n"
             "automation_agent actions:\n"
-            '  open_app:          {"action":"open_app","parameters":{"app":"word|excel|powerpoint|notepad|chrome|calc"}}\n'
-            '  new_file:          {"action":"new_file","parameters":{"app":"word|excel|powerpoint|notepad"}}\n'
-            '  navigate_chrome:   {"action":"navigate_chrome","parameters":{"url":"https://..."}}\n'
-            '  calculator_input:  {"action":"calculator_input","parameters":{"expression":"25*4"}}\n'
-            '  type:              {"action":"type","parameters":{"text":"__GENERATED_CONTENT__"}}\n'
-            '  hotkey:            {"action":"hotkey","parameters":{"keys":["ctrl","s"]}}\n'
-            '  wait:              {"action":"wait","parameters":{"ms":2000}}\n'
-            '  list_files:        {"action":"list_files","parameters":{"path":"Documents"}}\n'
-            '  open_folder:       {"action":"open_folder","parameters":{"path":"Downloads"}}\n\n'
+            '  open_app:         {"action":"open_app","parameters":{"app":"notepad|word|excel|powerpoint|chrome|calc"}}\n'
+            '  navigate_chrome:  {"action":"navigate_chrome","url":"https://..."}\n'
+            '  calculator_input: {"action":"calculator_input","expression":"25*4"}\n'
+            '  type:             {"action":"type","parameters":{"text":"__GENERATED_CONTENT__"}}\n'
+            '  hotkey:           {"action":"hotkey","parameters":{"keys":["ctrl","s"]}}\n'
+            '  wait:             {"action":"wait","parameters":{"ms":1000}}\n'
+            '  list_files:       {"action":"list_files","path":"Documents"}\n'
+            '  open_folder:      {"action":"open_folder","path":"Downloads"}\n\n'
             "Each step: {step, agent, description, parameters}"
         )
 
-        raw = await self.chat(system_prompt,
-                              f'Plan: "{command}"{ctx_block}',
-                              temperature=0.2)
+        raw = await self.chat(system_prompt, f'Plan: "{command}"{ctx_block}', temperature=0.2)
         raw = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
 
         try:
             plan = json.loads(raw)
             if not isinstance(plan, list): raise ValueError
-            # Safety: ensure parameters are always dicts
             for step in plan:
                 if isinstance(step.get("parameters"), str):
                     step["parameters"] = {"query": step["parameters"]}
             if is_open_app:
                 plan = [s for s in plan if s.get("agent") != "document_agent"]
+                plan = self._dedup_open_steps(plan)
                 for idx, s in enumerate(plan, 1): s["step"] = idx
             return self._strip_trailing_steps(plan)
         except (json.JSONDecodeError, ValueError):
@@ -449,8 +468,37 @@ class QwenClient:
     # PLAN BUILDERS
     # =========================================================================
 
+    def _build_app_write_plan(self, command: str, c: str) -> list[dict]:
+        """
+        FIX 2: 'open [app] and write/type X' → clean single-sequence plan.
+        Uses new_file (not open_app) to avoid double-open, then types content.
+        """
+        # Determine which app
+        if any(k in c for k in ["word", "winword"]):
+            app = "word"
+        elif "excel" in c:
+            app = "excel"
+        elif "powerpoint" in c or " ppt" in c:
+            app = "powerpoint"
+        elif "notepad++" in c:
+            app = "notepad++"
+        else:
+            app = "notepad"
+
+        return [
+            {"step":1,"agent":"automation_agent",
+             "description":f"Open {app}",
+             "parameters":{"action":"new_file","parameters":{"app":app}}},
+            {"step":2,"agent":"automation_agent",
+             "description":"Wait for app to load",
+             "parameters":{"action":"wait","parameters":{"ms":2000}}},
+            {"step":3,"agent":"automation_agent",
+             "description":"Type the requested content",
+             "parameters":{"action":"type","parameters":{"text":"__GENERATED_CONTENT__"}}},
+        ]
+
     def _build_chrome_automation_plan(self, command: str, c: str) -> list[dict]:
-        """FIX 1: Use navigate_chrome which presses Ctrl+L to focus address bar."""
+        """FIX 3: Reduced wait to 1000ms."""
         intent = c
         for prefix in self.CHROME_AUTOMATION_KEYWORDS:
             intent = re.sub(rf".*{re.escape(prefix)}\s*", "", intent,
@@ -461,15 +509,15 @@ class QwenClient:
              "description":"Open Chrome",
              "parameters":{"action":"open_app","parameters":{"app":"chrome"}}},
             {"step":2,"agent":"automation_agent",
-             "description":"Wait for Chrome to load",
-             "parameters":{"action":"wait","parameters":{"ms":2500}}},
+             "description":"Wait for Chrome",
+             "parameters":{"action":"wait","parameters":{"ms":1000}}},   # FIX 3
             {"step":3,"agent":"automation_agent",
              "description":f"Navigate to: {url}",
              "parameters":{"action":"navigate_chrome","url":url}},
         ]
 
     def _build_pc_nav_plan(self, command: str, c: str) -> list[dict]:
-        """FIX 1: Use navigate_chrome for site navigation too."""
+        """FIX 3: Reduced wait to 1000ms."""
         url = "https://google.com"
         for site, site_url in self.SITE_URL_MAP.items():
             if site in c:
@@ -481,43 +529,25 @@ class QwenClient:
              "parameters":{"action":"open_app","parameters":{"app":"chrome"}}},
             {"step":2,"agent":"automation_agent",
              "description":"Wait for Chrome",
-             "parameters":{"action":"wait","parameters":{"ms":2500}}},
+             "parameters":{"action":"wait","parameters":{"ms":1000}}},   # FIX 3
             {"step":3,"agent":"automation_agent",
              "description":f"Navigate to {url}",
              "parameters":{"action":"navigate_chrome","url":url}},
         ]
 
     def _build_calculator_plan(self, command: str, c: str) -> list[dict]:
-        """FIX 2: Open calculator and input the math expression."""
         expression = self._extract_math_expression(command)
         return [
             {"step":1,"agent":"automation_agent",
              "description":"Open Calculator",
              "parameters":{"action":"open_app","parameters":{"app":"calculator"}}},
             {"step":2,"agent":"automation_agent",
-             "description":"Wait for Calculator to load",
-             "parameters":{"action":"wait","parameters":{"ms":1500}}},
+             "description":"Wait for Calculator",
+             "parameters":{"action":"wait","parameters":{"ms":1000}}},
             {"step":3,"agent":"automation_agent",
              "description":f"Calculate: {expression}",
              "parameters":{"action":"calculator_input","expression":expression}},
         ]
-
-    def _extract_math_expression(self, command: str) -> str:
-        """Extract math expression from 'calculate 25 * 4' or 'open calculator and compute 100/5'."""
-        # Try to find a math expression (numbers and operators)
-        m = re.search(r"([\d\s\+\-\*\/\(\)\.]+)", command)
-        if m:
-            expr = m.group(1).strip()
-            # Remove leading/trailing spaces and validate it has at least a number
-            if any(c.isdigit() for c in expr):
-                return expr
-        # Strip instruction words and return remainder
-        clean = re.sub(
-            r"\b(calculate|compute|solve|open calculator and|use calculator|"
-            r"what is the result of|open calc and)\b",
-            "", command, flags=re.IGNORECASE
-        ).strip()
-        return clean or "0"
 
     def _build_file_folder_plan(self, command: str, c: str) -> list[dict]:
         if any(k in c for k in ["list files","show files","what files","what's in my","what is in my"]):
@@ -525,54 +555,38 @@ class QwenClient:
             return [{"step":1,"agent":"automation_agent",
                      "description":f"List files in {folder}",
                      "parameters":{"action":"list_files","path":folder}}]
-
         if any(k in c for k in ["open my downloads","open the downloads","open downloads"]):
-            return [{"step":1,"agent":"automation_agent",
-                     "description":"Open Downloads folder",
+            return [{"step":1,"agent":"automation_agent","description":"Open Downloads",
                      "parameters":{"action":"open_folder","path":"Downloads"}}]
         if any(k in c for k in ["open my documents","open the documents","open documents"]):
-            return [{"step":1,"agent":"automation_agent",
-                     "description":"Open Documents folder",
+            return [{"step":1,"agent":"automation_agent","description":"Open Documents",
                      "parameters":{"action":"open_folder","path":"Documents"}}]
         if any(k in c for k in ["open my desktop","open desktop"]):
-            return [{"step":1,"agent":"automation_agent",
-                     "description":"Open Desktop folder",
+            return [{"step":1,"agent":"automation_agent","description":"Open Desktop",
                      "parameters":{"action":"open_folder","path":"Desktop"}}]
         if any(k in c for k in ["open my pictures","open pictures"]):
-            return [{"step":1,"agent":"automation_agent",
-                     "description":"Open Pictures folder",
+            return [{"step":1,"agent":"automation_agent","description":"Open Pictures",
                      "parameters":{"action":"open_folder","path":"Pictures"}}]
         if any(k in c for k in ["open my music","open music"]):
-            return [{"step":1,"agent":"automation_agent",
-                     "description":"Open Music folder",
+            return [{"step":1,"agent":"automation_agent","description":"Open Music",
                      "parameters":{"action":"open_folder","path":"Music"}}]
         if any(k in c for k in ["open my videos","open videos"]):
-            return [{"step":1,"agent":"automation_agent",
-                     "description":"Open Videos folder",
+            return [{"step":1,"agent":"automation_agent","description":"Open Videos",
                      "parameters":{"action":"open_folder","path":"Videos"}}]
-
         if "open folder" in c or "show folder" in c:
             path = re.sub(r".*(open|show)\s+folder\s*","",c,flags=re.IGNORECASE).strip()
-            return [{"step":1,"agent":"automation_agent",
-                     "description":f"Open folder: {path or 'home'}",
+            return [{"step":1,"agent":"automation_agent","description":f"Open folder: {path}",
                      "parameters":{"action":"open_folder","path":path or "home"}}]
-
         if any(k in c for k in ["find the file","find file","locate the file","search for file"]):
             filename = self._extract_filename(command)
-            return [{"step":1,"agent":"automation_agent",
-                     "description":f"Find and open: {filename}",
-                     "parameters":{"action":"find_and_open_file",
-                                   "filename":filename,
+            return [{"step":1,"agent":"automation_agent","description":f"Find: {filename}",
+                     "parameters":{"action":"find_and_open_file","filename":filename,
                                    "search_in":str(__import__('pathlib').Path.home())}}]
-
         if any(k in c for k in ["open file explorer","open explorer"]):
-            return [{"step":1,"agent":"automation_agent",
-                     "description":"Open File Explorer",
+            return [{"step":1,"agent":"automation_agent","description":"Open File Explorer",
                      "parameters":{"action":"open_app","parameters":{"app":"explorer"}}}]
-
         folder = self._extract_folder_name(c)
-        return [{"step":1,"agent":"automation_agent",
-                 "description":f"Open folder: {folder}",
+        return [{"step":1,"agent":"automation_agent","description":f"Open folder: {folder}",
                  "parameters":{"action":"open_folder","path":folder}}]
 
     def _build_browser_plan(self, command: str, c: str) -> list[dict]:
@@ -584,59 +598,62 @@ class QwenClient:
             return [{"step":1,"agent":"browser_agent",
                      "description":f"Search YouTube: {query or command}",
                      "parameters":{"action":"youtube","query":query or command}}]
-
         if any(k in c for k in ["hacker news","hackernews","ycombinator"]):
-            return [{"step":1,"agent":"browser_agent",
-                     "description":"Hacker News",
+            return [{"step":1,"agent":"browser_agent","description":"Hacker News",
                      "parameters":{"action":"workflow","goal":command}}]
-
         if "wikipedia" in c or "wiki/" in c:
             url_m = re.search(r"(https?://[^\s]+|wikipedia\.org/wiki/[^\s]+)",c)
             if url_m:
                 url = url_m.group(1)
                 if not url.startswith("http"): url = "https://" + url
-                return [{"step":1,"agent":"browser_agent",
-                         "description":"Scrape Wikipedia",
+                return [{"step":1,"agent":"browser_agent","description":"Scrape Wikipedia",
                          "parameters":{"action":"scrape","url":url}}]
-            return [{"step":1,"agent":"browser_agent",
-                     "description":"Wikipedia search",
+            return [{"step":1,"agent":"browser_agent","description":"Wikipedia search",
                      "parameters":{"action":"search","query":command,"engine":"google"}}]
-
         url_m = re.search(r"https?://[^\s]+",command)
         if url_m:
-            return [{"step":1,"agent":"browser_agent",
-                     "description":"Scrape URL",
+            return [{"step":1,"agent":"browser_agent","description":"Scrape URL",
                      "parameters":{"action":"scrape","url":url_m.group(0)}}]
-
         dest_m = re.search(
             r"(?:go to|open|visit|at|summarize.*?at)\s+([\w\-\.]+\.[\w]{2,}[^\s]*)",c)
         if dest_m:
             url = dest_m.group(1)
             if not url.startswith("http"): url = "https://" + url
-            return [{"step":1,"agent":"browser_agent",
-                     "description":"Scrape",
+            return [{"step":1,"agent":"browser_agent","description":"Scrape",
                      "parameters":{"action":"scrape","url":url}}]
-
         if any(k in c for k in ["search google for","google for","google search",
                                   "search the web for","search bing for",
                                   "search the internet for"]):
             query = re.sub(
                 r".*(search google for|google for|search the web for|"
                 r"search bing for|google search for?|search the internet for)\s*",
-                "",c,flags=re.IGNORECASE
-            ).strip() or command
+                "",c,flags=re.IGNORECASE).strip() or command
             engine = "bing" if "bing" in c else "google"
-            return [{"step":1,"agent":"browser_agent",
-                     "description":f"Web search: {query}",
+            return [{"step":1,"agent":"browser_agent","description":f"Web search: {query}",
                      "parameters":{"action":"search","query":query,"engine":engine}}]
-
-        return [{"step":1,"agent":"browser_agent",
-                 "description":f"Web search: {command}",
+        return [{"step":1,"agent":"browser_agent","description":f"Web search: {command}",
                  "parameters":{"action":"search","query":command,"engine":"google"}}]
 
     # =========================================================================
     # HELPERS
     # =========================================================================
+
+    def _dedup_open_steps(self, plan: list) -> list:
+        """FIX 2: Remove duplicate open_app/new_file steps for the same app."""
+        seen_apps = set()
+        result = []
+        for step in plan:
+            params = step.get("parameters", {})
+            action = params.get("action", "")
+            if action in ("open_app", "new_file"):
+                inner = params.get("parameters", {})
+                app = inner.get("app", "").lower() if isinstance(inner, dict) else ""
+                if app in seen_apps:
+                    continue  # skip duplicate
+                if app:
+                    seen_apps.add(app)
+            result.append(step)
+        return result
 
     def _extract_url_from_intent(self, intent: str) -> str:
         url_m = re.search(r"https?://\S+", intent)
@@ -650,6 +667,20 @@ class QwenClient:
         domain_m = re.search(r"[\w\-]+\.(com|org|net|io|co|app|dev)\b", intent)
         if domain_m: return "https://" + domain_m.group(0)
         return intent or "https://google.com"
+
+    def _extract_math_expression(self, command: str) -> str:
+        # Look for math expression with digits and operators
+        m = re.search(r"([\d\s\+\-\*\/\(\)\.%]+)", command)
+        if m:
+            expr = m.group(1).strip()
+            if any(c.isdigit() for c in expr) and len(expr) > 1:
+                return expr
+        clean = re.sub(
+            r"\b(calculate|compute|solve|open calculator and|use calculator|"
+            r"what is the result of|open calc and|calculator)\b",
+            "", command, flags=re.IGNORECASE
+        ).strip()
+        return clean or "0"
 
     def _extract_folder_name(self, c: str) -> str:
         known = {
@@ -672,7 +703,8 @@ class QwenClient:
         ]
         for pat in patterns:
             m = re.search(pat, command, re.IGNORECASE)
-            if m: return m.group(1)
+            if m:
+                return m.group(1).strip("\"'")
         return command.split()[-1]
 
     def _detect_language_hint(self, c: str) -> str:
@@ -705,7 +737,7 @@ class QwenClient:
             "Produce ONLY the requested content. No preamble. Begin immediately."
         )
         clean = re.sub(
-            r"\b(open|launch|use)\s+(notepad\+\+|notepad|word|a file)\s*(and|then|to)?\s*",
+            r"\b(open|launch|use)\s+(notepad\+\+|notepad|word|excel|powerpoint|a file)\s*(and|then|to)?\s*",
             "", command, flags=re.IGNORECASE
         ).strip() or command
         return await self.chat(system, f"Write: {clean}", temperature=0.7)

@@ -712,8 +712,13 @@ function renderMarkdown(text) {
     const items = m.trim().split('\n').map(l => `<li>${l.replace(/^[•\-] /,'')}</li>`).join('');
     return `<ul style="padding-left:20px;margin:6px 0">${items}</ul>\n`;
   });
+  // Fix: collapse blank lines before numbered items, then process
+  s = s.replace(/\n\n(\d+\. )/g, '\n$1');
   s = s.replace(/((?:^\d+\. .+$\n?)+)/gm, m => {
-    const items = m.trim().split('\n').map(l => `<li>${l.replace(/^\d+\. /,'')}</li>`).join('');
+    const items = m.trim().split('\n')
+      .map(l => l.replace(/^\d+\. /, ''))
+      .map(l => `<li>${l}</li>`)
+      .join('');
     return `<ol style="padding-left:20px;margin:6px 0">${items}</ol>\n`;
   });
   s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,

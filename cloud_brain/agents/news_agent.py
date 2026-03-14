@@ -126,15 +126,15 @@ class NewsAgent(BaseAgent):
         lines = [f"## 📰 {label} News\n"]
         for i, a in enumerate(articles[:8], 1):
             title   = a.get("title", "")
-            desc    = a.get("description", "")
+            desc    = a.get("description", "") or ""
             url     = a.get("url", "")
             source  = a.get("source", {}).get("name", "")
             pubdate = a.get("publishedAt", "")[:10]
+            short_desc = desc[:100] + "..." if len(desc) > 100 else desc
 
             lines.append(
-                f"{i}. **{title}**\n"
-                f"   {desc[:120]}{'...' if len(desc or '') > 120 else ''}\n"
-                f"   _📌 {source} · {pubdate}_ — {url}"
+                f"{i}. **{title}** — {short_desc}\n"
+                f"   📌 {source} · {pubdate} · 🔗 {url}"
             )
 
         # Ask Qwen for a brief synthesis

@@ -365,11 +365,9 @@ class BrowserAgent(BaseAgent):
 
         lines = []
         for i, r in enumerate(results[:8], 1):
-            lines.append(
-                f"{i}. **{r['title']}**\n   {r['url']}"
-                + (f"\n   _{r['desc']}_" if r['desc'] else "")
-            )
-        video_list = "\n\n".join(lines)
+            desc_str = f" — {r['desc'][:80]}" if r['desc'] else ""
+            lines.append(f"{i}. **{r['title']}**{desc_str}\n   🔗 {r['url']}")
+        video_list = "\n".join(lines)
         result_text = "\n".join(f"{r['title']}: {r['desc']}" for r in results[:8])
         summary = await self.qwen.summarize(
             content=result_text,
@@ -401,11 +399,10 @@ class BrowserAgent(BaseAgent):
                 by    = s.get("by","?")
                 comms = s.get("descendants",0)
                 lines.append(
-                    f"{i}. **{title}**\n"
-                    f"   ▲ {score} pts · by {by} · {comms} comments\n"
-                    f"   {url}"
+                    f"{i}. **{title}** — ▲{score} pts · by {by} · {comms} comments\n"
+                    f"   🔗 {url}"
                 )
-            return ("📰 **Hacker News — Top Stories**\n\n" + "\n\n".join(lines)
+            return ("📰 **Hacker News — Top Stories**\n\n" + "\n".join(lines)
                     if lines else "⚠️ Could not retrieve Hacker News stories.")
         except Exception as e:
             return f"⚠️ Hacker News API failed: {e}"

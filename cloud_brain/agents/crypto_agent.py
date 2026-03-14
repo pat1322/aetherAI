@@ -159,13 +159,12 @@ class CryptoAgent(BaseAgent):
             arrow  = "▲" if change >= 0 else "▼"
             mcap   = c.get("market_cap", 0)
             lines.append(
-                f"{i}. **{c['name']}** ({c['symbol'].upper()})\n"
-                f"   💵 ${c['current_price']:,.4f}  {arrow} {abs(change):.2f}%  "
-                f"| MC: ${mcap/1e9:.1f}B"
+                f"{i}. **{c['name']}** ({c['symbol'].upper()}) — "
+                f"${c['current_price']:,.4f} {arrow}{abs(change):.2f}% | MC: ${mcap/1e9:.1f}B"
             )
 
         lines.append("\n_Live data via CoinGecko_")
-        return "\n\n".join(lines)
+        return "\n".join(lines)
 
     # ── Trending ──────────────────────────────────────────────────────────────
 
@@ -183,11 +182,11 @@ class CryptoAgent(BaseAgent):
         for i, item in enumerate(coins, 1):
             c = item.get("item", {})
             lines.append(
-                f"{i}. **{c.get('name','')}** ({c.get('symbol','').upper()})\n"
-                f"   Rank #{c.get('market_cap_rank','?')} — {c.get('slug','')}"
+                f"{i}. **{c.get('name','')}** ({c.get('symbol','').upper()}) — "
+                f"Rank #{c.get('market_cap_rank','?')}"
             )
         lines.append("\n_Trending data via CoinGecko_")
-        return "\n\n".join(lines)
+        return "\n".join(lines)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

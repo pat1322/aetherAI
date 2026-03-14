@@ -1,14 +1,14 @@
 """
-AetherAI — Weather Agent  (patch 5)
+AetherAI — Weather Agent  (patch 8)
 
-Fix: Added detailed error logging, timeout handling per API call,
-and hardcoded fallback coordinates for common Philippine cities
-so weather still works even if geocoding API is slow or unreachable.
+Fix: Open-Meteo fails on Railway. Added wttr.in as primary fallback.
+wttr.in is extremely reliable, no key needed, global coverage.
 """
 
 import asyncio
 import logging
 from typing import Optional
+from urllib.parse import quote
 
 import httpx
 from agents import BaseAgent
@@ -17,40 +17,52 @@ logger = logging.getLogger(__name__)
 
 GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 WEATHER_URL   = "https://api.open-meteo.com/v1/forecast"
+WTTR_URL      = "https://wttr.in/{city}?format=j1"
 
 WMO_CODES = {
-    0:  "Clear sky ☀️",   1: "Mainly clear 🌤️",  2: "Partly cloudy ⛅",  3: "Overcast ☁️",
+    0: "Clear sky ☀️",    1: "Mainly clear 🌤️",  2: "Partly cloudy ⛅",  3: "Overcast ☁️",
     45: "Foggy 🌫️",       48: "Icy fog 🌫️",
-    51: "Light drizzle 🌦️", 53: "Drizzle 🌦️",   55: "Heavy drizzle 🌦️",
+    51: "Light drizzle 🌦️", 53: "Drizzle 🌦️",    55: "Heavy drizzle 🌦️",
     61: "Light rain 🌧️",  63: "Rain 🌧️",          65: "Heavy rain 🌧️",
     71: "Light snow 🌨️",  73: "Snow 🌨️",           75: "Heavy snow 🌨️",
-    77: "Snow grains 🌨️",
-    80: "Light showers 🌦️", 81: "Showers 🌦️",    82: "Violent showers ⛈️",
-    95: "Thunderstorm ⛈️",  96: "Thunderstorm w/ hail ⛈️",
-    99: "Thunderstorm w/ heavy hail ⛈️",
+    80: "Showers 🌦️",     81: "Heavy showers 🌦️",  82: "Violent showers ⛈️",
+    95: "Thunderstorm ⛈️", 96: "Thunderstorm w/ hail ⛈️",
 }
 
-DEFAULT_CITY     = "Manila"
-DEFAULT_TIMEZONE = "Asia/Manila"
+WTTR_CODES = {
+    "113": "Clear sky ☀️",   "116": "Partly cloudy ⛅",  "119": "Cloudy ☁️",
+    "122": "Overcast ☁️",    "143": "Mist 🌫️",           "176": "Patchy rain 🌦️",
+    "185": "Patchy sleet 🌨️","200": "Thundery showers ⛈️","227": "Blowing snow 🌨️",
+    "230": "Blizzard 🌨️",    "248": "Fog 🌫️",             "260": "Freezing fog 🌫️",
+    "263": "Patchy light drizzle 🌦️","266": "Light drizzle 🌦️",
+    "281": "Freezing drizzle 🌦️","284": "Heavy freezing drizzle 🌦️",
+    "293": "Patchy light rain 🌧️","296": "Light rain 🌧️",
+    "299": "Moderate rain 🌧️","302": "Heavy rain 🌧️",
+    "305": "Heavy rain 🌧️",  "308": "Torrential rain 🌧️",
+    "353": "Light rain showers 🌦️","356": "Moderate rain showers 🌧️",
+    "359": "Torrential showers 🌧️","389": "Heavy rain & thunder ⛈️",
+    "395": "Heavy snow & thunder ⛈️",
+}
 
-# Hardcoded fallback coords for common PH cities (in case geocoding API is slow)
+DEFAULT_CITY = "Manila"
+
 PH_CITY_FALLBACK = {
-    "manila":   (14.5995, 120.9842, "Manila, Philippines",       "Asia/Manila"),
-    "cebu":     (10.3157, 123.8854, "Cebu, Philippines",         "Asia/Manila"),
-    "davao":    (7.1907,  125.4553, "Davao, Philippines",        "Asia/Manila"),
-    "quezon":   (14.6760, 121.0437, "Quezon City, Philippines",  "Asia/Manila"),
-    "makati":   (14.5547, 121.0244, "Makati, Philippines",       "Asia/Manila"),
-    "pasig":    (14.5764, 121.0851, "Pasig, Philippines",        "Asia/Manila"),
-    "taguig":   (14.5176, 121.0509, "Taguig, Philippines",       "Asia/Manila"),
-    "baguio":   (16.4023, 120.5960, "Baguio, Philippines",       "Asia/Manila"),
-    "iloilo":   (10.7202, 122.5621, "Iloilo, Philippines",       "Asia/Manila"),
-    "cagayan":  (8.4542,  124.6319, "Cagayan de Oro, Philippines","Asia/Manila"),
+    "manila":  (14.5995, 120.9842, "Manila, Philippines",        "Asia/Manila"),
+    "cebu":    (10.3157, 123.8854, "Cebu, Philippines",          "Asia/Manila"),
+    "davao":   (7.1907,  125.4553, "Davao, Philippines",         "Asia/Manila"),
+    "quezon":  (14.6760, 121.0437, "Quezon City, Philippines",   "Asia/Manila"),
+    "makati":  (14.5547, 121.0244, "Makati, Philippines",        "Asia/Manila"),
+    "pasig":   (14.5764, 121.0851, "Pasig, Philippines",         "Asia/Manila"),
+    "taguig":  (14.5176, 121.0509, "Taguig, Philippines",        "Asia/Manila"),
+    "baguio":  (16.4023, 120.5960, "Baguio, Philippines",        "Asia/Manila"),
+    "iloilo":  (10.7202, 122.5621, "Iloilo, Philippines",        "Asia/Manila"),
+    "cagayan": (8.4542,  124.6319, "Cagayan de Oro, Philippines","Asia/Manila"),
 }
 
 
 class WeatherAgent(BaseAgent):
     name        = "weather_agent"
-    description = "Real-time weather and forecasts for any city using Open-Meteo"
+    description = "Real-time weather and forecasts using Open-Meteo + wttr.in fallback"
 
     async def run(self, parameters: dict, task_id: str, context: str = "") -> Optional[str]:
         try:
@@ -58,7 +70,7 @@ class WeatherAgent(BaseAgent):
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error(f"[WeatherAgent] Unexpected error: {e}", exc_info=True)
+            logger.error(f"[WeatherAgent] Error: {e}", exc_info=True)
             return f"⚠️ WeatherAgent error: {e}"
 
     async def _run(self, parameters: dict, task_id: str, context: str) -> Optional[str]:
@@ -68,186 +80,204 @@ class WeatherAgent(BaseAgent):
 
         logger.info(f"[WeatherAgent] city='{city}' forecast={forecast}")
 
-        # Step 1: Get coordinates
+        # Try Open-Meteo first (better data), fallback to wttr.in
+        result = await self._try_open_meteo(city, forecast)
+        if result:
+            return result
+
+        logger.info(f"[WeatherAgent] Open-Meteo failed, trying wttr.in for '{city}'")
+        result = await self._try_wttr(city, forecast)
+        if result:
+            return result
+
+        return (
+            f"⚠️ Could not fetch weather data for **{city}**.\n"
+            f"Both Open-Meteo and wttr.in are unavailable. "
+            f"Please check https://wttr.in/{quote(city)} directly."
+        )
+
+    # ── Open-Meteo path ───────────────────────────────────────────────────────
+
+    async def _try_open_meteo(self, city: str, forecast: bool) -> Optional[str]:
         lat, lon, full_city, timezone = await self._geocode(city)
         if lat is None:
-            return (
-                f"⚠️ Could not find location: **{city}**\n"
-                f"Try being more specific, e.g. 'weather in Manila Philippines' "
-                f"or 'weather in Cebu City'."
-            )
+            return None
 
-        logger.info(f"[WeatherAgent] Geocoded '{city}' → {lat},{lon} ({full_city})")
-
-        # Step 2: Fetch weather data
-        weather = await self._fetch_weather(lat, lon, timezone, include_daily=forecast)
+        weather = await self._fetch_open_meteo(lat, lon, timezone, include_daily=forecast)
         if not weather:
-            return (
-                f"⚠️ Could not fetch weather data for **{full_city}**.\n"
-                f"Open-Meteo may be temporarily unavailable. Please try again in a moment."
-            )
+            return None
 
-        return self._format_response(full_city, weather, forecast, city)
-
-    # ── Geocoding ──────────────────────────────────────────────────────────────
+        return self._format_open_meteo(full_city, weather, forecast)
 
     async def _geocode(self, city: str) -> tuple:
         city_lc = city.lower().strip()
-
-        # Check PH fallback first (instant, no network needed)
-        for key, (lat, lon, full, tz) in PH_CITY_FALLBACK.items():
+        for key, fallback in PH_CITY_FALLBACK.items():
             if key in city_lc:
-                logger.info(f"[WeatherAgent] Using PH fallback for '{city}'")
-                return lat, lon, full, tz
+                return fallback
 
-        # Try geocoding API
         try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                logger.info(f"[WeatherAgent] Geocoding '{city}'...")
+            async with httpx.AsyncClient(timeout=6.0) as client:
                 r = await client.get(GEOCODING_URL, params={
-                    "name":     city,
-                    "count":    1,
-                    "language": "en",
-                    "format":   "json",
+                    "name": city, "count": 1, "language": "en", "format": "json"
                 })
                 r.raise_for_status()
                 data = r.json()
-                logger.info(f"[WeatherAgent] Geocoding response: {data}")
 
             results = data.get("results", [])
             if not results:
-                logger.warning(f"[WeatherAgent] No geocoding results for '{city}'")
-                return None, None, city, DEFAULT_TIMEZONE
+                return None, None, city, "UTC"
 
             loc      = results[0]
-            lat      = loc["latitude"]
-            lon      = loc["longitude"]
-            name     = loc.get("name", city)
-            country  = loc.get("country", "")
-            timezone = loc.get("timezone", DEFAULT_TIMEZONE)
-            full     = f"{name}, {country}" if country else name
-            return lat, lon, full, timezone
-
-        except httpx.TimeoutException:
-            logger.warning(f"[WeatherAgent] Geocoding timed out for '{city}'")
-            # If city contains a known PH keyword, use Manila as fallback
-            if any(w in city_lc for w in ["phil", "metro", "ncr"]):
-                return PH_CITY_FALLBACK["manila"]
-            return None, None, city, DEFAULT_TIMEZONE
+            tz       = loc.get("timezone", "UTC")
+            full     = f"{loc.get('name', city)}, {loc.get('country', '')}"
+            return loc["latitude"], loc["longitude"], full.strip(", "), tz
 
         except Exception as e:
-            logger.error(f"[WeatherAgent] Geocoding failed for '{city}': {e}")
-            return None, None, city, DEFAULT_TIMEZONE
+            logger.warning(f"[WeatherAgent] Geocoding failed: {e}")
+            return None, None, city, "UTC"
 
-    # ── Weather fetch ──────────────────────────────────────────────────────────
-
-    async def _fetch_weather(self, lat: float, lon: float,
-                              timezone: str, include_daily: bool = True) -> Optional[dict]:
+    async def _fetch_open_meteo(self, lat, lon, timezone, include_daily=True) -> Optional[dict]:
         params = {
-            "latitude":  lat,
-            "longitude": lon,
-            "timezone":  timezone,
-            "current":   ",".join([
-                "temperature_2m", "apparent_temperature",
-                "relative_humidity_2m", "weathercode",
-                "windspeed_10m", "winddirection_10m",
-                "precipitation", "cloudcover",
-            ]),
+            "latitude": lat, "longitude": lon, "timezone": timezone,
+            "current": "temperature_2m,apparent_temperature,relative_humidity_2m,"
+                       "weathercode,windspeed_10m,winddirection_10m,precipitation,cloudcover",
         }
         if include_daily:
-            params["daily"] = ",".join([
-                "weathercode", "temperature_2m_max", "temperature_2m_min",
-                "precipitation_sum", "windspeed_10m_max",
-                "sunrise", "sunset",
-            ])
+            params["daily"] = ("weathercode,temperature_2m_max,temperature_2m_min,"
+                               "precipitation_sum,windspeed_10m_max,sunrise,sunset")
             params["forecast_days"] = 7
-
         try:
-            async with httpx.AsyncClient(timeout=12.0) as client:
-                logger.info(f"[WeatherAgent] Fetching weather lat={lat} lon={lon} tz={timezone}")
+            async with httpx.AsyncClient(timeout=8.0) as client:
                 r = await client.get(WEATHER_URL, params=params)
-                logger.info(f"[WeatherAgent] Weather API status: {r.status_code}")
                 r.raise_for_status()
                 data = r.json()
-                logger.info(f"[WeatherAgent] Weather data keys: {list(data.keys())}")
+                if not data.get("current"):
+                    return None
                 return data
-
-        except httpx.TimeoutException:
-            logger.error(f"[WeatherAgent] Weather API timed out")
-            return None
         except Exception as e:
-            logger.error(f"[WeatherAgent] Weather fetch failed: {e}", exc_info=True)
+            logger.warning(f"[WeatherAgent] Open-Meteo failed: {e}")
             return None
 
-    # ── Formatting ─────────────────────────────────────────────────────────────
-
-    def _format_response(self, city: str, data: dict,
-                          include_forecast: bool, original_query: str) -> str:
-        cur = data.get("current", {})
-        if not cur:
-            return f"⚠️ Weather data received but no current conditions available for **{city}**."
-
-        temp      = cur.get("temperature_2m", "?")
-        feels     = cur.get("apparent_temperature", "?")
-        humidity  = cur.get("relative_humidity_2m", "?")
-        wind      = cur.get("windspeed_10m", "?")
-        wind_dir  = cur.get("winddirection_10m", 0)
-        precip    = cur.get("precipitation", 0) or 0
-        code      = cur.get("weathercode", 0)
-        condition = WMO_CODES.get(code, "Unknown")
+    def _format_open_meteo(self, city: str, data: dict, include_forecast: bool) -> str:
+        cur  = data.get("current", {})
+        temp = cur.get("temperature_2m", "?")
+        feels = cur.get("apparent_temperature", "?")
+        hum  = cur.get("relative_humidity_2m", "?")
+        wind = cur.get("windspeed_10m", "?")
+        wdir = cur.get("winddirection_10m", 0)
+        prec = cur.get("precipitation", 0) or 0
+        code = cur.get("weathercode", 0)
+        cond = WMO_CODES.get(code, "Unknown")
 
         lines = [
             f"## 🌍 Weather — {city}",
-            f"",
-            f"**{condition}**",
-            f"🌡️  Temperature: **{temp}°C** (feels like {feels}°C)",
-            f"💧  Humidity: {humidity}%",
-            f"💨  Wind: {wind} km/h {self._wind_dir(wind_dir)}",
+            f"**{cond}**",
+            f"🌡️ Temperature: **{temp}°C** (feels like {feels}°C)",
+            f"💧 Humidity: {hum}%",
+            f"💨 Wind: {wind} km/h {self._wind_dir(wdir)}",
         ]
-        if precip > 0:
-            lines.append(f"🌧️  Precipitation: {precip} mm")
+        if prec > 0:
+            lines.append(f"🌧️ Precipitation: {prec} mm")
 
         if include_forecast:
-            daily    = data.get("daily", {})
-            dates    = daily.get("time", [])
-            codes    = daily.get("weathercode", [])
-            highs    = daily.get("temperature_2m_max", [])
-            lows     = daily.get("temperature_2m_min", [])
-            rains    = daily.get("precipitation_sum", [])
-            sunrises = daily.get("sunrise", [])
-            sunsets  = daily.get("sunset", [])
+            daily = data.get("daily", {})
+            dates = daily.get("time", [])
+            codes = daily.get("weathercode", [])
+            highs = daily.get("temperature_2m_max", [])
+            lows  = daily.get("temperature_2m_min", [])
+            rains = daily.get("precipitation_sum", [])
 
-            lines.append(f"\n### 📅 7-Day Forecast\n")
+            lines.append("\n### 📅 7-Day Forecast")
             from datetime import datetime
-            for i, date_str in enumerate(dates[:7]):
+            for i, ds in enumerate(dates[:7]):
                 try:
-                    dt      = datetime.strptime(date_str, "%Y-%m-%d")
-                    day     = ["Today","Tomorrow","Mon","Tue","Wed","Thu","Fri","Sat","Sun"][i] \
-                              if i < 2 else dt.strftime("%A")
-                    cond    = WMO_CODES.get(codes[i] if i < len(codes) else 0, "")
-                    hi      = highs[i] if i < len(highs) else "?"
-                    lo      = lows[i]  if i < len(lows)  else "?"
-                    rain    = rains[i] if i < len(rains)  else 0
-                    rain_s  = f" 🌧️ {rain}mm" if rain and float(rain) > 0.5 else ""
-
-                    if i == 0 and sunrises and sunsets:
-                        rise = sunrises[0].split("T")[-1][:5] if sunrises else ""
-                        sset = sunsets[0].split("T")[-1][:5] if sunsets else ""
-                        lines.append(
-                            f"**{day}** — {cond} | ↑{hi}°C ↓{lo}°C{rain_s} "
-                            f"| 🌅{rise} 🌇{sset}"
-                        )
-                    else:
-                        lines.append(f"**{day}** — {cond} | ↑{hi}°C ↓{lo}°C{rain_s}")
+                    dt   = datetime.strptime(ds, "%Y-%m-%d")
+                    day  = ["Today","Tomorrow"][i] if i < 2 else dt.strftime("%A")
+                    c2   = WMO_CODES.get(codes[i] if i < len(codes) else 0, "")
+                    hi   = highs[i] if i < len(highs) else "?"
+                    lo   = lows[i]  if i < len(lows) else "?"
+                    rain = rains[i] if i < len(rains) else 0
+                    rs   = f" 🌧️{rain}mm" if rain and float(rain) > 0.5 else ""
+                    lines.append(f"**{day}** — {c2} | ↑{hi}°C ↓{lo}°C{rs}")
                 except Exception:
-                    continue
-        else:
-            lines.append(f"\n_Tip: Say 'forecast for {city}' for a 7-day outlook._")
+                    pass
 
-        lines.append(f"\n_Live data via Open-Meteo_")
+        lines.append("\n_Live data via Open-Meteo_")
         return "\n".join(lines)
 
-    # ── Helpers ────────────────────────────────────────────────────────────────
+    # ── wttr.in fallback path ─────────────────────────────────────────────────
+
+    async def _try_wttr(self, city: str, forecast: bool) -> Optional[str]:
+        encoded = quote(city.replace(" ", "+"))
+        url     = WTTR_URL.format(city=encoded)
+        try:
+            async with httpx.AsyncClient(
+                timeout=10.0,
+                headers={"User-Agent": "AetherAI/1.0 curl/7.68.0"},
+                follow_redirects=True,
+            ) as client:
+                r = await client.get(url)
+                r.raise_for_status()
+                data = r.json()
+                return self._format_wttr(city, data, forecast)
+        except Exception as e:
+            logger.warning(f"[WeatherAgent] wttr.in failed for '{city}': {e}")
+            return None
+
+    def _format_wttr(self, city: str, data: dict, include_forecast: bool) -> str:
+        try:
+            cur  = data["current_condition"][0]
+            temp = cur.get("temp_C", "?")
+            feels = cur.get("FeelsLikeC", "?")
+            hum  = cur.get("humidity", "?")
+            wind = cur.get("windspeedKmph", "?")
+            wdir = cur.get("winddir16Point", "")
+            prec = cur.get("precipMM", "0")
+            vis  = cur.get("visibility", "")
+            desc_list = cur.get("weatherDesc", [{}])
+            desc = desc_list[0].get("value", "Unknown") if desc_list else "Unknown"
+            code = cur.get("weatherCode", "113")
+            cond = WTTR_CODES.get(str(code), desc)
+
+            lines = [
+                f"## 🌍 Weather — {city}",
+                f"**{cond}**",
+                f"🌡️ Temperature: **{temp}°C** (feels like {feels}°C)",
+                f"💧 Humidity: {hum}%",
+                f"💨 Wind: {wind} km/h {wdir}",
+            ]
+            if prec and float(prec) > 0:
+                lines.append(f"🌧️ Precipitation: {prec} mm")
+            if vis:
+                lines.append(f"👁️ Visibility: {vis} km")
+
+            if include_forecast:
+                lines.append("\n### 📅 Forecast")
+                weather_days = data.get("weather", [])
+                for i, day_data in enumerate(weather_days[:4]):
+                    date   = day_data.get("date", "")
+                    max_c  = day_data.get("maxtempC", "?")
+                    min_c  = day_data.get("mintempC", "?")
+                    # Get midday hourly for condition
+                    hourly = day_data.get("hourly", [])
+                    cond2  = "—"
+                    rain2  = "0"
+                    if hourly:
+                        mid = hourly[len(hourly)//2]
+                        desc2 = mid.get("weatherDesc", [{}])
+                        cond2 = desc2[0].get("value", "—") if desc2 else "—"
+                        rain2 = mid.get("precipMM", "0")
+                    day_label = ["Today","Tomorrow","Day 3","Day 4"][i] if i < 4 else date
+                    rs = f" 🌧️{rain2}mm" if float(rain2) > 0.5 else ""
+                    lines.append(f"**{day_label}** — {cond2} | ↑{max_c}°C ↓{min_c}°C{rs}")
+
+            lines.append("\n_Live data via wttr.in_")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.error(f"[WeatherAgent] wttr.in format error: {e}")
+            return None
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _extract_city(self, query: str) -> Optional[str]:
         import re
@@ -257,7 +287,6 @@ class WeatherAgent(BaseAgent):
             r"will\s+it\s+rain\s+in\s+(.+?)(?:\s+today|\s+tomorrow|$)",
             r"(?:weather|forecast)\s+(?:for|of)\s+(.+?)(?:\s+today|\s+this\s+week|$)",
             r"how\s+(?:hot|cold|warm)\s+is\s+(.+?)(?:\s+today|$)",
-            r"(?:climate|temperature)\s+in\s+(.+?)(?:\s+today|$)",
         ]
         for pat in patterns:
             m = re.search(pat, query.lower())
@@ -269,11 +298,11 @@ class WeatherAgent(BaseAgent):
 
     def _wants_forecast(self, query: str) -> bool:
         kw = ["forecast","week","7 day","seven day","tomorrow","monday","tuesday",
-              "wednesday","thursday","friday","saturday","sunday","next few days","outlook"]
+              "wednesday","thursday","friday","saturday","sunday","next few days"]
         return any(k in query.lower() for k in kw)
 
     def _wind_dir(self, degrees) -> str:
-        if degrees is None: return ""
+        if not degrees: return ""
         try:
             dirs = ["N","NE","E","SE","S","SW","W","NW"]
             return dirs[round(float(degrees) / 45) % 8]
