@@ -1,26 +1,25 @@
 """
-AetherAI — Research Agent  (Stage 5 — fully patched)
+AetherAI — Research Agent  (Stage 5 — patch 3)
 
-All fixes applied
+Identity overhaul
 ─────────────────
-FIX A  _fetch_page() NameError: response variable was stored as `r` inside
-       the `async with` block but referenced as `resp` in BeautifulSoup call
-       outside it. Changed to `r.text` throughout and restructured so all
-       reads happen inside the `with` block.
+The research agent now has a clear identity: academic/thesis-style researcher.
+It is ONLY triggered when the user explicitly asks to "research" something.
 
-FIX B  DDG HTML URL extraction: DuckDuckGo result links are redirect URLs
-       like `//duckduckgo.com/l/?uddg=https%3A...` — they never start with
-       "http" so the old `href.startswith("http")` guard filtered ALL of
-       them out. Now decodes the `uddg=` query param to get the real URL.
+What it does differently from browser_agent:
+  • Searches multiple sources (DDG HTML + DDG JSON API)
+  • De-duplicates and ranks snippets by quality
+  • Builds a structured report: Summary → Key Findings → Sources
+  • Returns numbered citations with real URLs
+  • Asks Qwen to produce a research-paper-style writeup
 
-Original Stage 4 features retained:
-  • DuckDuckGo HTML + JSON fallback
-  • Source URLs in summary
-  • Snippet deduplication
-  • Query cleaning / filler-phrase stripping
-  • Retry on HTTP errors
-  • Per-URL fetch cap
-  • CancelledError pass-through
+What it does NOT do:
+  • It is NOT a general web search (that's browser_agent)
+  • It is NOT a chat answer (that's chat mode)
+
+FIX A  _fetch_page NameError fixed (r.text not resp.text)
+FIX B  DDG URL decoding fixed (uddg= param extraction)
+FIX C  Output is now structured like a research brief, not a bullet dump
 """
 
 import asyncio
@@ -48,13 +47,14 @@ HEADERS = {
 DDG_HTML_URL = "https://html.duckduckgo.com/html/"
 DDG_JSON_URL = "https://api.duckduckgo.com/?q={q}&format=json&no_html=1&skip_disambig=1"
 
-PAGE_FETCH_LIMIT   = 3000
+PAGE_FETCH_LIMIT   = 4000
 PAGE_FETCH_TIMEOUT = 8.0
-MAX_SNIPPETS       = 6
+MAX_SNIPPETS       = 8
 
 _FILLER_RE = re.compile(
-    r"^\s*(tell me about|what is|what are|explain|research|"
-    r"find information (on|about)|look up|search for|give me info on)\s+",
+    r"^\s*(tell me about|what is|what are|explain|research|find information "
+    r"(on|about)|look up|search for|give me info on|do research on|"
+    r"find research on|find studies on)\s+",
     re.IGNORECASE,
 )
 
@@ -74,23 +74,15 @@ def _dedup(snippets: list[str]) -> list[str]:
 
 
 def _decode_ddg_url(href: str) -> Optional[str]:
-    """
-    FIX B: DDG HTML result hrefs look like:
-      //duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com&rut=...
-    Extract and decode the real destination URL from the `uddg=` param.
-    """
-    if href.startswith("http"):
-        return href  # already a real URL (rare but possible)
-    if not href:
-        return None
-    if href.startswith("//"):
-        href = "https:" + href
+    """Extract real destination URL from DDG redirect href."""
+    if not href: return None
+    if href.startswith("http"): return href
+    if href.startswith("//"): href = "https:" + href
     try:
         parsed = urlparse(href)
         qs     = parse_qs(parsed.query)
         uddg   = qs.get("uddg", [None])[0]
-        if uddg:
-            return unquote(uddg)
+        if uddg: return unquote(uddg)
     except Exception:
         pass
     return None
@@ -98,7 +90,7 @@ def _decode_ddg_url(href: str) -> Optional[str]:
 
 class ResearchAgent(BaseAgent):
     name        = "research_agent"
-    description = "Searches the web and summarises information"
+    description = "Academic-style researcher — finds real sources and produces structured research briefs"
 
     async def run(self, parameters: dict, task_id: str, context: str = "") -> Optional[str]:
         try:
@@ -112,48 +104,97 @@ class ResearchAgent(BaseAgent):
     async def _run(self, parameters: dict, task_id: str, context: str) -> Optional[str]:
         raw_query = parameters.get("query") or context or "general research"
         query     = _clean_query(raw_query)
-        logger.info(f"[ResearchAgent] Query: {query}")
+        logger.info(f"[ResearchAgent] Research query: {query}")
 
         snippets, urls = await self._search(query)
 
         if not snippets:
             logger.warning("[ResearchAgent] No web results — using Qwen knowledge")
-            return await self.qwen.answer(
-                question=raw_query,
-                context="Answer from your training knowledge; web search returned no results.",
-            )
+            return await self._knowledge_answer(raw_query)
 
-        combined = "\n\n".join(snippets[:MAX_SNIPPETS])
-        summary  = await self.qwen.summarize(
-            content=combined,
-            context=f"Research query: {query}\nSummarise the key findings clearly and concisely.",
+        # Build structured research brief
+        return await self._write_research_brief(query, snippets, urls)
+
+    async def _write_research_brief(
+        self, query: str, snippets: list[str], urls: list[str]
+    ) -> str:
+        """Ask Qwen to write a structured research brief from the gathered sources."""
+        combined = "\n\n---\n\n".join(snippets[:MAX_SNIPPETS])
+
+        prompt = (
+            f"You are an academic research assistant. "
+            f"Based ONLY on the source material below, write a structured research brief "
+            f"about: {query}\n\n"
+            f"Format your response as:\n"
+            f"**Overview** — 2-3 sentence summary\n\n"
+            f"**Key Findings**\n"
+            f"- Finding 1 with specific details\n"
+            f"- Finding 2 with specific details\n"
+            f"- (continue for all major findings)\n\n"
+            f"**Analysis** — 1-2 paragraph synthesis of what the sources say\n\n"
+            f"Use specific facts, numbers, and details from the sources. "
+            f"Do not add information not present in the sources.\n\n"
+            f"SOURCE MATERIAL:\n{combined}"
         )
 
-        if urls:
-            url_block = "\n".join(f"• {u}" for u in urls[:5])
-            return f"{summary}\n\n**Sources:**\n{url_block}"
+        brief = await self.qwen.chat(
+            system_prompt=(
+                "You are a precise academic research assistant. "
+                "Write structured research briefs based strictly on provided sources. "
+                "Use clear headings and specific facts."
+            ),
+            user_message=prompt,
+            temperature=0.3,
+        )
 
-        return summary
+        # Append real source URLs
+        if urls:
+            source_lines = "\n".join(
+                f"{i+1}. {u}" for i, u in enumerate(urls[:6])
+            )
+            brief += f"\n\n**Sources**\n{source_lines}"
+
+        return brief
+
+    async def _knowledge_answer(self, query: str) -> str:
+        """Fallback when web search returns nothing."""
+        return await self.qwen.answer(
+            question=query,
+            context=(
+                "Answer using your training knowledge. "
+                "Be honest about the limits of your knowledge cutoff. "
+                "Structure your answer with clear headings."
+            ),
+        )
 
     # ── Search pipeline ────────────────────────────────────────────────────────
 
     async def _search(self, query: str) -> tuple[list[str], list[str]]:
         snippets, urls = await self._ddg_html(query)
 
-        if len(snippets) < 2:
-            logger.info("[ResearchAgent] HTML thin — trying DDG JSON API")
-            json_snippets, json_urls = await self._ddg_json(query)
-            snippets += json_snippets
-            urls     += [u for u in json_urls if u not in urls]
+        if len(snippets) < 3:
+            logger.info("[ResearchAgent] HTML results thin — trying DDG JSON")
+            j_snip, j_urls = await self._ddg_json(query)
+            snippets += j_snip
+            urls     += [u for u in j_urls if u not in urls]
 
         snippets = _dedup(snippets)
 
-        if len(snippets) < 2 and urls:
-            logger.info(f"[ResearchAgent] Fetching top URL directly: {urls[0]}")
-            page_text = await self._fetch_page(urls[0])
-            if page_text:
-                snippets.append(page_text)
+        # Fetch top 2 pages directly for richer content
+        fetch_tasks = []
+        for url in urls[:2]:
+            if url not in fetch_tasks:
+                fetch_tasks.append(url)
 
+        page_texts = await asyncio.gather(
+            *[self._fetch_page(u) for u in fetch_tasks],
+            return_exceptions=True,
+        )
+        for text in page_texts:
+            if isinstance(text, str) and text:
+                snippets.append(text)
+
+        snippets = _dedup(snippets)
         logger.info(f"[ResearchAgent] {len(snippets)} snippets from {len(urls)} sources")
         return snippets, urls
 
@@ -170,35 +211,28 @@ class ResearchAgent(BaseAgent):
                         await asyncio.sleep(2)
                         continue
                     resp.raise_for_status()
-                    html_text = resp.text          # buffer before client closes
+                    html_text = resp.text
 
                 soup = BeautifulSoup(html_text, "lxml")
-
                 for result in soup.select(".result"):
                     body = result.select_one(".result__body, .result__snippet")
                     if body:
                         text = body.get_text(separator=" ", strip=True)
-                        if len(text) > 30:
-                            snippets.append(text[:800])
-
-                    # FIX B: decode DDG redirect URL to get real destination
+                        if len(text) > 40:
+                            snippets.append(text[:1000])
                     link = result.select_one("a.result__url, .result__a")
                     if link:
-                        href     = link.get("href", "")
-                        real_url = _decode_ddg_url(href)
-                        if real_url and real_url not in urls:
-                            urls.append(real_url)
-
-                logger.info(f"[ResearchAgent] DDG HTML: {len(snippets)} snippets, {len(urls)} URLs")
+                        real = _decode_ddg_url(link.get("href", ""))
+                        if real and real not in urls:
+                            urls.append(real)
+                logger.info(f"[ResearchAgent] DDG HTML: {len(snippets)} snips, {len(urls)} URLs")
                 break
-
             except Exception as e:
                 if attempt == 0:
-                    logger.warning(f"[ResearchAgent] DDG HTML attempt 1 failed: {e}")
+                    logger.warning(f"[ResearchAgent] DDG HTML attempt 1: {e}")
                     await asyncio.sleep(2)
                 else:
                     logger.error(f"[ResearchAgent] DDG HTML failed: {e}")
-
         return snippets, urls
 
     async def _ddg_json(self, query: str) -> tuple[list[str], list[str]]:
@@ -212,48 +246,40 @@ class ResearchAgent(BaseAgent):
                 resp = await client.get(url)
                 resp.raise_for_status()
                 data = resp.json()
-
             if data.get("Abstract"):
                 snippets.append(data["Abstract"])
             if data.get("AbstractURL"):
                 urls.append(data["AbstractURL"])
-
             for topic in data.get("RelatedTopics", [])[:8]:
                 text = topic.get("Text", "")
                 link = topic.get("FirstURL", "")
                 if text and len(text) > 20:
-                    snippets.append(text[:600])
+                    snippets.append(text[:800])
                 if link and link not in urls:
                     urls.append(link)
-
-            logger.info(f"[ResearchAgent] DDG JSON: {len(snippets)} snippets")
-
+            logger.info(f"[ResearchAgent] DDG JSON: {len(snippets)} snips")
         except Exception as e:
             logger.warning(f"[ResearchAgent] DDG JSON failed: {e}")
-
         return snippets, urls
 
     async def _fetch_page(self, url: str) -> Optional[str]:
-        """FIX A: all reads happen inside the `with` block; no stale `resp` reference."""
+        """Fetch and extract text from a page for richer source content."""
         try:
             async with httpx.AsyncClient(
                 headers=HEADERS, follow_redirects=True, timeout=PAGE_FETCH_TIMEOUT
             ) as client:
                 r = await client.get(url)
                 r.raise_for_status()
-                ct = r.headers.get("content-type", "")
-                if "html" not in ct:
+                if "html" not in r.headers.get("content-type", ""):
                     return None
-                # Read text while client is still open (buffered anyway, but explicit)
                 page_html = r.text
 
             soup = BeautifulSoup(page_html, "lxml")
-            for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+            for tag in soup(["script","style","nav","footer","header","aside"]):
                 tag.decompose()
             text = soup.get_text(separator=" ", strip=True)
             text = re.sub(r"\s{3,}", "  ", text)
             return text[:PAGE_FETCH_LIMIT] if text else None
-
         except Exception as e:
-            logger.debug(f"[ResearchAgent] Page fetch failed ({url}): {e}")
+            logger.debug(f"[ResearchAgent] Page fetch {url}: {e}")
             return None
