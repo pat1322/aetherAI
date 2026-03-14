@@ -93,19 +93,27 @@ class MemoryAgent(BaseAgent):
         if not query:
             return await self._recall_all()
 
-        # Let Qwen parse the intent for richer extraction
+        # Let Qwen parse the intent and extract ALL facts in the statement
         parsed = await self._qwen_parse(query)
         intent = parsed.get("intent", _detect_intent(query))
-        label  = parsed.get("label", "")
-        value  = parsed.get("value", "")
+        facts  = parsed.get("facts", [])   # list of {label, value} dicts
         topic  = parsed.get("topic", query)
 
-        logger.info(f"[MemoryAgent] intent={intent} label={label!r} value={value!r}")
+        logger.info(f"[MemoryAgent] intent={intent} facts={facts}")
 
-        if intent == "save" and label and value:
-            return await self._save(label, value, raw=query)
-        elif intent == "save" and (label or value):
-            # Partial parse — fall back to keyword extraction
+        if intent == "save":
+            if facts:
+                # Save every fact extracted from the sentence
+                results = []
+                for fact in facts:
+                    label = fact.get("label", "").strip()
+                    value = fact.get("value", "").strip()
+                    if label and value:
+                        result = await self._save(label, value, raw=query)
+                        results.append(result)
+                if results:
+                    return "\n".join(results)
+            # Fallback: nothing parsed cleanly
             return await self._save_raw(query)
         elif intent == "forget":
             return await self._forget(topic)
@@ -115,18 +123,27 @@ class MemoryAgent(BaseAgent):
     # ── Qwen-assisted parsing ──────────────────────────────────────────────────
 
     async def _qwen_parse(self, text: str) -> dict:
-        prompt = f"""Analyse this user statement about a personal preference or fact:
+        prompt = f"""Analyse this user statement about personal preferences or facts:
 "{text}"
+
+A single sentence may contain MULTIPLE facts (e.g. "my name is X and I live in Y" → two facts).
+Extract ALL of them.
 
 Return ONLY valid JSON — no fences, no extra text:
 {{
   "intent": "save" | "recall" | "forget",
-  "label": "Short human-readable label for the fact (e.g. 'Preferred language', 'Railway URL')",
-  "value": "The actual value being stored (e.g. 'Python', 'https://...')",
-  "topic": "Key topic word(s) for searching existing facts (e.g. 'language', 'railway')"
+  "facts": [
+    {{"label": "Short human-readable label (e.g. 'Full name')", "value": "The actual value (e.g. 'Patrick Perez')"}},
+    {{"label": "Location", "value": "Baliuag, Bulacan, Philippines"}}
+  ],
+  "topic": "Key topic word(s) for searching/forgetting (e.g. 'language', 'name')"
 }}
 
-If intent is 'recall' or 'forget', label and value may be empty strings."""
+Rules:
+- For intent "save": populate "facts" with ALL label/value pairs found.
+- For intent "recall" or "forget": "facts" can be an empty list [].
+- Labels should be concise: "Full name", "Location", "Preferred language", "Railway URL", etc.
+- Values should be the exact thing stated by the user."""
         try:
             raw = await self.qwen.chat(
                 system_prompt="You extract structured facts from natural language. Return ONLY valid JSON.",

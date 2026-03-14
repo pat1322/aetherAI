@@ -27,16 +27,23 @@ WHAT'S NEW vs the previous version
 """
 
 import asyncio
+import base64
 import json
 import logging
 import re
 import uuid
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from agents import BaseAgent
 from utils.websocket_manager import SendResult
 
 logger = logging.getLogger(__name__)
+
+# Output directory — same as document_agent uses
+OUTPUT_DIR = Path(__file__).parent.parent.parent / "output"
+OUTPUT_DIR.mkdir(exist_ok=True)
 
 ACTION_TIMEOUTS: dict[str, float] = {
     "open_app":              25.0,
@@ -157,6 +164,23 @@ class AutomationAgent(BaseAgent):
 
         try:
             response = await asyncio.wait_for(future, timeout=timeout)
+
+            # ── Screenshot: decode base64 and save to output/ ─────────────────
+            if action == "screenshot_and_return":
+                img_b64 = response.get("image_base64", "")
+                if img_b64:
+                    try:
+                        img_bytes = base64.b64decode(img_b64)
+                        fname     = f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                        fpath     = OUTPUT_DIR / fname
+                        fpath.write_bytes(img_bytes)
+                        logger.info(f"[AutomationAgent] Screenshot saved: {fpath}")
+                        return f"✅ screenshot_and_return: done\nSaved as output/{fname}"
+                    except Exception as e:
+                        logger.error(f"[AutomationAgent] Screenshot save failed: {e}")
+                        return f"✅ screenshot_and_return: done (save failed: {e})"
+                return "✅ screenshot_and_return: done (no image data received)"
+
             return f"✅ {action}: {response.get('result', 'done')}"
         except asyncio.TimeoutError:
             return f"⚠️ Action '{action}' timed out after {timeout}s"
