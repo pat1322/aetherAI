@@ -1,19 +1,13 @@
 """
-AetherAI — Qwen API Client  (Stage 6)
+AetherAI — Qwen API Client  (Stage 6 — patch 5)
 
-Stage 6 additions to routing:
-  • weather_agent  — weather/forecast/temperature/rain queries
-  • crypto_agent   — cryptocurrency price queries
-  • news_agent     — news/briefing/headlines queries
-  • finance_agent  — currency conversion, exchange rates, stock prices
+Fix: File/folder commands like "list files in my Documents", "open my Downloads folder",
+"find the file called X" were going through the LLM planner which returned
+`"parameters": "list files in documents"` (a string) instead of a proper dict.
+This caused `'str' object has no attribute 'get'` in the orchestrator.
 
-All Stage 5 patch fixes retained:
-  • Creative writing → chat
-  • Research keyword → research_agent
-  • Browser: specific URLs, YouTube, web search
-  • PC automation: "open chrome and X", "go to [site]"
-  • Rich answer() prompts
-  • source="web" on summarize()
+Fix: Added FILE_FOLDER_KEYWORDS and hard-routing for file/folder operations
+that build proper automation_agent parameter dicts directly, bypassing Qwen.
 """
 
 import json
@@ -80,18 +74,16 @@ class QwenClient:
             "Patrick Perez, a 26-year-old software engineer from the Philippines.\n\n"
             "RESPONSE QUALITY RULES:\n"
             "- Give thorough, detailed answers. Do not truncate or oversimplify.\n"
-            "- For factual questions: provide complete explanations with context.\n"
-            "- For creative writing (poems, haikus, stories, jokes): produce the "
-            "full creative piece immediately, then optionally add brief context.\n"
-            "- For math: show the working, then give the answer.\n"
-            "- For translations: give the translation and explain pronunciation.\n"
-            "- For health/science: give comprehensive response with specific details.\n"
-            "- Use markdown formatting for structured topics.\n"
-            "- Never say 'I cannot access real-time data' — answer from knowledge."
+            "- For creative writing: produce the full piece immediately.\n"
+            "- For math: show working then give the answer.\n"
+            "- For translations: give translation and explain pronunciation.\n"
+            "- For health/science: give comprehensive detail.\n"
+            "- Use markdown for structured topics.\n"
+            "- Never say 'I cannot access real-time data'."
         )
         parts = []
         if user_context: parts.append(f"Facts about this user:\n{user_context}")
-        if context:      parts.append(f"Additional context:\n{context}")
+        if context:      parts.append(f"Context:\n{context}")
         parts.append(f"Request: {question}")
         return await self.chat(system, "\n\n".join(parts), temperature=0.7)
 
@@ -100,11 +92,10 @@ class QwenClient:
         if source == "web":
             system = (
                 "You are an information analyst. Content was JUST fetched live from the web.\n"
-                "CRITICAL RULES:\n"
-                "- NEVER say 'as of my knowledge cutoff' or 'I cannot access real-time data'.\n"
-                "- Base your summary ENTIRELY on the provided content.\n"
-                "- Be thorough — include all key facts, numbers, names, and specific details.\n"
-                "- Use clear structure with headings and bullet points where appropriate."
+                "NEVER say 'as of my knowledge cutoff' or 'I cannot access real-time data'.\n"
+                "Base your summary ENTIRELY on the provided content.\n"
+                "Be thorough — include all key facts, numbers, names, and specific details.\n"
+                "Use clear structure with headings and bullet points where appropriate."
             )
         else:
             system = (
@@ -143,7 +134,6 @@ class QwenClient:
         "write me a story", "write a short story", "tell me a story",
         "write me a joke", "tell me a joke", "tell me a riddle",
         "write me a limerick", "write a limerick",
-        "write me a sonnet", "write a sonnet",
         "write a letter to ", "write me a letter",
         "write an essay about", "write me an essay",
         "write a paragraph about",
@@ -175,8 +165,7 @@ class QwenClient:
         "hacker news", "hackernews", "ycombinator", "news.ycombinator",
         "search google for", "google for", "google search for",
         "search the web for", "search bing for", "search the internet for",
-        "look up on google",
-        "wikipedia", "wiki/",
+        "look up on google", "wikipedia", "wiki/",
     ]
 
     RESEARCH_KEYWORDS = [
@@ -201,8 +190,6 @@ class QwenClient:
         "build a program", "build a script",
     ]
 
-    # ── Stage 6: New agent keyword sets ──────────────────────────────────────
-
     WEATHER_KEYWORDS = [
         "weather in ", "weather for ", "weather today", "weather tomorrow",
         "what's the weather", "what is the weather",
@@ -210,7 +197,6 @@ class QwenClient:
         "will it rain", "is it raining", "forecast for ", "forecast in ",
         "how hot is ", "how cold is ", "humidity in ",
         "is it sunny", "is it cloudy", "is it snowing",
-        "climate in ",
     ]
 
     CRYPTO_KEYWORDS = [
@@ -226,13 +212,11 @@ class QwenClient:
     NEWS_KEYWORDS = [
         "today's news", "latest news", "news today",
         "morning briefing", "daily briefing", "news briefing", "brief me",
-        "what's happening", "what is happening",
-        "tech news", "technology news", "business news",
+        "what's happening", "tech news", "technology news", "business news",
         "sports news", "health news", "science news",
         "world news", "philippine news", "ph news",
-        "news about ", "latest on ", "headlines",
-        "top stories", "what's the news",
-        "hacker news", "hn stories",
+        "news about ", "latest on ", "headlines", "top stories",
+        "what's the news", "hacker news", "hn stories",
     ]
 
     FINANCE_KEYWORDS = [
@@ -250,6 +234,19 @@ class QwenClient:
         "what time is it", "what's the time", "current time",
         "what time in ", "time in ", "time now in",
         "what day is it", "today's date", "current date",
+    ]
+
+    # ── FIX: File/folder operations — hard-routed to avoid LLM parameter bugs ──
+    FILE_FOLDER_KEYWORDS = [
+        "list files in", "list files on", "show files in", "show files on",
+        "what files are in", "what's in my ", "what is in my ",
+        "open my documents", "open my downloads", "open my desktop",
+        "open my pictures", "open my music", "open my videos",
+        "open the documents folder", "open the downloads folder",
+        "open the desktop folder", "open folder", "show folder",
+        "find the file", "find file", "search for file",
+        "locate the file", "where is the file",
+        "open file explorer", "open explorer",
     ]
 
     SITE_URL_MAP = {
@@ -270,34 +267,22 @@ class QwenClient:
 
     # ── Routing helpers ───────────────────────────────────────────────────────
 
-    def _is_creative_chat(self, c: str) -> bool:
-        return any(k in c for k in self.CREATIVE_CHAT_KEYWORDS)
-    def _is_memory_task(self, c: str) -> bool:
-        return any(k in c for k in self.MEMORY_KEYWORDS)
-    def _is_screenshot_task(self, c: str) -> bool:
-        return any(k in c for k in self.SCREENSHOT_KEYWORDS)
-    def _is_chrome_automation(self, c: str) -> bool:
-        return any(k in c for k in self.CHROME_AUTOMATION_KEYWORDS)
-    def _is_pc_nav(self, c: str) -> bool:
-        return any(k in c for k in self.PC_NAV_KEYWORDS)
-    def _is_browser_task(self, c: str) -> bool:
-        return any(k in c for k in self.BROWSER_KEYWORDS)
-    def _is_research_task(self, c: str) -> bool:
-        return any(k in c for k in self.RESEARCH_KEYWORDS)
-    def _is_code_task(self, c: str) -> bool:
-        return any(k in c for k in self.CODE_KEYWORDS)
-    def _is_realtime_task(self, c: str) -> bool:
-        return any(k in c for k in self.REALTIME_KEYWORDS)
-    def _is_weather_task(self, c: str) -> bool:
-        return any(k in c for k in self.WEATHER_KEYWORDS)
-    def _is_crypto_task(self, c: str) -> bool:
-        return any(k in c for k in self.CRYPTO_KEYWORDS)
-    def _is_news_task(self, c: str) -> bool:
-        return any(k in c for k in self.NEWS_KEYWORDS)
-    def _is_finance_task(self, c: str) -> bool:
-        return any(k in c for k in self.FINANCE_KEYWORDS)
+    def _is_creative_chat(self, c):   return any(k in c for k in self.CREATIVE_CHAT_KEYWORDS)
+    def _is_memory_task(self, c):     return any(k in c for k in self.MEMORY_KEYWORDS)
+    def _is_screenshot_task(self, c): return any(k in c for k in self.SCREENSHOT_KEYWORDS)
+    def _is_chrome_automation(self, c): return any(k in c for k in self.CHROME_AUTOMATION_KEYWORDS)
+    def _is_pc_nav(self, c):          return any(k in c for k in self.PC_NAV_KEYWORDS)
+    def _is_browser_task(self, c):    return any(k in c for k in self.BROWSER_KEYWORDS)
+    def _is_research_task(self, c):   return any(k in c for k in self.RESEARCH_KEYWORDS)
+    def _is_code_task(self, c):       return any(k in c for k in self.CODE_KEYWORDS)
+    def _is_realtime_task(self, c):   return any(k in c for k in self.REALTIME_KEYWORDS)
+    def _is_weather_task(self, c):    return any(k in c for k in self.WEATHER_KEYWORDS)
+    def _is_crypto_task(self, c):     return any(k in c for k in self.CRYPTO_KEYWORDS)
+    def _is_news_task(self, c):       return any(k in c for k in self.NEWS_KEYWORDS)
+    def _is_finance_task(self, c):    return any(k in c for k in self.FINANCE_KEYWORDS)
+    def _is_file_folder_task(self, c): return any(k in c for k in self.FILE_FOLDER_KEYWORDS)
 
-    def _is_open_app_command(self, c: str) -> bool:
+    def _is_open_app_command(self, c):
         OPEN_VERBS  = ["open ", "launch ", "start "]
         OFFICE_APPS = ["word","excel","powerpoint","ppt","notepad","notepad++",
                        "chrome","firefox","edge"]
@@ -305,7 +290,8 @@ class QwenClient:
         app    = any(a in c for a in OFFICE_APPS)
         return (starts and app
                 and not self._is_chrome_automation(c)
-                and not self._is_pc_nav(c))
+                and not self._is_pc_nav(c)
+                and not self._is_file_folder_task(c))
 
     # =========================================================================
     # COMMAND CLASSIFIER
@@ -314,34 +300,26 @@ class QwenClient:
     async def classify_command(self, command: str, user_context: str = "") -> str:
         c = command.lower()
 
-        # Hard task routes — checked in priority order
-        if self._is_memory_task(c):       return "task"
-        if self._is_screenshot_task(c):   return "task"
-        if self._is_chrome_automation(c): return "task"
-        if self._is_pc_nav(c):            return "task"
-        if self._is_code_task(c):         return "task"
-        # Stage 6 new agents
-        if self._is_weather_task(c):      return "task"
-        if self._is_crypto_task(c):       return "task"
-        if self._is_news_task(c):         return "task"
-        if self._is_finance_task(c):      return "task"
-        # Existing agents
-        if self._is_browser_task(c):      return "task"
-        if self._is_research_task(c):     return "task"
-        if self._is_realtime_task(c):     return "task"
-
-        # Creative writing → always chat
-        if self._is_creative_chat(c):     return "chat"
+        if self._is_memory_task(c):        return "task"
+        if self._is_screenshot_task(c):    return "task"
+        if self._is_chrome_automation(c):  return "task"
+        if self._is_pc_nav(c):             return "task"
+        if self._is_code_task(c):          return "task"
+        if self._is_file_folder_task(c):   return "task"  # FIX
+        if self._is_weather_task(c):       return "task"
+        if self._is_crypto_task(c):        return "task"
+        if self._is_news_task(c):          return "task"
+        if self._is_finance_task(c):       return "task"
+        if self._is_browser_task(c):       return "task"
+        if self._is_research_task(c):      return "task"
+        if self._is_realtime_task(c):      return "task"
+        if self._is_creative_chat(c):      return "chat"
 
         ctx_block = f"\n\nUser context:\n{user_context}" if user_context else ""
         system = (
             "Classify as 'chat' or 'task'.\n\n"
-            "'chat': questions, explanations, creative writing, math, translations, "
-            "general knowledge, advice.\n"
-            "'task': create files, control PC, write code programs/scripts, "
-            "web browsing, scraping, multi-step workflows.\n\n"
-            "Creative text (poems, stories, haikus) = chat. "
-            "Code programs/scripts = task.\n\n"
+            "'chat': questions, explanations, creative writing, math, translations.\n"
+            "'task': create files, control PC, write code, web browsing, file operations.\n"
             "Return ONLY: chat OR task"
         )
         result = await self.chat(system, command + ctx_block, temperature=0.0)
@@ -354,7 +332,6 @@ class QwenClient:
     async def plan_task(self, command: str, user_context: str = "") -> list[dict]:
         c = command.lower()
 
-        # Hard-routes in strict priority order
         if self._is_memory_task(c):
             return [{"step":1,"agent":"memory_agent",
                      "description":f"Memory: {command}",
@@ -371,7 +348,10 @@ class QwenClient:
         if self._is_pc_nav(c):
             return self._build_pc_nav_plan(command, c)
 
-        # Stage 6: new agents take priority over browser for their domains
+        # FIX: file/folder operations hard-routed with proper parameter dicts
+        if self._is_file_folder_task(c):
+            return self._build_file_folder_plan(command, c)
+
         if self._is_weather_task(c):
             return [{"step":1,"agent":"weather_agent",
                      "description":f"Weather: {command}",
@@ -422,14 +402,15 @@ class QwenClient:
         system_prompt = (
             "You are AetherAI's task planner. Return ONLY a valid JSON array.\n\n"
             + no_doc_rule +
+            "IMPORTANT: 'parameters' field MUST always be a JSON object {}, NEVER a string.\n\n"
             "AGENTS:\n"
-            "weather_agent   — weather, forecasts, temperature for any city\n"
-            '  {"query":"what is the weather in Manila"}\n\n'
-            "crypto_agent    — cryptocurrency prices, market data\n"
+            "weather_agent   — weather/forecasts\n"
+            '  {"query":"weather in Manila"}\n\n'
+            "crypto_agent    — crypto prices\n"
             '  {"query":"bitcoin price"}\n\n'
-            "news_agent      — news headlines, briefings\n"
+            "news_agent      — news headlines\n"
             '  {"query":"tech news today"}\n\n'
-            "finance_agent   — currency conversion, exchange rates, stocks\n"
+            "finance_agent   — currency/stocks\n"
             '  {"query":"convert 500 USD to PHP"}\n\n'
             "research_agent  — academic research with citations\n"
             '  {"query":"..."}\n\n'
@@ -437,12 +418,15 @@ class QwenClient:
             '  {"action":"scrape","url":"https://..."}\n'
             '  {"action":"youtube","query":"..."}\n'
             '  {"action":"search","query":"...","engine":"google"}\n\n'
-            "document_agent  — create .pptx/.docx/.xlsx  [TERMINAL]\n"
+            "document_agent  — create .pptx/.docx/.xlsx [TERMINAL]\n"
             '  {"type":"presentation"|"document"|"spreadsheet","topic":"..."}\n\n'
-            "coding_agent    — write and save code files  [TERMINAL]\n"
+            "coding_agent    — write code files [TERMINAL]\n"
             '  {"task":"...","language":"python|js|..."}\n\n'
-            "automation_agent — control the physical PC\n"
+            "automation_agent — control the PC\n"
             '  {"action":"open_app","parameters":{"app":"..."}}\n'
+            '  {"action":"list_files","parameters":{"path":"Documents"}}\n'
+            '  {"action":"open_folder","parameters":{"path":"Downloads"}}\n'
+            '  {"action":"find_and_open_file","parameters":{"filename":"x.xlsx","search_in":"Documents"}}\n'
             '  {"action":"type","parameters":{"text":"__GENERATED_CONTENT__"}}\n\n'
             "memory_agent    — save/recall preferences\n"
             '  {"query":"..."}\n\n'
@@ -457,6 +441,12 @@ class QwenClient:
         try:
             plan = json.loads(raw)
             if not isinstance(plan, list): raise ValueError
+
+            # Sanitize: ensure all parameters are dicts, not strings
+            for step in plan:
+                if isinstance(step.get("parameters"), str):
+                    step["parameters"] = {"query": step["parameters"]}
+
             if is_open_app:
                 plan = [s for s in plan if s.get("agent") != "document_agent"]
                 for idx, s in enumerate(plan, 1): s["step"] = idx
@@ -465,6 +455,111 @@ class QwenClient:
             return [{"step":1,"agent":"research_agent",
                      "description":f"Process: {command}",
                      "parameters":{"query":command}}]
+
+    # =========================================================================
+    # FILE/FOLDER PLAN BUILDER (FIX)
+    # =========================================================================
+
+    def _build_file_folder_plan(self, command: str, c: str) -> list[dict]:
+        """Build proper parameter dicts for file/folder operations."""
+
+        # list files in [folder]
+        if any(k in c for k in ["list files", "show files", "what files", "what's in my", "what is in my"]):
+            folder = self._extract_folder_name(c)
+            return [{"step":1,"agent":"automation_agent",
+                     "description":f"List files in {folder}",
+                     "parameters":{"action":"list_files","path":folder}}]
+
+        # open [named folder]
+        if any(k in c for k in ["open my downloads", "open the downloads", "open downloads"]):
+            return [{"step":1,"agent":"automation_agent",
+                     "description":"Open Downloads folder",
+                     "parameters":{"action":"open_folder","path":"Downloads"}}]
+
+        if any(k in c for k in ["open my documents", "open the documents", "open documents"]):
+            return [{"step":1,"agent":"automation_agent",
+                     "description":"Open Documents folder",
+                     "parameters":{"action":"open_folder","path":"Documents"}}]
+
+        if any(k in c for k in ["open my desktop", "open the desktop", "open desktop"]):
+            return [{"step":1,"agent":"automation_agent",
+                     "description":"Open Desktop folder",
+                     "parameters":{"action":"open_folder","path":"Desktop"}}]
+
+        if any(k in c for k in ["open my pictures", "open pictures"]):
+            return [{"step":1,"agent":"automation_agent",
+                     "description":"Open Pictures folder",
+                     "parameters":{"action":"open_folder","path":"Pictures"}}]
+
+        if any(k in c for k in ["open my music", "open music"]):
+            return [{"step":1,"agent":"automation_agent",
+                     "description":"Open Music folder",
+                     "parameters":{"action":"open_folder","path":"Music"}}]
+
+        if any(k in c for k in ["open my videos", "open videos"]):
+            return [{"step":1,"agent":"automation_agent",
+                     "description":"Open Videos folder",
+                     "parameters":{"action":"open_folder","path":"Videos"}}]
+
+        # open folder [path]
+        if "open folder" in c or "show folder" in c:
+            path = re.sub(r".*(open|show)\s+folder\s*", "", c, flags=re.IGNORECASE).strip()
+            return [{"step":1,"agent":"automation_agent",
+                     "description":f"Open folder: {path or 'home'}",
+                     "parameters":{"action":"open_folder","path":path or "home"}}]
+
+        # find/locate file
+        if any(k in c for k in ["find the file", "find file", "locate the file",
+                                  "search for file", "where is the file"]):
+            filename = self._extract_filename(command)
+            return [{"step":1,"agent":"automation_agent",
+                     "description":f"Find and open file: {filename}",
+                     "parameters":{"action":"find_and_open_file",
+                                   "filename": filename,
+                                   "search_in": str(__import__('pathlib').Path.home())}}]
+
+        # open file explorer
+        if any(k in c for k in ["open file explorer", "open explorer"]):
+            return [{"step":1,"agent":"automation_agent",
+                     "description":"Open File Explorer",
+                     "parameters":{"action":"open_app","parameters":{"app":"explorer"}}}]
+
+        # Generic folder open
+        folder = self._extract_folder_name(c)
+        return [{"step":1,"agent":"automation_agent",
+                 "description":f"Open folder: {folder}",
+                 "parameters":{"action":"open_folder","path":folder}}]
+
+    def _extract_folder_name(self, c: str) -> str:
+        """Extract folder name from command like 'list files in my Documents'."""
+        known = {
+            "documents": "Documents", "downloads": "Downloads",
+            "desktop":   "Desktop",   "pictures":  "Pictures",
+            "music":     "Music",     "videos":    "Videos",
+            "home":      "home",      "c drive":   "C:\\",
+            "d drive":   "D:\\",
+        }
+        for key, folder in known.items():
+            if key in c:
+                return folder
+        # Extract "in [folder]" pattern
+        m = re.search(r"(?:in|on|from)\s+(?:my\s+)?(.+?)(?:\s+folder)?$", c)
+        if m:
+            name = m.group(1).strip()
+            return known.get(name.lower(), name.title())
+        return "home"
+
+    def _extract_filename(self, command: str) -> str:
+        """Extract filename from 'find the file called X.xlsx'."""
+        patterns = [
+            r"(?:called|named|file)\s+['\"]?([^\s'"]+)['\"]?",
+            r"find\s+(?:the\s+file\s+)?['\"]?([^\s'"]+\.\w+)['\"]?",
+        ]
+        for pat in patterns:
+            m = re.search(pat, command, re.IGNORECASE)
+            if m:
+                return m.group(1)
+        return command.split()[-1]
 
     # =========================================================================
     # BROWSER PLAN BUILDER
@@ -492,16 +587,16 @@ class QwenClient:
                 url = url_m.group(1)
                 if not url.startswith("http"): url = "https://" + url
                 return [{"step":1,"agent":"browser_agent",
-                         "description":f"Scrape Wikipedia",
+                         "description":"Scrape Wikipedia",
                          "parameters":{"action":"scrape","url":url}}]
             return [{"step":1,"agent":"browser_agent",
-                     "description":f"Wikipedia search",
+                     "description":"Wikipedia search",
                      "parameters":{"action":"search","query":command,"engine":"google"}}]
 
         url_m = re.search(r"https?://[^\s]+", command)
         if url_m:
             return [{"step":1,"agent":"browser_agent",
-                     "description":f"Scrape URL",
+                     "description":"Scrape URL",
                      "parameters":{"action":"scrape","url":url_m.group(0)}}]
 
         dest_m = re.search(
@@ -510,7 +605,7 @@ class QwenClient:
             url = dest_m.group(1)
             if not url.startswith("http"): url = "https://" + url
             return [{"step":1,"agent":"browser_agent",
-                     "description":f"Scrape",
+                     "description":"Scrape",
                      "parameters":{"action":"scrape","url":url}}]
 
         if any(k in c for k in ["search google for","google for","google search",
@@ -523,7 +618,7 @@ class QwenClient:
             ).strip() or command
             engine = "bing" if "bing" in c else "google"
             return [{"step":1,"agent":"browser_agent",
-                     "description":f"Web search",
+                     "description":f"Web search: {query}",
                      "parameters":{"action":"search","query":query,"engine":engine}}]
 
         return [{"step":1,"agent":"browser_agent",
@@ -531,7 +626,7 @@ class QwenClient:
                  "parameters":{"action":"search","query":command,"engine":"google"}}]
 
     # =========================================================================
-    # PC AUTOMATION PLAN BUILDERS
+    # PC AUTOMATION BUILDERS
     # =========================================================================
 
     def _build_chrome_automation_plan(self, command: str, c: str) -> list[dict]:
@@ -541,17 +636,13 @@ class QwenClient:
                             flags=re.IGNORECASE).strip()
         url = self._extract_url_from_intent(intent)
         return [
-            {"step":1,"agent":"automation_agent",
-             "description":"Open Chrome",
+            {"step":1,"agent":"automation_agent","description":"Open Chrome",
              "parameters":{"action":"open_app","parameters":{"app":"chrome"}}},
-            {"step":2,"agent":"automation_agent",
-             "description":"Wait for Chrome",
+            {"step":2,"agent":"automation_agent","description":"Wait for Chrome",
              "parameters":{"action":"wait","parameters":{"ms":2500}}},
-            {"step":3,"agent":"automation_agent",
-             "description":f"Navigate to: {url}",
+            {"step":3,"agent":"automation_agent","description":f"Navigate to: {url}",
              "parameters":{"action":"type","parameters":{"text":url}}},
-            {"step":4,"agent":"automation_agent",
-             "description":"Go",
+            {"step":4,"agent":"automation_agent","description":"Go",
              "parameters":{"action":"hotkey","parameters":{"keys":["enter"]}}},
         ]
 
@@ -562,17 +653,13 @@ class QwenClient:
                 url = site_url
                 break
         return [
-            {"step":1,"agent":"automation_agent",
-             "description":"Open Chrome",
+            {"step":1,"agent":"automation_agent","description":"Open Chrome",
              "parameters":{"action":"open_app","parameters":{"app":"chrome"}}},
-            {"step":2,"agent":"automation_agent",
-             "description":"Wait for Chrome",
+            {"step":2,"agent":"automation_agent","description":"Wait for Chrome",
              "parameters":{"action":"wait","parameters":{"ms":2500}}},
-            {"step":3,"agent":"automation_agent",
-             "description":f"Navigate to {url}",
+            {"step":3,"agent":"automation_agent","description":f"Navigate to {url}",
              "parameters":{"action":"type","parameters":{"text":url}}},
-            {"step":4,"agent":"automation_agent",
-             "description":"Go",
+            {"step":4,"agent":"automation_agent","description":"Go",
              "parameters":{"action":"hotkey","parameters":{"keys":["enter"]}}},
         ]
 
