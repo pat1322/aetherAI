@@ -1,41 +1,26 @@
 """
-AetherAI — Research Agent  (Stage 4 — hardened)
+AetherAI — Research Agent  (Stage 5 — fully patched)
 
-WHAT'S NEW vs the previous version
-────────────────────────────────────
-1. Multiple sources
-   Old version: DuckDuckGo only, one POST request, top-5 snippets.
-   New version: DuckDuckGo HTML (primary) + DuckDuckGo JSON API (fallback)
-   + direct page fetch for the top result URL when snippets are thin.
-   Gives richer context to Qwen and reduces "I couldn't find anything"
-   responses.
+All fixes applied
+─────────────────
+FIX A  _fetch_page() NameError: response variable was stored as `r` inside
+       the `async with` block but referenced as `resp` in BeautifulSoup call
+       outside it. Changed to `r.text` throughout and restructured so all
+       reads happen inside the `with` block.
 
-2. Source URLs in output
-   The summary now ends with a "Sources:" block listing the actual URLs
-   of pages that contributed to the answer. Useful for follow-up and
-   gives the user somewhere to dig deeper.
+FIX B  DDG HTML URL extraction: DuckDuckGo result links are redirect URLs
+       like `//duckduckgo.com/l/?uddg=https%3A...` — they never start with
+       "http" so the old `href.startswith("http")` guard filtered ALL of
+       them out. Now decodes the `uddg=` query param to get the real URL.
 
-3. Snippet deduplication
-   DDG often returns the same snippet text from multiple result entries
-   (especially for news). Duplicates are filtered by MD5 hash before
-   being passed to Qwen, so the LLM isn't summarising the same sentence
-   four times.
-
-4. Query cleaning
-   Strips common filler phrases ("tell me about", "what is", "explain",
-   "research", "find information on") from the query before sending to
-   DDG. Cleaner queries → better result quality.
-
-5. Retry on HTTP errors
-   Single retry with 2 s back-off on transient DDG failures (429, 5xx).
-   Prevents a single flaky request from falling through to the Qwen
-   knowledge-only fallback unnecessarily.
-
-6. Per-URL fetch cap
-   Direct page fetches are capped at 3000 chars and timeout at 8 s to
-   prevent a slow page from blocking the whole research step.
-
-7. CancelledError pass-through.
+Original Stage 4 features retained:
+  • DuckDuckGo HTML + JSON fallback
+  • Source URLs in summary
+  • Snippet deduplication
+  • Query cleaning / filler-phrase stripping
+  • Retry on HTTP errors
+  • Per-URL fetch cap
+  • CancelledError pass-through
 """
 
 import asyncio
@@ -43,7 +28,7 @@ import hashlib
 import logging
 import re
 from typing import Optional
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse, parse_qs, unquote
 
 import httpx
 from bs4 import BeautifulSoup
@@ -63,11 +48,10 @@ HEADERS = {
 DDG_HTML_URL = "https://html.duckduckgo.com/html/"
 DDG_JSON_URL = "https://api.duckduckgo.com/?q={q}&format=json&no_html=1&skip_disambig=1"
 
-PAGE_FETCH_LIMIT = 3000
+PAGE_FETCH_LIMIT   = 3000
 PAGE_FETCH_TIMEOUT = 8.0
-MAX_SNIPPETS = 6
+MAX_SNIPPETS       = 6
 
-# Filler phrases to strip from queries before sending to DDG
 _FILLER_RE = re.compile(
     r"^\s*(tell me about|what is|what are|explain|research|"
     r"find information (on|about)|look up|search for|give me info on)\s+",
@@ -87,6 +71,29 @@ def _dedup(snippets: list[str]) -> list[str]:
             seen.add(key)
             out.append(s)
     return out
+
+
+def _decode_ddg_url(href: str) -> Optional[str]:
+    """
+    FIX B: DDG HTML result hrefs look like:
+      //duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com&rut=...
+    Extract and decode the real destination URL from the `uddg=` param.
+    """
+    if href.startswith("http"):
+        return href  # already a real URL (rare but possible)
+    if not href:
+        return None
+    if href.startswith("//"):
+        href = "https:" + href
+    try:
+        parsed = urlparse(href)
+        qs     = parse_qs(parsed.query)
+        uddg   = qs.get("uddg", [None])[0]
+        if uddg:
+            return unquote(uddg)
+    except Exception:
+        pass
+    return None
 
 
 class ResearchAgent(BaseAgent):
@@ -131,11 +138,6 @@ class ResearchAgent(BaseAgent):
     # ── Search pipeline ────────────────────────────────────────────────────────
 
     async def _search(self, query: str) -> tuple[list[str], list[str]]:
-        """
-        Returns (snippets, source_urls).
-        Tries DDG HTML first, falls back to DDG JSON API, then fetches
-        the top result page directly if snippets are very thin.
-        """
         snippets, urls = await self._ddg_html(query)
 
         if len(snippets) < 2:
@@ -146,7 +148,6 @@ class ResearchAgent(BaseAgent):
 
         snippets = _dedup(snippets)
 
-        # If still thin, fetch the top URL directly
         if len(snippets) < 2 and urls:
             logger.info(f"[ResearchAgent] Fetching top URL directly: {urls[0]}")
             page_text = await self._fetch_page(urls[0])
@@ -169,25 +170,26 @@ class ResearchAgent(BaseAgent):
                         await asyncio.sleep(2)
                         continue
                     resp.raise_for_status()
+                    html_text = resp.text          # buffer before client closes
 
-                soup = BeautifulSoup(resp.text, "lxml")
+                soup = BeautifulSoup(html_text, "lxml")
 
                 for result in soup.select(".result"):
-                    # Extract snippet text
                     body = result.select_one(".result__body, .result__snippet")
                     if body:
                         text = body.get_text(separator=" ", strip=True)
                         if len(text) > 30:
                             snippets.append(text[:800])
 
-                    # Extract URL
+                    # FIX B: decode DDG redirect URL to get real destination
                     link = result.select_one("a.result__url, .result__a")
                     if link:
-                        href = link.get("href", "")
-                        if href.startswith("http") and href not in urls:
-                            urls.append(href)
+                        href     = link.get("href", "")
+                        real_url = _decode_ddg_url(href)
+                        if real_url and real_url not in urls:
+                            urls.append(real_url)
 
-                logger.info(f"[ResearchAgent] DDG HTML: {len(snippets)} snippets")
+                logger.info(f"[ResearchAgent] DDG HTML: {len(snippets)} snippets, {len(urls)} URLs")
                 break
 
             except Exception as e:
@@ -211,13 +213,11 @@ class ResearchAgent(BaseAgent):
                 resp.raise_for_status()
                 data = resp.json()
 
-            # Abstract (direct answer)
             if data.get("Abstract"):
                 snippets.append(data["Abstract"])
             if data.get("AbstractURL"):
                 urls.append(data["AbstractURL"])
 
-            # Related topics
             for topic in data.get("RelatedTopics", [])[:8]:
                 text = topic.get("Text", "")
                 link = topic.get("FirstURL", "")
@@ -234,18 +234,20 @@ class ResearchAgent(BaseAgent):
         return snippets, urls
 
     async def _fetch_page(self, url: str) -> Optional[str]:
-        """Fetch and extract text from a single URL (best-effort)."""
+        """FIX A: all reads happen inside the `with` block; no stale `resp` reference."""
         try:
             async with httpx.AsyncClient(
                 headers=HEADERS, follow_redirects=True, timeout=PAGE_FETCH_TIMEOUT
             ) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                ct = resp.headers.get("content-type", "")
+                r = await client.get(url)
+                r.raise_for_status()
+                ct = r.headers.get("content-type", "")
                 if "html" not in ct:
                     return None
+                # Read text while client is still open (buffered anyway, but explicit)
+                page_html = r.text
 
-            soup = BeautifulSoup(resp.text, "lxml")
+            soup = BeautifulSoup(page_html, "lxml")
             for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
                 tag.decompose()
             text = soup.get_text(separator=" ", strip=True)

@@ -1,0 +1,19 @@
+# nixpacks.toml — Railway build configuration
+# Playwright is installed HERE (at build time) so the dyno doesn't spend
+# 60-120s installing it on every restart, which was causing health-check
+# failures and crash loops.
+
+[phases.setup]
+nixPkgs = ["python311", "chromium", "nss", "xorg.libX11", "xorg.libXcomposite",
+           "xorg.libXdamage", "xorg.libXrandr", "libdrm", "mesa", "libgbm",
+           "expat", "alsa-lib", "cups", "dbus", "at-spi2-core", "pango",
+           "cairo", "glib", "nspr", "freetype", "fontconfig", "harfbuzz"]
+
+[phases.install]
+cmds = [
+  "pip install -r requirements.txt",
+  "playwright install chromium --with-deps"
+]
+
+[start]
+cmd = "cd cloud_brain && uvicorn main:app --host 0.0.0.0 --port $PORT"

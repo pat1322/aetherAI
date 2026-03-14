@@ -1,14 +1,21 @@
 """
-AetherAI — Orchestrator  (Stage 5)
-Receives a command, classifies it, then plans and executes steps.
+AetherAI — Orchestrator  (Stage 5 — fully patched)
 
-Stage 5 changes:
-  • Before every classify/plan/answer call, load user preferences from
-    memory and inject them as a context string (user_context).
-  • This means Qwen always knows Patrick's preferences when generating
-    plans and chat answers — without needing to be told every time.
-  • MemoryAgent.load_context() is a static helper that reads the
-    preferences table and returns a compact string.
+All fixes applied
+─────────────────
+FIX A  cancel_task() now calls asyncio_task.cancel() on the actual running
+       coroutine instead of just setting a flag. The old flag-based approach
+       only took effect between steps — if a step was mid-execution (a 60s
+       browser scrape, for example) the task wouldn't stop until that step
+       naturally finished. True cancellation interrupts it immediately via
+       CancelledError propagation.
+
+Stage 5 features retained:
+  • User context (preferences) injected into every Qwen call
+  • MemoryAgent hard-routing
+  • document_agent deduplication
+  • __GENERATED_CONTENT__ placeholder resolution
+  • Code block extraction for the UI
 """
 
 import asyncio
@@ -43,7 +50,6 @@ def type_action_summary(parameters: dict) -> str:
 
 
 def _load_user_context(memory: MemoryManager) -> str:
-    """Load stored preferences and return compact string for Qwen injection."""
     try:
         from agents.memory_agent import MemoryAgent
         return MemoryAgent.load_context(memory)
@@ -58,10 +64,14 @@ class Orchestrator:
         self.ws_manager = ws_manager
         self.qwen       = QwenClient()
         self.router     = AgentRouter(memory=memory, ws_manager=ws_manager, qwen=self.qwen)
-        self._running_tasks: dict[str, bool] = {}
+        # FIX A: store the actual asyncio.Task objects for real cancellation
+        self._task_handles: dict[str, asyncio.Task] = {}
 
     async def run_task(self, task_id: str, command: str):
-        self._running_tasks[task_id] = True
+        # FIX A: register this coroutine's Task handle so cancel_task() can cancel it
+        current = asyncio.current_task()
+        if current:
+            self._task_handles[task_id] = current
 
         try:
             self.memory.update_task_status(task_id, "planning")
@@ -70,7 +80,6 @@ class Orchestrator:
                 "message": "AetherAI is analyzing your command...",
             })
 
-            # ── Stage 5: load user context before every classify/plan call ────
             user_context = _load_user_context(self.memory)
             if user_context:
                 logger.info(f"[{task_id}] User context loaded ({len(user_context)} chars)")
@@ -91,7 +100,6 @@ class Orchestrator:
             # ── TASK MODE ─────────────────────────────────────────────────────
             plan = await self.qwen.plan_task(command, user_context=user_context)
 
-            # Deduplicate document_agent
             doc_idx = [i for i, s in enumerate(plan) if s.get("agent") == "document_agent"]
             if len(doc_idx) > 1:
                 keep = doc_idx[-1]
@@ -102,7 +110,6 @@ class Orchestrator:
 
             logger.info(f"[{task_id}] Plan ({len(plan)} steps): {[s.get('agent') for s in plan]}")
 
-            # ── Pre-resolve __GENERATED_CONTENT__ placeholders ────────────────
             for step in plan:
                 agent  = step.get("agent", "")
                 params = step.get("parameters", {})
@@ -134,15 +141,11 @@ class Orchestrator:
             last_meaningful_output = command
 
             for step in plan:
-                if not self._running_tasks.get(task_id):
-                    break
-
                 step_num    = step.get("step", 0)
                 agent_name  = step.get("agent", "research_agent")
                 description = step.get("description", "")
                 parameters  = step.get("parameters", {})
 
-                # ── Resolve __GENERATED_CONTENT__ ─────────────────────────────
                 if step.get("_needs_content"):
                     if last_code:
                         resolved_text = last_code
@@ -205,13 +208,6 @@ class Orchestrator:
                                 "output":       summary,
                                 "code_block":   {"language": lang, "code": code},
                             })
-                        elif is_type_action(agent_name, parameters):
-                            await self.ws_manager.broadcast_task_update(task_id, {
-                                "status":       "running",
-                                "current_step": step_num,
-                                "step_status":  "completed",
-                                "output":       chat_output,
-                            })
                         else:
                             await self.ws_manager.broadcast_task_update(task_id, {
                                 "status":       "running",
@@ -221,6 +217,12 @@ class Orchestrator:
                             })
                     else:
                         self.memory.update_step(task_id, step_num, "completed", "")
+
+                except asyncio.CancelledError:
+                    # FIX A: propagate cancellation — task was cancelled by cancel_task()
+                    logger.info(f"[{task_id}] Step {step_num} cancelled")
+                    self.memory.update_step(task_id, step_num, "cancelled", "Cancelled")
+                    raise   # let the outer except handle status update
 
                 except asyncio.TimeoutError:
                     msg = f"Step {step_num} timed out"
@@ -232,15 +234,23 @@ class Orchestrator:
                     logger.error(f"[{task_id}] {msg}", exc_info=True)
                     self.memory.update_step(task_id, step_num, "failed", msg)
 
-            final_status = "completed" if self._running_tasks.get(task_id) else "cancelled"
             final_summary, _, _ = extract_code_block(last_meaningful_output)
             display = (final_summary or last_meaningful_output)[:500]
 
-            self.memory.update_task_status(task_id, final_status, result=display)
+            self.memory.update_task_status(task_id, "completed", result=display)
             await self.ws_manager.broadcast_task_update(task_id, {
-                "status":  final_status,
-                "message": "Task completed." if final_status == "completed" else "Task cancelled.",
+                "status":  "completed",
+                "message": "Task completed.",
                 "result":  display,
+            })
+
+        except asyncio.CancelledError:
+            # FIX A: clean up when the task is externally cancelled
+            logger.info(f"[{task_id}] Task cancelled")
+            self.memory.update_task_status(task_id, "cancelled")
+            await self.ws_manager.broadcast_task_update(task_id, {
+                "status":  "cancelled",
+                "message": "Task cancelled.",
             })
 
         except Exception as e:
@@ -251,10 +261,15 @@ class Orchestrator:
                 "message": f"Task failed: {e}",
             })
         finally:
-            self._running_tasks.pop(task_id, None)
+            self._task_handles.pop(task_id, None)
 
     def cancel_task(self, task_id: str) -> bool:
-        if task_id in self._running_tasks:
-            self._running_tasks[task_id] = False
+        """
+        FIX A: Cancel the running asyncio.Task for real — this raises CancelledError
+        inside the coroutine immediately, interrupting whatever step is running.
+        """
+        task_handle = self._task_handles.get(task_id)
+        if task_handle and not task_handle.done():
+            task_handle.cancel()
             return True
         return False

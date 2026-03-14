@@ -3,6 +3,10 @@ REM ─────────────────────────�
 REM  AetherAI Device Agent — Standalone EXE Builder
 REM  Run this once to produce AetherAI_Agent.exe in the dist\ folder.
 REM  Requires: pip install pyinstaller
+REM
+REM  FIX: Removed --icon "icon.ico" — the file was never in the repo,
+REM       causing PyInstaller to fail the build for anyone who cloned fresh.
+REM       Add your own icon.ico to device_agent\ and uncomment the flag below.
 REM ─────────────────────────────────────────────────────────────────────────────
 
 echo [AetherAI] Installing build dependencies...
@@ -14,7 +18,6 @@ pyinstaller ^
   --onefile ^
   --noconsole ^
   --name "AetherAI_Agent" ^
-  --icon "icon.ico" ^
   --add-data "aether_config.ini;." ^
   --hidden-import "PIL._tkinter_finder" ^
   --hidden-import "pyautogui" ^
@@ -23,6 +26,9 @@ pyinstaller ^
   --hidden-import "asyncio" ^
   --hidden-import "configparser" ^
   agent.py
+
+REM  Uncomment below if you have an icon file:
+REM  --icon "icon.ico" ^
 
 IF EXIST dist\AetherAI_Agent.exe (
     echo.

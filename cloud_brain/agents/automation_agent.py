@@ -1,29 +1,19 @@
 """
-AetherAI — Automation Agent  (Stage 4 — hardened)
+AetherAI — Automation Agent  (Stage 5 — fully patched)
 
-WHAT'S NEW vs the previous version
-────────────────────────────────────
-1. Consistent parameter normalisation
-   _normalise() handles every known shape the planner might produce:
-     {"action":"type","text":"..."}                  (flat, no inner params key)
-     {"action":"type","parameters":{"text":"..."}}   (nested — standard)
-     {"action":"type","parameters":"some text"}      (string params — Qwen bug)
-   One pass at the top of run() so _single_action and _run_sequence
-   always receive a consistent shape.
+All fixes applied
+─────────────────
+FIX A  _vision_step_handler() now extracts image_base64 from step_data and
+       passes it to qwen.chat_with_image() so Qwen actually sees the screen
+       before deciding the next action. Previously no image was sent at all,
+       making the vision loop completely blind.
 
-2. send_to_device() uses SendResult enum
-   If the device isn't connected we return a clear message immediately
-   instead of a misleading "timed out" after the full timeout window.
-
-3. Sequence step timeouts respect ACTION_TIMEOUTS per action
-   Previously a flat default was used for all steps. Now each step looks
-   up its own timeout from ACTION_TIMEOUTS.
-
-4. Vision loop: future always unregistered on timeout
-   The old vision task didn't call unregister_pending in the timeout path,
-   leaking the future. Fixed via the finally block.
-
-5. CancelledError pass-through in all paths.
+Original Stage 4 hardening retained:
+  • _normalise() parameter canonicalisation
+  • SendResult enum checks
+  • Sequence step timeouts per ACTION_TIMEOUTS
+  • Vision future always unregistered in finally block
+  • CancelledError pass-through
 """
 
 import asyncio
@@ -41,7 +31,6 @@ from utils.websocket_manager import SendResult
 
 logger = logging.getLogger(__name__)
 
-# Output directory — same as document_agent uses
 OUTPUT_DIR = Path(__file__).parent.parent.parent / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -57,10 +46,6 @@ ACTION_TIMEOUTS: dict[str, float] = {
 
 
 def _normalise(parameters: dict) -> dict:
-    """
-    Canonicalise whatever shape the planner produced into:
-      {action, parameters (dict), mode, goal, sequence}
-    """
     if "action" not in parameters and isinstance(parameters.get("parameters"), dict):
         inner = parameters["parameters"]
         if "action" in inner:
@@ -124,7 +109,7 @@ class AutomationAgent(BaseAgent):
                 "3. Wait for 'Connected' message, then retry."
             )
 
-        device_id     = devices[0]
+        device_id      = devices[0]
         effective_goal = goal or context
 
         if mode == "vision" or (effective_goal and not action and not sequence):
@@ -141,7 +126,7 @@ class AutomationAgent(BaseAgent):
     async def _single_action(self, device_id: str, action: str,
                               params: dict, task_id: str) -> str:
         request_id = str(uuid.uuid4())[:8]
-        future     = asyncio.get_event_loop().create_future()
+        future     = asyncio.get_running_loop().create_future()
         timeout    = ACTION_TIMEOUTS.get(action, ACTION_TIMEOUTS["default"])
 
         self.ws_manager.register_pending(request_id, future)
@@ -165,7 +150,6 @@ class AutomationAgent(BaseAgent):
         try:
             response = await asyncio.wait_for(future, timeout=timeout)
 
-            # ── Screenshot: decode base64 and save to output/ ─────────────────
             if action == "screenshot_and_return":
                 img_b64 = response.get("image_base64", "")
                 if img_b64:
@@ -202,7 +186,7 @@ class AutomationAgent(BaseAgent):
                         f"action={action} params={params}")
 
             request_id = str(uuid.uuid4())[:8]
-            future     = asyncio.get_event_loop().create_future()
+            future     = asyncio.get_running_loop().create_future()
             self.ws_manager.register_pending(request_id, future)
 
             send_result = await self.ws_manager.send_to_device(device_id, {
@@ -234,7 +218,7 @@ class AutomationAgent(BaseAgent):
 
     async def _vision_task(self, device_id: str, goal: str, task_id: str) -> str:
         request_id = str(uuid.uuid4())[:8]
-        future     = asyncio.get_event_loop().create_future()
+        future     = asyncio.get_running_loop().create_future()
 
         self.ws_manager.register_vision_task(request_id, future,
                                               self._vision_step_handler)
@@ -261,8 +245,13 @@ class AutomationAgent(BaseAgent):
 
     async def _vision_step_handler(self, device_id: str, request_id: str,
                                     step_data: dict) -> dict:
-        goal     = step_data.get("goal", "")
-        step_num = step_data.get("step", 1)
+        """
+        FIX A: Extract the screenshot from step_data and pass it to Qwen
+        as a multimodal message. Previously no image was sent at all.
+        """
+        goal      = step_data.get("goal", "")
+        step_num  = step_data.get("step", 1)
+        img_b64   = step_data.get("image_base64", "")
 
         prompt = f"""You are controlling a Windows PC to accomplish: {goal}
 
@@ -281,14 +270,29 @@ Done:     {{"action":"done","message":"Goal accomplished: ...","reason":"finishe
 Screen is 1920x1080. Be precise with coordinates."""
 
         try:
-            response = await self.qwen.chat(
-                system_prompt=(
-                    "You are a computer vision agent. "
-                    "Analyse the screenshot and return ONLY valid JSON action."
-                ),
-                user_message=prompt,
-                temperature=0.1,
-            )
+            if img_b64:
+                # FIX A: pass the actual screenshot to Qwen for visual analysis
+                response = await self.qwen.chat_with_image(
+                    system_prompt=(
+                        "You are a computer vision agent. "
+                        "Analyse the screenshot and return ONLY valid JSON action."
+                    ),
+                    user_message=prompt,
+                    image_base64=img_b64,
+                    temperature=0.1,
+                )
+            else:
+                # Fallback if no image received (shouldn't happen)
+                logger.warning(f"[Vision] Step {step_num}: no image in step_data")
+                response = await self.qwen.chat(
+                    system_prompt=(
+                        "You are a computer vision agent. "
+                        "No screenshot available. Return a safe wait action."
+                    ),
+                    user_message=prompt,
+                    temperature=0.1,
+                )
+
             response    = re.sub(r"```(?:json)?", "", response).strip().rstrip("`").strip()
             action_data = json.loads(response)
             logger.info(f"[Vision] Step {step_num}: "

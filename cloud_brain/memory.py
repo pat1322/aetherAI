@@ -1,14 +1,15 @@
 """
-AetherAI — Memory Manager  (Stage 5, patched)
+AetherAI — Memory Manager  (Stage 5 — fully patched)
 
-Patch applied
-─────────────
-FIX 2  Added delete_preference(key) — performs a real SQL DELETE instead of
-       storing JSON null. The old approach left zombie rows in the preferences
-       table forever and made the index grow with dead keys on every "forget"
-       command.
-       memory_agent.py and main.py now call delete_preference() instead of
-       set_preference(key, None).
+All fixes applied
+─────────────────
+FIX A  PRAGMA foreign_keys = ON added to every connection so the declared
+       FOREIGN KEY constraints on `steps` and `files` are actually enforced.
+       Without this SQLite silently ignores FK violations, allowing orphaned
+       step/file rows when a task is deleted out-of-order.
+
+FIX B  delete_preference(key) performs a real SQL DELETE (original Stage 5
+       patch — retained).
 """
 
 import json
@@ -46,6 +47,7 @@ class MemoryManager:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")   # FIX A: enforce FK constraints
         return conn
 
     # ── Schema ─────────────────────────────────────────────────────────────────
@@ -163,8 +165,8 @@ class MemoryManager:
 
     def delete_task(self, task_id: str) -> bool:
         with self._conn() as conn:
-            result = conn.execute("DELETE FROM tasks WHERE task_id=?", (task_id,))
             conn.execute("DELETE FROM steps WHERE task_id=?", (task_id,))
+            result = conn.execute("DELETE FROM tasks WHERE task_id=?", (task_id,))
             return result.rowcount > 0
 
     def delete_all_tasks(self) -> int:
@@ -283,7 +285,6 @@ class MemoryManager:
     # ── Preferences ────────────────────────────────────────────────────────────
 
     def set_preference(self, key: str, value):
-        """Upsert a preference value."""
         now = datetime.utcnow().isoformat()
         with self._conn() as conn:
             conn.execute(
@@ -301,11 +302,7 @@ class MemoryManager:
             return json.loads(row["value"])
 
     def delete_preference(self, key: str) -> bool:
-        """
-        FIX 2: Permanently remove a preference row from the DB.
-        Previously callers used set_preference(key, None) which stored JSON
-        'null' and left a zombie row. This does a real DELETE.
-        """
+        """FIX B: Permanently remove a preference row (real DELETE, not null set)."""
         with self._conn() as conn:
             result = conn.execute(
                 "DELETE FROM preferences WHERE key=?", (key,)

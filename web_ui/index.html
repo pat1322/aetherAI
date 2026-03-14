@@ -7,7 +7,6 @@
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-    /* ── Theme tokens ──────────────────────────────────────────────── */
     :root[data-theme="dark"] {
       --bg:       #0d1117;
       --bg2:      #161b22;
@@ -54,7 +53,7 @@
       transition: background 0.25s, color 0.25s;
     }
 
-    /* ── Topbar ──────────────────────────────────────────────────────── */
+    /* ── Topbar ── */
     .topbar {
       display: flex; align-items: center; justify-content: space-between;
       padding: 0 16px; height: 52px;
@@ -82,10 +81,25 @@
     }
     .status-dot.offline { background: var(--warn);   animation: none; }
     .status-dot.error   { background: var(--orange); animation: none; }
+    .status-dot.connecting { background: var(--orange); animation: pulse 0.8s infinite; }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
 
+    /* ── Device badge in topbar ── */
+    .device-topbar-pill {
+      display: flex; align-items: center; gap: 6px;
+      background: rgba(0,232,150,0.1); border: 1px solid rgba(0,232,150,0.25);
+      border-radius: 20px; padding: 3px 11px; font-size: 11px;
+      color: var(--green); font-weight: 600; cursor: default;
+      transition: opacity 0.2s;
+    }
+    .device-topbar-pill.none {
+      background: var(--bg3); border-color: var(--border);
+      color: var(--muted); font-weight: 400;
+    }
+    .device-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+    .device-dot.none { background: var(--muted); }
+
     #clockDisplay { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-    #deviceCount  { font-size: 12px; color: var(--muted); }
 
     .icon-btn {
       background: none; border: 1px solid transparent; color: var(--muted);
@@ -96,10 +110,9 @@
     }
     .icon-btn:hover { color: var(--accent); border-color: var(--border); background: var(--bg3); }
 
-    /* Only shown on mobile */
     .mobile-only { display: none; }
 
-    /* ── Busy bar ────────────────────────────────────────────────────── */
+    /* ── Busy bar ── */
     .busy-bar { height: 2px; background: transparent; flex-shrink: 0; overflow: hidden; }
     .busy-bar-inner {
       height: 100%; width: 35%;
@@ -110,10 +123,10 @@
     @keyframes sweep { from{transform:translateX(-200%)} to{transform:translateX(500%)} }
     .busy-bar-inner.active { display: block; }
 
-    /* ── 3-col layout ────────────────────────────────────────────────── */
+    /* ── 3-col layout ── */
     .layout { display: grid; grid-template-columns: 230px 1fr 270px; flex: 1; overflow: hidden; }
 
-    /* ── Sidebar ─────────────────────────────────────────────────────── */
+    /* ── Sidebar ── */
     .sidebar {
       background: var(--bg2); border-right: 1px solid var(--border);
       display: flex; flex-direction: column; overflow: hidden;
@@ -162,7 +175,7 @@
     }
     .task-del-btn:hover { color: var(--warn); }
 
-    /* ── Main output ─────────────────────────────────────────────────── */
+    /* ── Main output ── */
     main { display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
     .output-area {
       flex: 1; overflow-y: auto; padding: 18px 22px;
@@ -192,20 +205,15 @@
       padding: 10px 14px; border-radius: 0 8px 8px 0; white-space: normal;
     }
     :root[data-theme="light"] .log-msg.chat { background: rgba(0,119,204,0.05); }
-    .log-msg.chat strong { color: var(--accent); font-weight: 700; }
-    .log-msg.chat em     { color: var(--accent2); font-style: italic; }
-    .log-msg.chat a      { color: var(--accent); text-decoration: underline; }
-    .log-msg.chat ul,
-    .log-msg.chat ol     { padding-left: 20px; margin: 6px 0; }
-    .log-msg.chat li     { margin-bottom: 4px; }
-    .log-msg.chat h1,.log-msg.chat h2,.log-msg.chat h3 { color: var(--accent); margin: 10px 0 5px; }
-    .log-msg.chat hr     { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
-    .log-msg.chat p      { margin-bottom: 5px; }
-    .log-msg.result strong { color: var(--green); font-weight: 700; }
-    .log-msg.result a    { color: var(--accent); text-decoration: underline; }
-    .log-msg.result ul,
-    .log-msg.result ol   { padding-left: 20px; margin: 6px 0; }
-    .log-msg.result li   { margin-bottom: 4px; }
+    .log-msg.chat strong,.log-msg.result strong { color: var(--accent); font-weight: 700; }
+    .log-msg.chat a,.log-msg.result a { color: var(--accent); text-decoration: underline; }
+    .log-msg.chat ul,.log-msg.chat ol,
+    .log-msg.result ul,.log-msg.result ol { padding-left: 20px; margin: 6px 0; }
+    .log-msg.chat li,.log-msg.result li { margin-bottom: 4px; }
+    .log-msg.chat h1,.log-msg.chat h2,.log-msg.chat h3,
+    .log-msg.result h1,.log-msg.result h2,.log-msg.result h3 {
+      color: var(--accent); margin: 10px 0 5px;
+    }
 
     .log-entry:hover .copy-result-btn { opacity: 1; }
     .copy-result-btn {
@@ -217,7 +225,7 @@
     }
     .copy-result-btn:hover { color: var(--accent); border-color: var(--accent); }
 
-    /* ── Code blocks ─────────────────────────────────────────────────── */
+    /* ── Code blocks ── */
     .code-block-wrapper { width: 100%; margin: 6px 0; }
     .code-block-header {
       display: flex; justify-content: space-between; align-items: center;
@@ -240,7 +248,7 @@
       max-height: 440px; overflow-y: auto;
     }
 
-    /* ── Input row ───────────────────────────────────────────────────── */
+    /* ── Input row ── */
     .input-row {
       border-top: 1px solid var(--border); padding: 12px 16px;
       display: flex; gap: 8px; align-items: center;
@@ -267,7 +275,7 @@
     .btn.danger  { background: var(--warn); color: #fff; }
     .btn.danger:hover:not(:disabled) { opacity: 0.85; }
 
-    /* ── Right panel ─────────────────────────────────────────────────── */
+    /* ── Right panel ── */
     .panel {
       background: var(--bg2); border-left: 1px solid var(--border);
       display: flex; flex-direction: column; overflow: hidden;
@@ -279,16 +287,25 @@
       border-bottom: 1px solid var(--border); flex-shrink: 0;
       display: flex; justify-content: space-between; align-items: center;
     }
-    .devices-row {
-      padding: 8px 14px; font-size: 11px; color: var(--muted);
-      border-bottom: 1px solid var(--border); flex-shrink: 0;
+
+    /* ── Device section in panel ── */
+    .devices-section {
+      padding: 10px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0;
     }
+    .devices-section-title {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.1em; color: var(--muted); margin-bottom: 7px;
+    }
+    .devices-list { display: flex; flex-wrap: wrap; gap: 5px; min-height: 22px; }
     .device-chip {
       display: inline-flex; align-items: center; gap: 5px;
       background: rgba(0,232,150,0.1); color: var(--green);
-      border-radius: 10px; padding: 3px 10px; font-size: 10px; font-weight: 700;
-      border: 1px solid rgba(0,232,150,0.2);
+      border-radius: 10px; padding: 4px 11px; font-size: 11px; font-weight: 700;
+      border: 1px solid rgba(0,232,150,0.25);
     }
+    .device-chip-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+    .no-device-msg { font-size: 11px; color: var(--muted); align-self: center; }
+
     .steps-list { flex: 1; overflow-y: auto; padding: 8px; }
     .step-item {
       padding: 10px 12px; border-radius: 7px; margin-bottom: 5px;
@@ -305,6 +322,7 @@
     .step-dot.running   { background: var(--accent); animation: pulse 1s infinite; }
     .step-dot.completed { background: var(--green); }
     .step-dot.failed    { background: var(--warn); }
+    .step-dot.cancelled { background: var(--muted); }
     .step-agent { font-size: 11px; font-weight: 700; color: var(--accent2); }
     .step-desc  { font-size: 11px; color: var(--muted); line-height: 1.5; }
     .step-output {
@@ -312,7 +330,7 @@
       line-height: 1.5; white-space: pre-wrap; word-break: break-word; opacity: 0.85;
     }
 
-    /* ── Files section ───────────────────────────────────────────────── */
+    /* ── Files section ── */
     .files-section {
       border-top: 1px solid var(--border); padding: 10px 12px;
       max-height: 220px; overflow-y: auto; flex-shrink: 0;
@@ -338,8 +356,7 @@
     .ext-py   { background: rgba(167,139,250,0.15); color: var(--accent2); }
     .ext-js   { background: rgba(255,170,64,0.15);  color: var(--orange); }
     .ext-ts   { background: rgba(0,229,255,0.12);   color: var(--accent); }
-    .ext-c    { background: rgba(0,229,255,0.12);   color: var(--accent); }
-    .ext-cpp  { background: rgba(0,229,255,0.12);   color: var(--accent); }
+    .ext-c,.ext-cpp { background: rgba(0,229,255,0.12); color: var(--accent); }
     .ext-rs   { background: rgba(255,107,53,0.15);  color: #ff6b35; }
     .ext-go   { background: rgba(0,229,255,0.12);   color: var(--accent); }
     .ext-sh   { background: rgba(0,232,150,0.12);   color: var(--green); }
@@ -362,7 +379,7 @@
 
     .panel-actions { padding: 10px; border-top: 1px solid var(--border); flex-shrink: 0; }
 
-    /* ── Settings modal ──────────────────────────────────────────────── */
+    /* ── Settings modal ── */
     .modal-overlay {
       position: fixed; inset: 0; background: var(--overlay);
       display: none; align-items: center; justify-content: center;
@@ -385,18 +402,11 @@
       font-size: 18px; font-family: inherit; padding: 0 3px; transition: color 0.15s;
     }
     .modal-close:hover { color: var(--text); }
-    .field-label {
-      display: block; font-size: 11px; font-weight: 600;
-      text-transform: uppercase; letter-spacing: 0.1em;
-      color: var(--muted); margin-bottom: 6px;
+    .modal-note {
+      font-size: 12px; color: var(--muted); line-height: 1.6;
+      background: var(--bg3); border-radius: 7px; padding: 12px 14px; margin-bottom: 16px;
     }
-    .field-input {
-      width: 100%; background: var(--bg); border: 1px solid var(--border);
-      color: var(--text); font-family: inherit; font-size: 13px;
-      padding: 8px 12px; border-radius: 7px; outline: none; margin-bottom: 18px;
-      transition: border-color 0.15s;
-    }
-    .field-input:focus { border-color: var(--accent); }
+    .modal-note strong { color: var(--green); }
     .modal-save {
       width: 100%; background: var(--accent); color: #000; border: none;
       border-radius: 7px; padding: 10px; font-family: inherit;
@@ -404,7 +414,7 @@
     }
     .modal-save:hover { opacity: 0.85; }
 
-    /* ── Confirm dialog ──────────────────────────────────────────────── */
+    /* ── Confirm dialog ── */
     .confirm-overlay {
       position: fixed; inset: 0; background: var(--overlay);
       display: none; align-items: center; justify-content: center;
@@ -426,28 +436,23 @@
     .confirm-yes { background: var(--warn);   color: #fff; }
     .confirm-no  { background: var(--border); color: var(--text); }
 
-    /* ── Scrollbar ───────────────────────────────────────────────────── */
+    /* ── Scrollbar ── */
     ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
-    /* ── Mobile drawer overlay ───────────────────────────────────────── */
+    /* ── Mobile ── */
     .drawer-overlay {
       position: fixed; inset: 0; background: var(--overlay);
       z-index: 40; display: none; opacity: 0; transition: opacity 0.25s;
     }
     .drawer-overlay.open { display: block; opacity: 1; }
 
-    /* ── Mobile responsive ───────────────────────────────────────────── */
     @media (max-width: 768px) {
       .mobile-only  { display: flex; }
       .desktop-only { display: none !important; }
-
-      /* Single-column layout */
       .layout { grid-template-columns: 1fr; }
-
-      /* Sidebar → fixed left drawer */
       .sidebar {
         position: fixed; top: 0; left: 0; bottom: 0;
         width: min(280px, 85vw); z-index: 50;
@@ -455,8 +460,6 @@
         box-shadow: 4px 0 24px var(--shadow);
       }
       .sidebar.open { transform: translateX(0); }
-
-      /* Right panel → fixed right drawer */
       .panel {
         position: fixed; top: 0; right: 0; bottom: 0;
         width: min(280px, 85vw); z-index: 50;
@@ -464,26 +467,19 @@
         box-shadow: -4px 0 24px var(--shadow);
       }
       .panel.open { transform: translateX(0); }
-
-      /* main takes full width */
       main { grid-column: 1; }
-
       .output-area  { padding: 14px 16px; font-size: 14px; }
       .input-row    { padding: 10px 12px; }
-      .cmd-input    { font-size: 16px; } /* prevents iOS auto-zoom */
+      .cmd-input    { font-size: 16px; }
       .logo-text    { display: none; }
       #clockDisplay { display: none; }
       .topbar       { padding: 0 12px; }
-    }
-
-    @media (max-width: 480px) {
-      #deviceCount { display: none; }
     }
   </style>
 </head>
 <body>
 
-<!-- ── Topbar ──────────────────────────────────────────────────────────────── -->
+<!-- ── Topbar ── -->
 <div class="topbar">
   <div style="display:flex;align-items:center;gap:8px">
     <button class="icon-btn mobile-only" onclick="toggleSidebar()" aria-label="Tasks">☰</button>
@@ -494,14 +490,18 @@
   </div>
   <div class="topbar-right">
     <div class="status-pill">
-      <span class="status-dot" id="statusDot"></span>
-      <span id="statusText">ONLINE</span>
+      <span class="status-dot connecting" id="statusDot"></span>
+      <span id="statusText">CONNECTING</span>
     </div>
-    <span id="deviceCount" class="desktop-only">0 devices</span>
+    <!-- Device pill visible in topbar on all screen sizes -->
+    <div class="device-topbar-pill none" id="deviceTopbarPill">
+      <span class="device-dot none" id="deviceTopbarDot"></span>
+      <span id="deviceTopbarText">No device</span>
+    </div>
     <span id="clockDisplay" class="desktop-only"></span>
-    <button class="icon-btn" onclick="toggleTheme()" id="themeBtn" title="Toggle light/dark mode">🌙</button>
+    <button class="icon-btn" onclick="toggleTheme()" id="themeBtn" title="Toggle theme">🌙</button>
     <button class="icon-btn" onclick="openSettings()" title="Settings">⚙</button>
-    <button class="icon-btn mobile-only" onclick="togglePanel()" aria-label="Task detail">⊞</button>
+    <button class="icon-btn mobile-only" onclick="togglePanel()" aria-label="Detail">⊞</button>
   </div>
 </div>
 
@@ -511,7 +511,7 @@
 <!-- Mobile drawer overlay -->
 <div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawers()"></div>
 
-<!-- ── Layout ──────────────────────────────────────────────────────────────── -->
+<!-- ── Layout ── -->
 <div class="layout">
 
   <!-- Sidebar -->
@@ -549,7 +549,15 @@
       <span>Task Detail</span>
       <button class="icon-btn mobile-only" onclick="closeDrawers()" style="font-size:13px;padding:3px 6px">✕</button>
     </div>
-    <div class="devices-row" id="devicesRow">No devices connected</div>
+
+    <!-- Device section — always visible, prominently displayed -->
+    <div class="devices-section">
+      <div class="devices-section-title">Connected Devices</div>
+      <div class="devices-list" id="devicesList">
+        <span class="no-device-msg">No devices connected</span>
+      </div>
+    </div>
+
     <div class="steps-list" id="stepsList">
       <div style="color:var(--muted);padding:14px;font-size:12px">Select a task to see steps</div>
     </div>
@@ -566,21 +574,23 @@
   </aside>
 </div>
 
-<!-- ── Settings modal ─────────────────────────────────────────────────────── -->
+<!-- ── Settings modal — no API key input, fully automatic ── -->
 <div class="modal-overlay" id="settingsOverlay" onclick="closeSettingsOnBg(event)">
   <div class="modal">
     <div class="modal-title">
       <span>⚙ Settings</span>
       <button class="modal-close" onclick="closeSettings()">✕</button>
     </div>
-    <label class="field-label" for="settingsApiKey">API Key</label>
-    <input class="field-input" id="settingsApiKey" type="password"
-           placeholder="Leave blank if no key is set" />
-    <button class="modal-save" onclick="saveSettings()">Save Settings</button>
+    <div class="modal-note">
+      <strong>✓ No API key needed.</strong><br>
+      Authentication is handled automatically — anyone with this URL can use the command center.
+      The server API key is fetched silently in the background.
+    </div>
+    <button class="modal-save" onclick="closeSettings()">Got it</button>
   </div>
 </div>
 
-<!-- ── Confirm dialog ─────────────────────────────────────────────────────── -->
+<!-- ── Confirm dialog ── -->
 <div class="confirm-overlay" id="confirmOverlay">
   <div class="confirm-box">
     <div class="confirm-msg" id="confirmMsg">Are you sure?</div>
@@ -592,21 +602,33 @@
 </div>
 
 <script>
-/* ── Constants ──────────────────────────────────────────────────────────── */
+/* ── Bootstrap — fetch config from server before anything else ────────────── */
 const BASE_URL   = window.location.origin;
 const WS_BASE    = BASE_URL.replace(/^http/, 'ws');
 const SESSION_ID = crypto.randomUUID();
 
-let API_KEY      = localStorage.getItem('aether_api_key') || '';
-let activeTaskId = null;
-let ws           = null;
-let taskRunning  = false;
-let cmdHistory   = JSON.parse(localStorage.getItem('aether_cmd_history') || '[]');
-let historyIdx   = -1;
-let historyDraft = '';
-let lastShownOutput = null;
+// These are populated by /ui/config before the WebSocket connects
+let API_KEY      = '';
+let SESSION_TOKEN = '';
 
-/* ── Theme ──────────────────────────────────────────────────────────────── */
+// Fetch API key + WS session token from the server (always public endpoint).
+// No user input needed. Falls back gracefully if server has no key set.
+async function fetchServerConfig() {
+  try {
+    const res = await fetch(`${BASE_URL}/ui/config`);
+    if (res.ok) {
+      const cfg   = await res.json();
+      API_KEY      = cfg.api_key      || '';
+      SESSION_TOKEN = cfg.session_token || '';
+    }
+  } catch(e) {
+    console.warn('[AetherAI] Could not fetch /ui/config — proceeding without key:', e);
+  }
+  // Connect WebSocket only after we have the token
+  connectWS();
+}
+
+/* ── Theme ─────────────────────────────────────────────────────────────────── */
 (function initTheme() {
   const t = localStorage.getItem('aether_theme') || 'dark';
   document.documentElement.setAttribute('data-theme', t);
@@ -621,7 +643,7 @@ function toggleTheme() {
   document.getElementById('themeBtn').textContent = next === 'dark' ? '🌙' : '☀️';
 }
 
-/* ── Mobile drawers ─────────────────────────────────────────────────────── */
+/* ── Mobile drawers ─────────────────────────────────────────────────────────── */
 function toggleSidebar() {
   const s = document.getElementById('sidebar');
   const p = document.getElementById('panel');
@@ -644,14 +666,14 @@ function closeDrawers() {
   document.getElementById('drawerOverlay').classList.remove('open');
 }
 
-/* ── Clock ──────────────────────────────────────────────────────────────── */
+/* ── Clock ─────────────────────────────────────────────────────────────────── */
 function updateClock() {
   document.getElementById('clockDisplay').textContent =
     new Date().toLocaleTimeString('en-GB', { hour12: false });
 }
 updateClock(); setInterval(updateClock, 1000);
 
-/* ── Utilities ──────────────────────────────────────────────────────────── */
+/* ── Utilities ──────────────────────────────────────────────────────────────── */
 function escHtml(s) {
   return String(s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;')
@@ -659,7 +681,7 @@ function escHtml(s) {
 }
 function now() { return new Date().toLocaleTimeString('en-GB',{hour12:false}); }
 
-/* FIX 1: append 'Z' to SQLite UTC strings so the browser treats them as UTC */
+// SQLite stores UTC timestamps without 'Z'; append it so browsers parse correctly
 function timeAgo(iso) {
   if (!iso) return '';
   const dateStr = iso.endsWith('Z') ? iso : iso + 'Z';
@@ -672,68 +694,45 @@ function fmtSize(kb) {
   return kb < 1024 ? `${kb} KB` : `${(kb/1024).toFixed(1)} MB`;
 }
 
-/* ── Markdown renderer ──────────────────────────────────────────────────── */
+/* ── Markdown renderer ──────────────────────────────────────────────────────── */
 function renderMarkdown(text) {
   let s = escHtml(text);
-
-  // Code fences
   s = s.replace(/```[\w]*\n?([\s\S]*?)```/g,
     '<code style="background:var(--code-bg);padding:2px 6px;border-radius:4px;font-family:Consolas,Monaco,monospace;display:inline-block;white-space:pre-wrap">$1</code>');
-
-  // Headings
-  s = s.replace(/^### (.+)$/gm, '<h3 style="color:var(--accent);margin:10px 0 5px">$1</h3>');
-  s = s.replace(/^## (.+)$/gm,  '<h2 style="color:var(--accent);margin:10px 0 5px">$1</h2>');
-  s = s.replace(/^# (.+)$/gm,   '<h1 style="color:var(--accent);margin:10px 0 5px">$1</h1>');
-
-  // Bold / italic
+  s = s.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  s = s.replace(/^## (.+)$/gm,  '<h2>$1</h2>');
+  s = s.replace(/^# (.+)$/gm,   '<h1>$1</h1>');
   s = s.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
   s = s.replace(/\*\*(.+?)\*\*/g,     '<strong>$1</strong>');
   s = s.replace(/\*(.+?)\*/g,         '<em>$1</em>');
-
-  // Inline code
   s = s.replace(/`([^`]+)`/g,
     '<code style="background:var(--code-bg);padding:1px 6px;border-radius:4px;font-family:Consolas,Monaco,monospace">$1</code>');
-
-  // Horizontal rule
   s = s.replace(/^[-*]{3,}$/gm, '<hr style="border:none;border-top:1px solid var(--border);margin:8px 0">');
-
-  // Unordered lists
   s = s.replace(/((?:^[•\-] .+$\n?)+)/gm, m => {
     const items = m.trim().split('\n').map(l => `<li>${l.replace(/^[•\-] /,'')}</li>`).join('');
     return `<ul style="padding-left:20px;margin:6px 0">${items}</ul>\n`;
   });
-
-  // Ordered lists
   s = s.replace(/((?:^\d+\. .+$\n?)+)/gm, m => {
     const items = m.trim().split('\n').map(l => `<li>${l.replace(/^\d+\. /,'')}</li>`).join('');
     return `<ol style="padding-left:20px;margin:6px 0">${items}</ol>\n`;
   });
-
-  // Links
   s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
     '<a href="$2" target="_blank" rel="noopener">$1</a>');
   s = s.replace(/(https?:\/\/[^\s<"]+)/g,
     '<a href="$1" target="_blank" rel="noopener">$1</a>');
-
-  // Paragraphs
   s = s.replace(/\n\n+/g,'</p><p>');
   s = '<p>' + s + '</p>';
   s = s.replace(/\n/g,'<br>');
   s = s.replace(/<p>\s*<\/p>/g,'');
-  s = s.replace(/<p>(<(?:h[1-3]|ul|ol|hr)[^>]*)>/g,'$1>');
-  s = s.replace(/<\/(h[1-3]|ul|ol)><\/p>/g,'</$1>');
-  s = s.replace(/<p>(<hr[^>]*>)<\/p>/g,'$1');
-
   return s;
 }
 
-/* ── Busy bar ───────────────────────────────────────────────────────────── */
+/* ── Busy bar ───────────────────────────────────────────────────────────────── */
 function setBusy(on) {
-  taskRunning = on;
   document.getElementById('busyBar').classList.toggle('active', on);
 }
 
-/* ── Log helpers ────────────────────────────────────────────────────────── */
+/* ── Log helpers ────────────────────────────────────────────────────────────── */
 function log(msg, cls='info') {
   appendLog(`<span class="log-msg ${cls}">${escHtml(msg)}</span>`);
 }
@@ -792,14 +791,58 @@ function copyResult(btnId, raw) {
   });
 }
 
-/* ── WebSocket ──────────────────────────────────────────────────────────── */
-let wsDelay = 3000;
+/* ── Device display ─────────────────────────────────────────────────────────── */
+function renderDevices(devices) {
+  // Panel device list
+  const list = document.getElementById('devicesList');
+  if (!devices || !devices.length) {
+    list.innerHTML = '<span class="no-device-msg">No devices connected</span>';
+  } else {
+    list.innerHTML = devices.map(d => `
+      <span class="device-chip">
+        <span class="device-chip-dot"></span>
+        ${escHtml(d)}
+      </span>`).join('');
+  }
+
+  // Topbar pill
+  const pill = document.getElementById('deviceTopbarPill');
+  const dot  = document.getElementById('deviceTopbarDot');
+  const txt  = document.getElementById('deviceTopbarText');
+  if (!devices || !devices.length) {
+    pill.className = 'device-topbar-pill none';
+    dot.className  = 'device-dot none';
+    txt.textContent = 'No device';
+  } else {
+    pill.className = 'device-topbar-pill';
+    dot.className  = 'device-dot';
+    txt.textContent = devices.length === 1
+      ? devices[0]
+      : `${devices.length} devices`;
+  }
+}
+
+/* ── WebSocket ──────────────────────────────────────────────────────────────── */
+let ws        = null;
+let wsDelay   = 3000;
+let taskRunning  = false;
+let activeTaskId = null;
+let lastShownOutput = null;
+let cmdHistory   = JSON.parse(localStorage.getItem('aether_cmd_history') || '[]');
+let historyIdx   = -1;
+let historyDraft = '';
+
 function connectWS() {
-  ws = new WebSocket(`${WS_BASE}/ws/ui/${SESSION_ID}`);
+  // Pass the session token as a query param (required by the server)
+  const tokenParam = SESSION_TOKEN ? `?token=${encodeURIComponent(SESSION_TOKEN)}` : '';
+  ws = new WebSocket(`${WS_BASE}/ws/ui/${SESSION_ID}${tokenParam}`);
+
   ws.onopen  = () => {
     wsDelay = 3000;
     document.getElementById('statusDot').className = 'status-dot';
     document.getElementById('statusText').textContent = 'ONLINE';
+    // Refresh devices immediately on reconnect — don't wait for the 15s poll
+    refreshDevices();
   };
   ws.onclose = () => {
     document.getElementById('statusDot').className = 'status-dot offline';
@@ -813,15 +856,14 @@ function connectWS() {
   };
   ws.onmessage = e => {
     let data; try { data = JSON.parse(e.data); } catch { return; }
-    if (data.type==='task_update')         handleTaskUpdate(data);
-    if (data.type==='device_connected')    refreshDevices();
-    if (data.type==='device_disconnected') refreshDevices();
-    if (data.type==='ping')                ws.send(JSON.stringify({type:'pong'}));
+    if (data.type === 'task_update')         handleTaskUpdate(data);
+    if (data.type === 'device_connected')    refreshDevices();
+    if (data.type === 'device_disconnected') refreshDevices();
+    if (data.type === 'ping')                ws.send(JSON.stringify({type:'pong'}));
   };
 }
-connectWS();
 
-/* ── Task updates ───────────────────────────────────────────────────────── */
+/* ── Task updates ───────────────────────────────────────────────────────────── */
 function handleTaskUpdate(data) {
   const { task_id, status, message, agent, result, plan, code_block } = data;
 
@@ -850,32 +892,32 @@ function handleTaskUpdate(data) {
     unlockInput(); loadTasks(); return;
   }
 
-  if (data.output && !code_block && data.step_status==='completed') {
+  if (data.output && !code_block && data.step_status === 'completed') {
     logMarkdown('✓ ' + data.output, 'result');
     lastShownOutput = data.output;
   }
 
-  if (status==='completed' || status==='failed' || status==='cancelled') {
+  if (status === 'completed' || status === 'failed' || status === 'cancelled') {
     if (result && !code_block) {
       const rt = result.trim(), lt = (lastShownOutput||'').trim();
       const dup = lt && (rt===lt || (lt.length>40 && rt.startsWith(lt.slice(0,40))));
       if (!dup) logMarkdown('✓ ' + result, 'result');
     }
     setBusy(false); unlockInput(); refreshFiles();
-    if (activeTaskId===task_id)
-      document.getElementById('panelActions').style.display='none';
+    if (activeTaskId === task_id)
+      document.getElementById('panelActions').style.display = 'none';
   }
 
   loadTasks();
-  if (activeTaskId===task_id) loadSteps(task_id);
+  if (activeTaskId === task_id) loadSteps(task_id);
 }
 
 function agentClass(hint) {
   if (!hint) return 'info';
   if (hint.includes('agent')) return 'agent';
-  if (hint==='planning')  return 'system';
-  if (hint==='completed') return 'result';
-  if (hint==='failed')    return 'error';
+  if (hint === 'planning')  return 'system';
+  if (hint === 'completed') return 'result';
+  if (hint === 'failed')    return 'error';
   return 'info';
 }
 function unlockInput() {
@@ -887,7 +929,7 @@ function unlockInput() {
   document.getElementById('cmdInput').focus();
 }
 
-/* ── Send command ───────────────────────────────────────────────────────── */
+/* ── Send command ───────────────────────────────────────────────────────────── */
 async function sendCommand() {
   const input = document.getElementById('cmdInput');
   const cmd   = input.value.trim();
@@ -928,18 +970,19 @@ async function sendCommand() {
 async function stopTask() {
   if (!activeTaskId) return;
   try {
-    await fetch(`${BASE_URL}/task/${activeTaskId}/cancel`, { method:'POST' });
+    await fetch(`${BASE_URL}/task/${activeTaskId}/cancel`,
+      { method:'POST', headers:{ 'X-Api-Key': API_KEY } });
     log('Task cancellation requested.', 'system');
   } catch(e) { log(`Cancel failed: ${e}`, 'error'); }
 }
 async function cancelActiveTask() { await stopTask(); }
 
-/* ── Plan visualization ─────────────────────────────────────────────────── */
+/* ── Plan visualization ─────────────────────────────────────────────────────── */
 function renderPlan(plan) {
   document.getElementById('stepsList').innerHTML = plan.map(s => `
     <div class="step-item" id="step-${s.step}">
       <div class="step-header">
-        <div class="step-dot pending" id="dot-${s.step}"></div>
+        <div class="step-dot pending"></div>
         <span class="step-agent">${escHtml(s.agent)}</span>
       </div>
       <div class="step-desc">${escHtml(s.description)}</div>
@@ -948,13 +991,13 @@ function renderPlan(plan) {
 
 async function loadSteps(taskId) {
   try {
-    const res  = await fetch(`${BASE_URL}/task/${taskId}`);
+    const res  = await fetch(`${BASE_URL}/task/${taskId}`, { headers:{'X-Api-Key':API_KEY} });
     if (!res.ok) return;
     const data = await res.json();
     if (!data.steps?.length) return;
     const list = document.getElementById('stepsList');
     list.innerHTML = data.steps.map(s => {
-      const isRun  = s.status==='running';
+      const isRun   = s.status === 'running';
       const outHtml = s.output
         ? `<div class="step-output">${escHtml(s.output.split('\n')[0])}</div>` : '';
       return `<div class="step-item${isRun?' is-running':''}">
@@ -970,11 +1013,11 @@ async function loadSteps(taskId) {
   } catch {}
 }
 
-/* ── Task list ──────────────────────────────────────────────────────────── */
+/* ── Task list ──────────────────────────────────────────────────────────────── */
 async function loadTasks() {
   if (document.hidden) return;
   try {
-    const res   = await fetch(`${BASE_URL}/tasks?limit=30`);
+    const res   = await fetch(`${BASE_URL}/tasks?limit=30`, { headers:{'X-Api-Key':API_KEY} });
     if (!res.ok) return;
     const data  = await res.json();
     const tasks = data.tasks || data || [];
@@ -1000,13 +1043,12 @@ async function loadTasks() {
 loadTasks();
 setInterval(loadTasks, 10000);
 
-/* FIX 10: Reconstruct output area from stored step data when clicking old task */
 async function selectTask(taskId) {
   activeTaskId = taskId;
   loadTasks();
   closeDrawers();
   try {
-    const res = await fetch(`${BASE_URL}/task/${taskId}`);
+    const res = await fetch(`${BASE_URL}/task/${taskId}`, { headers:{'X-Api-Key':API_KEY} });
     if (!res.ok) return;
     const task = await res.json();
 
@@ -1024,24 +1066,24 @@ async function selectTask(taskId) {
       }).join('');
     }
 
-    if (task.status==='running' || task.status==='planning') return;
+    if (task.status === 'running' || task.status === 'planning') return;
 
     clearOutput();
     log(`> ${task.command}`, 'system');
     log(`Task ${taskId.slice(0,8)}… — ${task.status}`, 'info');
 
     for (const step of (task.steps||[])) {
-      if (step.output && step.status==='completed') {
+      if (step.output && step.status === 'completed') {
         log(`${step.agent}: ${step.description}`, 'agent');
         logMarkdown('✓ ' + step.output, 'result');
         lastShownOutput = step.output;
       }
     }
-    if (task.result && task.status==='completed') {
+    if (task.result && task.status === 'completed') {
       const rt = task.result.trim(), lt = (lastShownOutput||'').trim();
       const dup = lt && (rt===lt || (lt.length>40 && rt.startsWith(lt.slice(0,40))));
       if (!dup) logMarkdown('✓ ' + task.result, 'result');
-    } else if (task.result && task.status==='failed') {
+    } else if (task.result && task.status === 'failed') {
       log(`Failed: ${task.result}`, 'error');
     }
   } catch(e) { console.error('selectTask:', e); }
@@ -1049,8 +1091,9 @@ async function selectTask(taskId) {
 
 async function deleteTask(taskId, e) {
   e.stopPropagation();
-  await fetch(`${BASE_URL}/task/${taskId}`, { method:'DELETE' });
-  if (activeTaskId===taskId) {
+  await fetch(`${BASE_URL}/task/${taskId}`,
+    { method:'DELETE', headers:{'X-Api-Key':API_KEY} });
+  if (activeTaskId === taskId) {
     activeTaskId = null;
     document.getElementById('stepsList').innerHTML =
       '<div style="color:var(--muted);padding:14px;font-size:12px">Select a task to see steps</div>';
@@ -1061,7 +1104,8 @@ async function deleteTask(taskId, e) {
 }
 function confirmDeleteAllTasks() {
   showConfirm('Delete ALL tasks? This cannot be undone.', async () => {
-    await fetch(`${BASE_URL}/tasks/all`, { method:'DELETE' });
+    await fetch(`${BASE_URL}/tasks/all`,
+      { method:'DELETE', headers:{'X-Api-Key':API_KEY} });
     activeTaskId = null;
     document.getElementById('stepsList').innerHTML =
       '<div style="color:var(--muted);padding:14px;font-size:12px">Select a task to see steps</div>';
@@ -1070,22 +1114,24 @@ function confirmDeleteAllTasks() {
   });
 }
 
-/* ── Files ──────────────────────────────────────────────────────────────── */
+/* ── Files ──────────────────────────────────────────────────────────────────── */
 async function deleteFile(filename, e) {
   e.stopPropagation();
-  await fetch(`${BASE_URL}/files/${encodeURIComponent(filename)}`, { method:'DELETE' });
+  await fetch(`${BASE_URL}/files/${encodeURIComponent(filename)}`,
+    { method:'DELETE', headers:{'X-Api-Key':API_KEY} });
   refreshFiles();
 }
 function confirmDeleteAllFiles() {
   showConfirm('Delete ALL generated files?', async () => {
-    await fetch(`${BASE_URL}/files/all/clear`, { method:'DELETE' });
+    await fetch(`${BASE_URL}/files/all/clear`,
+      { method:'DELETE', headers:{'X-Api-Key':API_KEY} });
     refreshFiles();
   });
 }
 async function refreshFiles() {
   if (document.hidden) return;
   try {
-    const res   = await fetch(`${BASE_URL}/files`);
+    const res   = await fetch(`${BASE_URL}/files`, { headers:{'X-Api-Key':API_KEY} });
     if (!res.ok) return;
     const data  = await res.json();
     const files = data.files || [];
@@ -1111,41 +1157,29 @@ async function refreshFiles() {
 refreshFiles();
 setInterval(refreshFiles, 8000);
 
-/* ── Devices ────────────────────────────────────────────────────────────── */
+/* ── Devices ────────────────────────────────────────────────────────────────── */
 async function refreshDevices() {
   if (document.hidden) return;
   try {
-    const res  = await fetch(`${BASE_URL}/devices`);
+    const res  = await fetch(`${BASE_URL}/devices`, { headers:{'X-Api-Key':API_KEY} });
     if (!res.ok) return;
     const data = await res.json();
-    const devs = data.devices || [];
-    document.getElementById('devicesRow').innerHTML = devs.length
-      ? devs.map(d=>`<span class="device-chip">⬡ ${escHtml(d)}</span>`).join(' ')
-      : 'No devices connected';
-    document.getElementById('deviceCount').textContent =
-      devs.length ? `${devs.length} device${devs.length>1?'s':''}` : '0 devices';
+    renderDevices(data.devices || []);
   } catch {}
 }
 refreshDevices();
-setInterval(refreshDevices, 15000);
+setInterval(refreshDevices, 10000);   // poll every 10s (was 15s)
+
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { loadTasks(); refreshFiles(); refreshDevices(); }
 });
 
-/* ── Settings modal ─────────────────────────────────────────────────────── */
-function openSettings() {
-  document.getElementById('settingsApiKey').value = API_KEY;
-  document.getElementById('settingsOverlay').classList.add('open');
-}
-function closeSettings() { document.getElementById('settingsOverlay').classList.remove('open'); }
-function closeSettingsOnBg(e) { if (e.target.id==='settingsOverlay') closeSettings(); }
-function saveSettings() {
-  API_KEY = document.getElementById('settingsApiKey').value.trim();
-  localStorage.setItem('aether_api_key', API_KEY);
-  closeSettings(); log('Settings saved.', 'system');
-}
+/* ── Settings modal ─────────────────────────────────────────────────────────── */
+function openSettings()          { document.getElementById('settingsOverlay').classList.add('open'); }
+function closeSettings()         { document.getElementById('settingsOverlay').classList.remove('open'); }
+function closeSettingsOnBg(e)    { if (e.target.id==='settingsOverlay') closeSettings(); }
 
-/* ── Confirm dialog ─────────────────────────────────────────────────────── */
+/* ── Confirm dialog ─────────────────────────────────────────────────────────── */
 let _confirmCb = null;
 function showConfirm(msg, cb) {
   document.getElementById('confirmMsg').textContent = msg;
@@ -1157,7 +1191,7 @@ document.getElementById('confirmYes').addEventListener('click', () => {
   if (_confirmCb) _confirmCb(); closeConfirm();
 });
 
-/* ── Keyboard shortcuts ─────────────────────────────────────────────────── */
+/* ── Keyboard ───────────────────────────────────────────────────────────────── */
 document.getElementById('cmdInput').addEventListener('keydown', e => {
   if (e.key==='Enter') { e.preventDefault(); sendCommand(); return; }
   if (e.key==='ArrowUp') {
@@ -1177,6 +1211,9 @@ document.getElementById('cmdInput').addEventListener('keydown', e => {
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey||e.metaKey) && e.key==='l') { e.preventDefault(); clearOutput(); }
 });
+
+/* ── Kick everything off ────────────────────────────────────────────────────── */
+fetchServerConfig();   // fetches API key + WS token, then calls connectWS()
 </script>
 </body>
 </html>
