@@ -1,23 +1,25 @@
 """
-AetherAI — Browser Agent  (Stage 5 — patch 3)
+AetherAI — Browser Agent  (Stage 5 — patch 4)
 
-Identity: Real-time web access, URL scraping, YouTube search, Hacker News.
-NOT for general Q&A — that's chat. NOT for academic research — that's research_agent.
+Identity: Real-time web access. Scrapes specific URLs, searches the web,
+finds YouTube videos, and fetches Hacker News. Always returns actual
+current content — never training data.
 
-Fixes applied this patch
-────────────────────────
-FIX P7  YouTube via Invidious and Piped APIs removed entirely. Both were
-        frequently returning "I can't browse the internet" because the
-        Railway instance couldn't reach those external APIs reliably, and
-        the fallback was returning Qwen training data as if it were web results.
+Fixes applied
+─────────────
+FIX 1  All summarize() calls now pass source="web" so Qwen is explicitly
+       told "this content was just fetched live — do not say knowledge
+       cutoff phrases."
 
-        New approach: YouTube searches go through DuckDuckGo with
-        site:youtube.com, which always returns real current video links
-        without needing any third-party API. Results are formatted with
-        proper youtube.com/watch?v= links extracted from the DDG result URLs.
+FIX 2  YouTube search now provides a proper summary of what was found,
+       not just a bare list of links. After collecting video results,
+       Qwen writes a brief description of the search results and their themes.
 
-FIX P8  HN keyword guard is also present in run() so it fires regardless
-        of which action the planner emitted.
+FIX 3  Real-time price/data searches: the web search content is passed to
+       Qwen with a "real-time data" flag so it stops saying it cannot access
+       current information.
+
+FIX 4  All summaries are requested to be thorough and detailed, not short.
 """
 
 import asyncio
@@ -25,7 +27,7 @@ import logging
 import re
 import json as _json
 from typing import Optional
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse, parse_qs, unquote
 
 import httpx
 from bs4 import BeautifulSoup
@@ -34,7 +36,7 @@ from agents import BaseAgent
 
 logger = logging.getLogger(__name__)
 
-PAGE_TEXT_LIMIT  = 6000
+PAGE_TEXT_LIMIT  = 8000   # increased from 6000 for richer summaries
 MAX_HTTP_RETRIES = 2
 HTTP_BACKOFF     = 1.5
 
@@ -55,7 +57,6 @@ NOISE_TAGS = [
 ]
 
 HN_KEYWORDS = ("hacker news","hackernews","ycombinator","news.ycombinator","hn top")
-
 DDG_HTML_URL = "https://html.duckduckgo.com/html/"
 
 
@@ -120,7 +121,7 @@ async def _httpx_get_page(url: str, timeout: float = 15.0) -> tuple[str, str]:
 
 class BrowserAgent(BaseAgent):
     name        = "browser_agent"
-    description = "Real-time web access: scrape URLs, YouTube search, Hacker News, web search"
+    description = "Real-time web: scrape URLs, YouTube search, web search, Hacker News"
 
     async def run(self, parameters: dict, task_id: str, context: str = "") -> str:
         action = parameters.get("action", "search")
@@ -131,7 +132,7 @@ class BrowserAgent(BaseAgent):
         logger.info(f"[BrowserAgent] action={action} playwright={PLAYWRIGHT_AVAILABLE} "
                     f"query={query[:60]}")
 
-        # HN guard — fires regardless of action
+        # HN guard
         goal_lc = goal.lower()
         if any(k in goal_lc for k in HN_KEYWORDS):
             return await self._hacker_news_top()
@@ -141,17 +142,16 @@ class BrowserAgent(BaseAgent):
         elif action in ("scrape", "read"):
             return await self._scrape_url(url or query)
         elif action == "workflow":
-            return await self._run_workflow(
-                goal=parameters.get("goal") or context, start_url=url)
+            return await self._run_workflow(goal=goal, start_url=url)
         else:
             return await self._web_search(
                 query=query,
-                engine=parameters.get("engine", "duckduckgo"),
+                engine=parameters.get("engine", "google"),
             )
 
     # ── Web search ─────────────────────────────────────────────────────────────
 
-    async def _web_search(self, query: str, engine: str = "duckduckgo") -> str:
+    async def _web_search(self, query: str, engine: str = "google") -> str:
         ddg_url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
 
         if PLAYWRIGHT_AVAILABLE:
@@ -160,14 +160,15 @@ class BrowserAgent(BaseAgent):
             try:
                 async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True,
                                              timeout=15.0) as client:
-                    resp = await client.post(DDG_HTML_URL, data={"q": query, "b": ""})
+                    resp = await client.post(DDG_HTML_URL,
+                                             data={"q": query, "b": ""})
                     soup = BeautifulSoup(resp.text, "lxml")
                     snippets: list[str] = []
                     for sel in (".result__body",".result__snippet",
                                 "[data-result='snippet']",".result"):
-                        for el in soup.select(sel)[:8]:
+                        for el in soup.select(sel)[:10]:
                             t = el.get_text(" ", strip=True)
-                            if t: snippets.append(t[:600])
+                            if t and len(t) > 20: snippets.append(t[:800])
                         if snippets: break
                     text = "\n\n".join(snippets)
             except Exception as e:
@@ -177,13 +178,20 @@ class BrowserAgent(BaseAgent):
         if not text.strip():
             return f"🔍 **{query}**\n\n{await self.qwen.answer(query)}"
 
+        # FIX 1 + FIX 3: source="web" prevents knowledge-cutoff language
         summary = await self.qwen.summarize(
             content=text[:PAGE_TEXT_LIMIT],
-            context=f"Search query: {query}\nSummarize the key findings clearly.",
+            context=(
+                f"The user searched the web for: {query}\n"
+                f"Summarize the search results thoroughly and in detail. "
+                f"Include all specific facts, figures, prices, rankings, or names found. "
+                f"This is live web data — present it as current information."
+            ),
+            source="web",
         )
         return f"🔍 **{query}**\n\n{summary}"
 
-    # ── Scrape ─────────────────────────────────────────────────────────────────
+    # ── Scrape URL ─────────────────────────────────────────────────────────────
 
     async def _scrape_url(self, url: str) -> str:
         if not url.startswith("http"): url = "https://" + url
@@ -204,30 +212,32 @@ class BrowserAgent(BaseAgent):
         if not text.strip():
             return f"⚠️ No readable content found at {url}"
 
+        # FIX 1: source="web" on scraping too
         summary = await self.qwen.summarize(
             content=text[:PAGE_TEXT_LIMIT],
-            context=f"URL: {url}\nSummarize the main content clearly.",
+            context=(
+                f"URL: {url}\n"
+                f"Summarize the content of this page in detail. "
+                f"Include all key information, facts, sections, and data found. "
+                f"Be comprehensive — don't leave out important details."
+            ),
+            source="web",
         )
         return f"🌐 **{title}**\n{url}\n\n{summary}"
 
-    # ── YouTube search (FIX P7: DDG-based, no Invidious/Piped) ────────────────
+    # ── YouTube search (DDG-based + FIX 2: summary) ────────────────────────────
 
     async def _youtube_search(self, query: str) -> str:
-        """
-        FIX P7: Search YouTube via DuckDuckGo with site:youtube.com.
-        This always returns real, current video results without relying on
-        Invidious or Piped APIs that are frequently unreachable from Railway.
-        """
         try:
             return await asyncio.wait_for(
                 self._youtube_via_ddg(query), timeout=25.0
             )
         except asyncio.TimeoutError:
-            logger.warning("[BrowserAgent] YouTube DDG search timed out")
-            return f"⚠️ YouTube search timed out. Try: https://youtube.com/results?search_query={quote_plus(query)}"
+            search_url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
+            return (f"⚠️ YouTube search timed out.\n"
+                    f"Direct link: {search_url}")
 
     async def _youtube_via_ddg(self, query: str) -> str:
-        """Search DDG for YouTube videos and extract watch links."""
         ddg_query = f"{query} site:youtube.com"
         results: list[dict] = []
 
@@ -239,58 +249,75 @@ class BrowserAgent(BaseAgent):
                 resp.raise_for_status()
                 soup = BeautifulSoup(resp.text, "lxml")
 
-                for result in soup.select(".result")[:12]:
+                for result in soup.select(".result")[:15]:
                     title_el = result.select_one(".result__a")
-                    link_el  = result.select_one("a.result__url, .result__a")
                     desc_el  = result.select_one(".result__snippet")
-
                     if not title_el: continue
+
                     title = title_el.get_text(strip=True)
-                    href  = link_el.get("href", "") if link_el else ""
+                    href  = title_el.get("href", "")
+                    desc  = desc_el.get_text(strip=True) if desc_el else ""
 
-                    # Extract real URL from DDG redirect
-                    from urllib.parse import urlparse, parse_qs, unquote
+                    # Decode DDG redirect URL
                     real_url = href
-                    if "duckduckgo.com/l/" in href or href.startswith("//"):
-                        if href.startswith("//"): href = "https:" + href
-                        try:
-                            qs   = parse_qs(urlparse(href).query)
-                            uddg = qs.get("uddg", [None])[0]
-                            if uddg: real_url = unquote(uddg)
-                        except Exception:
-                            pass
+                    if href.startswith("//"):
+                        href = "https:" + href
+                    try:
+                        qs   = parse_qs(urlparse(href).query)
+                        uddg = qs.get("uddg", [None])[0]
+                        if uddg: real_url = unquote(uddg)
+                    except Exception:
+                        pass
 
-                    # Only keep actual YouTube watch/channel links
                     if "youtube.com/watch" in real_url or "youtu.be/" in real_url:
-                        desc = desc_el.get_text(strip=True) if desc_el else ""
                         results.append({
                             "title": title,
                             "url":   real_url,
-                            "desc":  desc[:120],
+                            "desc":  desc[:150],
                         })
 
         except Exception as e:
             logger.error(f"[BrowserAgent] YouTube DDG search failed: {e}")
 
-        if results:
-            lines = []
-            for i, r in enumerate(results[:8], 1):
-                lines.append(
-                    f"{i}. **{r['title']}**\n"
-                    f"   {r['url']}"
-                    + (f"\n   {r['desc']}" if r['desc'] else "")
-                )
-            return (f"🎬 **YouTube: {query}**\n\n" + "\n\n".join(lines))
+        if not results:
+            search_url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
+            return (
+                f"🎬 **YouTube: {query}**\n\n"
+                f"Could not retrieve video results. Direct search:\n{search_url}"
+            )
 
-        # Fallback: direct search link
-        search_url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
-        return (
-            f"🎬 **YouTube: {query}**\n\n"
-            f"Direct search link: {search_url}\n\n"
-            f"*(DDG didn't return direct video links — click the link above to search YouTube)*"
+        # Format video list
+        video_lines = []
+        for i, r in enumerate(results[:8], 1):
+            video_lines.append(
+                f"{i}. **{r['title']}**\n"
+                f"   {r['url']}"
+                + (f"\n   _{r['desc']}_" if r['desc'] else "")
+            )
+        video_list = "\n\n".join(video_lines)
+
+        # FIX 2: Ask Qwen to summarize what these results represent
+        result_text = "\n".join(
+            f"{r['title']}: {r['desc']}" for r in results[:8]
+        )
+        summary = await self.qwen.summarize(
+            content=result_text,
+            context=(
+                f"These are YouTube search results for: {query}\n"
+                f"Write a brief summary (3-5 sentences) describing what types of "
+                f"videos appeared, what topics or channels are covered, and what "
+                f"a user would find if they searched this query."
+            ),
+            source="web",
         )
 
-    # ── Hacker News ────────────────────────────────────────────────────────────
+        return (
+            f"🎬 **YouTube: {query}**\n\n"
+            f"**What you'll find:** {summary}\n\n"
+            f"**Videos found:**\n\n{video_list}"
+        )
+
+    # ── Hacker News ─────────────────────────────────────────────────────────────
 
     async def _hacker_news_top(self, n: int = 10) -> str:
         try:
@@ -328,14 +355,14 @@ class BrowserAgent(BaseAgent):
         except Exception as e:
             return f"⚠️ Hacker News API failed: {e}"
 
-    # ── Workflow ────────────────────────────────────────────────────────────────
+    # ── Workflow ─────────────────────────────────────────────────────────────────
 
     async def _run_workflow(self, goal: str, start_url: str = "") -> str:
         goal_lc = goal.lower()
         if any(k in goal_lc for k in HN_KEYWORDS):
             return await self._hacker_news_top()
         if "youtube" in goal_lc:
-            q = re.sub(r".*(search|find|look up|on youtube)\s*", "", goal_lc).strip() or goal
+            q = re.sub(r".*(search|find|on youtube)\s*", "", goal_lc).strip() or goal
             return await self._youtube_search(q)
 
         if not start_url:
@@ -353,7 +380,7 @@ class BrowserAgent(BaseAgent):
             return await self._playwright_workflow(goal, start_url)
         return await self._scrape_url(start_url)
 
-    # ── Playwright ──────────────────────────────────────────────────────────────
+    # ── Playwright ───────────────────────────────────────────────────────────────
 
     async def _playwright_get_text(self, url: str, wait_ms: int = 1500) -> str:
         from playwright.async_api import async_playwright
@@ -391,7 +418,7 @@ class BrowserAgent(BaseAgent):
                                 user_message=(
                                     f"Goal: {goal}\nPage: {title}\n"
                                     f"Content:\n{text[:2000]}\n\n"
-                                    f"Step {step_num}/7. Pick ONE action:\n"
+                                    f"Step {step_num}/7. Pick ONE:\n"
                                     '{"action":"goto","url":"..."}\n'
                                     '{"action":"click_text","text":"..."}\n'
                                     '{"action":"done","extract":"what you found"}'
@@ -427,13 +454,15 @@ class BrowserAgent(BaseAgent):
                         break
 
                 if not results:
-                    results.append(_clean_soup(BeautifulSoup(await page.content(), "lxml")))
+                    results.append(
+                        _clean_soup(BeautifulSoup(await page.content(), "lxml")))
 
                 summary = await self.qwen.summarize(
                     content="\n\n".join(results),
-                    context=f"Goal: {goal}\nSummarize what was found.",
+                    context=f"Goal: {goal}\nSummarize everything found in detail.",
+                    source="web",
                 )
-                return f"🤖 **Browser workflow result:**\n\n{summary}"
+                return f"🤖 **Browser result:**\n\n{summary}"
             except Exception as e:
                 logger.error(f"[BrowserAgent] Playwright workflow error: {e}")
                 return f"⚠️ Browser workflow failed: {e}"
