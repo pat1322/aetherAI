@@ -667,8 +667,8 @@ class QwenClient:
 
     def _extract_filename(self, command: str) -> str:
         patterns = [
-            r"(?:called|named|file)\s+['\"]?([^\s'"]+)['\"]?",
-            r"find\s+(?:the\s+file\s+)?['\"]?([^\s'"]+\.\w+)['\"]?",
+            r"(?:called|named|file)\s+(\S+)",
+            r"find\s+(?:the\s+file\s+)?(\S+\.\w+)",
         ]
         for pat in patterns:
             m = re.search(pat, command, re.IGNORECASE)
