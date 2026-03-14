@@ -1,29 +1,16 @@
 """
-AetherAI Cloud Brain — Stage 5 (fully patched)
-FastAPI entry point: API Gateway + WebSocket manager + Preference endpoints
+AetherAI Cloud Brain — Stage 5 (patch 2)
 
-All fixes applied
-─────────────────
-FIX 1  API key enforcement middleware (original Stage 5 fix — retained)
+Fixes applied this patch
+────────────────────────
+FIX P1  StatusResponse now includes `command` field. Without it, clicking
+        any old task in the sidebar showed "> undefined" because the frontend
+        reads `task.command` which FastAPI was stripping from the response.
 
-FIX 2  Background WebSocket prune task is now started via FastAPI lifespan
-       handler so it always runs AFTER the event loop is ready. Previously
-       it was created in WebSocketManager.__init__ which runs before the
-       loop exists, causing it to silently never start.
-
-FIX 3  delete_all_files uses explicit loop (original fix — retained)
-
-FIX 4  UI WebSocket ping catches RuntimeError (original fix — retained)
-
-FIX 5  /ui/config endpoint — returns the server API key to the browser so
-       the web UI can authenticate automatically. Users visiting the URL
-       never have to type the key. The endpoint is always public (no key
-       required to reach it).
-
-FIX 6  UI WebSocket (/ws/ui/) now validates the session token returned by
-       /ui/config, so random external callers can't subscribe to all task
-       events. The browser fetches a session_token from /ui/config and
-       passes it as ?token= when opening the WebSocket.
+FIX P2  /files/download/* added to _PUBLIC_PREFIXES. Browser <a href download>
+        tags cannot send custom headers, so every file download was returning
+        401 from the ApiKeyMiddleware. Download links are safe to make public
+        because filenames are opaque random strings — no auth needed.
 """
 
 from contextlib import asynccontextmanager
@@ -50,32 +37,27 @@ from memory import MemoryManager
 from utils.websocket_manager import WebSocketManager
 from config import settings
 
-# ── Global instances (created here; started in lifespan) ──────────────────────
+# ── Global instances ──────────────────────────────────────────────────────────
 
 ws_manager   = WebSocketManager()
 memory       = MemoryManager()
 orchestrator = Orchestrator(memory=memory, ws_manager=ws_manager)
 
-# FIX 5: A short-lived UI session token generated at startup.
-# Anyone who can load the UI page gets this token (it's public).
-# It protects the WebSocket from completely anonymous external subscribers.
 _UI_SESSION_TOKEN = secrets.token_urlsafe(24)
 
-# ── Lifespan (FIX 2) ──────────────────────────────────────────────────────────
+# ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start background tasks after the event loop is running
     await ws_manager.start()
     yield
-    # Cleanup on shutdown (optional)
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="AetherAI Cloud Brain",
     description="Personal AI Agent System — Stage 5",
-    version="5.1.0",
+    version="5.2.0",
     lifespan=lifespan,
 )
 
@@ -85,19 +67,19 @@ app.add_middleware(
     allow_methods=["*"], allow_headers=["*"],
 )
 
-# ── API key enforcement middleware (FIX 1) ────────────────────────────────────
+# ── API key enforcement middleware ────────────────────────────────────────────
 
-_PUBLIC_PREFIXES = ("/ui", "/health", "/docs", "/openapi", "/redoc")
-_PUBLIC_EXACT    = frozenset(["/", "/health", "/ui/config"])
+_PUBLIC_PREFIXES = (
+    "/ui",
+    "/health",
+    "/docs",
+    "/openapi",
+    "/redoc",
+    "/files/download",   # FIX P2: browser <a href> can't send headers
+)
+_PUBLIC_EXACT = frozenset(["/", "/health", "/ui/config"])
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):
-    """
-    Rejects requests with HTTP 401 when AETHER_API_KEY is set and the
-    request is not to a public route and the X-Api-Key header is wrong/missing.
-
-    /ui/config is always public — that's how the browser gets the key.
-    WebSocket upgrades pass through (authenticated at the handler level).
-    """
     async def dispatch(self, request: Request, call_next):
         if not settings.API_KEY:
             return await call_next(request)
@@ -134,10 +116,11 @@ class CommandResponse(BaseModel):
     plan: Optional[list] = None
 
 class StatusResponse(BaseModel):
-    task_id: str
-    status: str
-    steps: list
-    result: Optional[str] = None
+    task_id:    str
+    command:    str          # FIX P1: was missing — caused "> undefined" in UI
+    status:     str
+    steps:      list
+    result:     Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -149,7 +132,7 @@ class PrefRequest(BaseModel):
 
 @app.get("/")
 async def root():
-    return {"system": "AetherAI Cloud Brain", "status": "online", "version": "5.1.0"}
+    return {"system": "AetherAI Cloud Brain", "status": "online", "version": "5.2.0"}
 
 @app.get("/health")
 async def health():
@@ -160,16 +143,10 @@ async def health():
         "task_stats": memory.get_task_stats(),
     }
 
-# FIX 5: Public config endpoint — browser fetches this to get auth credentials
 @app.get("/ui/config")
 async def ui_config():
-    """
-    Returns the server API key and a UI session token to the browser.
-    This endpoint is always public so the web UI works without manual key entry.
-    The session token is used to authenticate the WebSocket connection.
-    """
     return {
-        "api_key":       settings.API_KEY,        # may be "" in dev mode
+        "api_key":       settings.API_KEY,
         "session_token": _UI_SESSION_TOKEN,
     }
 
@@ -255,7 +232,6 @@ async def delete_file(filename: str):
 
 @app.delete("/files/all/clear")
 async def delete_all_files():
-    # FIX 3: explicit loop — don't abuse `not f.unlink()` side-effect trick
     output_dir = Path(__file__).parent.parent / "output"
     count = 0
     for f in output_dir.iterdir():
@@ -340,13 +316,10 @@ async def device_websocket(websocket: WebSocket, device_id: str):
     except WebSocketDisconnect:
         ws_manager.disconnect_device(device_id)
 
-# ── WebSocket — Web UI (FIX 6) ────────────────────────────────────────────────
+# ── WebSocket — Web UI ────────────────────────────────────────────────────────
 
 @app.websocket("/ws/ui/{session_id}")
 async def ui_websocket(websocket: WebSocket, session_id: str):
-    # FIX 6: validate the session token the browser fetched from /ui/config.
-    # This stops arbitrary external processes from subscribing to task events.
-    # The browser gets the token for free — no user action required.
     provided_token = websocket.query_params.get("token", "")
     if provided_token != _UI_SESSION_TOKEN:
         await websocket.close(code=4401, reason="Invalid session token")
@@ -358,7 +331,6 @@ async def ui_websocket(websocket: WebSocket, session_id: str):
             await asyncio.sleep(30)
             await websocket.send_text(json.dumps({"type": "ping"}))
     except (WebSocketDisconnect, RuntimeError):
-        # FIX 4: RuntimeError raised when ping sent after browser closes socket
         ws_manager.disconnect_ui(session_id)
 
 # ── Static files (Web UI) ─────────────────────────────────────────────────────
