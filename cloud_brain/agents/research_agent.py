@@ -1,12 +1,8 @@
 """
-AetherAI — Research Agent  (Stage 5 — patch 4)
+AetherAI — Research Agent  (Stage 6)
 
-Identity: Academic-style researcher. Triggered ONLY by explicit "research" keyword.
-Produces structured reports with real sources and numbered URL citations.
-
-Core fix: The Qwen summarization prompt now EXPLICITLY forbids training-data
-language ("as of my knowledge cutoff", "I cannot access real-time data").
-It receives raw web content and must use it — not its training.
+Stage 6 upgrade: trafilatura replaces BeautifulSoup for page fetching,
+giving much cleaner article text with no ads/navbars/cookie banners.
 """
 
 import asyncio
@@ -31,12 +27,46 @@ HEADERS = {
     )
 }
 
-DDG_HTML_URL = "https://html.duckduckgo.com/html/"
-DDG_JSON_URL = "https://api.duckduckgo.com/?q={q}&format=json&no_html=1&skip_disambig=1"
-
-PAGE_FETCH_LIMIT   = 5000
+DDG_HTML_URL    = "https://html.duckduckgo.com/html/"
+DDG_JSON_URL    = "https://api.duckduckgo.com/?q={q}&format=json&no_html=1&skip_disambig=1"
+PAGE_FETCH_LIMIT   = 6000
 PAGE_FETCH_TIMEOUT = 10.0
 MAX_SNIPPETS       = 8
+
+
+def _check_trafilatura() -> bool:
+    try:
+        import trafilatura  # noqa
+        return True
+    except ImportError:
+        return False
+
+TRAFILATURA_AVAILABLE = _check_trafilatura()
+
+
+def _extract_page_text(html: str, url: str = "") -> Optional[str]:
+    """Use trafilatura if available, else BeautifulSoup fallback."""
+    if TRAFILATURA_AVAILABLE:
+        try:
+            import trafilatura
+            text = trafilatura.extract(
+                html, url=url or None,
+                include_comments=False,
+                include_tables=True,
+                favor_recall=True,
+            )
+            if text and len(text) > 100:
+                return text[:PAGE_FETCH_LIMIT]
+        except Exception as e:
+            logger.debug(f"[ResearchAgent] trafilatura failed: {e}")
+
+    # BeautifulSoup fallback
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup(["script","style","nav","footer","header","aside","form"]):
+        tag.decompose()
+    text = soup.get_text(separator=" ", strip=True)
+    text = re.sub(r"\s{3,}", "  ", text)
+    return text[:PAGE_FETCH_LIMIT] if text else None
 
 
 def _clean_query(query: str) -> str:
@@ -62,9 +92,8 @@ def _decode_ddg_url(href: str) -> Optional[str]:
     if href.startswith("http") and "duckduckgo" not in href: return href
     if href.startswith("//"): href = "https:" + href
     try:
-        parsed = urlparse(href)
-        qs     = parse_qs(parsed.query)
-        uddg   = qs.get("uddg", [None])[0]
+        qs   = parse_qs(urlparse(href).query)
+        uddg = qs.get("uddg", [None])[0]
         if uddg: return unquote(uddg)
     except Exception:
         pass
@@ -73,7 +102,7 @@ def _decode_ddg_url(href: str) -> Optional[str]:
 
 class ResearchAgent(BaseAgent):
     name        = "research_agent"
-    description = "Academic researcher — produces structured reports with real web sources and citations"
+    description = "Academic researcher — structured reports with real web sources and citations"
 
     async def run(self, parameters: dict, task_id: str, context: str = "") -> Optional[str]:
         try:
@@ -87,24 +116,18 @@ class ResearchAgent(BaseAgent):
     async def _run(self, parameters: dict, task_id: str, context: str) -> Optional[str]:
         raw_query = parameters.get("query") or context or "general research"
         query     = _clean_query(raw_query)
-        logger.info(f"[ResearchAgent] Research query: '{query}'")
+        logger.info(f"[ResearchAgent] Query: '{query}' | trafilatura={TRAFILATURA_AVAILABLE}")
 
         snippets, urls = await self._search(query)
-        logger.info(f"[ResearchAgent] Got {len(snippets)} snippets, {len(urls)} URLs")
-
         if not snippets:
-            logger.warning("[ResearchAgent] No web results")
             return await self._knowledge_brief(raw_query)
 
         return await self._write_brief(query, snippets, urls)
-
-    # ── Write structured brief ────────────────────────────────────────────────
 
     async def _write_brief(self, query: str, snippets: list[str],
                             urls: list[str]) -> str:
         combined = "\n\n---SOURCE---\n\n".join(snippets[:MAX_SNIPPETS])
 
-        # This prompt is the core fix: forbid training-data phrases explicitly
         prompt = f"""You are writing a research brief about: "{query}"
 
 The following content was retrieved LIVE from the internet right now.
@@ -112,29 +135,27 @@ Base your research brief ENTIRELY on this content.
 
 FORBIDDEN PHRASES — never use these:
 - "as of my knowledge cutoff"
-- "as of my last update"  
+- "as of my last update"
 - "I cannot access real-time data"
 - "I don't have access to current information"
 - "based on my training data"
 
 If the content contains current prices, dates, specs, or news — state them directly as facts.
 
-FORMAT your response exactly like this:
+FORMAT:
 
 ## Overview
-[2-3 sentence summary of what the research found]
+[2-3 sentence summary]
 
 ## Key Findings
-- **[Finding 1 title]**: [Specific detail with numbers/facts from sources]
-- **[Finding 2 title]**: [Specific detail]
-- **[Finding 3 title]**: [Specific detail]
-[Add as many findings as the sources support]
+- **[Finding]**: [Specific detail with numbers/facts]
+[Add as many as the sources support]
 
 ## Detailed Analysis
-[2-3 paragraphs synthesizing what the sources say — be thorough and specific]
+[2-3 paragraphs — be thorough and specific]
 
 ## Sources
-[Leave this blank — sources will be appended separately]
+[Leave blank — appended separately]
 
 ---
 LIVE WEB CONTENT:
@@ -142,59 +163,49 @@ LIVE WEB CONTENT:
 
         brief = await self.qwen.chat(
             system_prompt=(
-                "You are a precise academic research assistant. "
-                "You have been given live web content fetched right now. "
-                "Write structured research briefs based strictly on the provided content. "
-                "Never use knowledge-cutoff disclaimers — you have current data. "
-                "Be thorough, specific, and cite exact figures when present."
+                "You are a precise academic research assistant with live web access. "
+                "Write structured research briefs based strictly on provided content. "
+                "Never use knowledge-cutoff disclaimers. Be thorough and specific."
             ),
             user_message=prompt,
             temperature=0.3,
         )
 
-        # Replace the blank Sources section with real URLs
         if urls:
             source_lines = "\n".join(
                 f"{i+1}. {u}" for i, u in enumerate(urls[:6])
             )
             if "## Sources" in brief:
-                brief = re.sub(
-                    r"## Sources.*$", f"## Sources\n{source_lines}",
-                    brief, flags=re.DOTALL
-                )
+                brief = re.sub(r"## Sources.*$",
+                               f"## Sources\n{source_lines}",
+                               brief, flags=re.DOTALL)
             else:
                 brief += f"\n\n## Sources\n{source_lines}"
 
         return brief
 
     async def _knowledge_brief(self, query: str) -> str:
-        """Used only when all web searches fail."""
-        result = await self.qwen.answer(
+        return await self.qwen.answer(
             question=query,
             context=(
-                "Web search returned no results. Answer from your training knowledge. "
-                "Structure your response with Overview, Key Findings, and Analysis sections. "
-                "Note at the end that this is based on training knowledge, not live web data, "
-                "and suggest specific websites the user can check for current information."
+                "Web search returned no results. Answer from training knowledge. "
+                "Use Overview/Key Findings/Analysis structure. "
+                "Note at the end this is training knowledge, not live data, "
+                "and suggest where to check for current info."
             ),
         )
-        return result
-
-    # ── Search pipeline ────────────────────────────────────────────────────────
 
     async def _search(self, query: str) -> tuple[list[str], list[str]]:
-        """Try multiple search strategies to maximize result quality."""
         snippets, urls = await self._ddg_html(query)
 
         if len(snippets) < 2:
-            logger.info("[ResearchAgent] DDG HTML thin, trying JSON API")
             j_snip, j_urls = await self._ddg_json(query)
             snippets += j_snip
             urls     += [u for u in j_urls if u not in urls]
 
         snippets = _dedup(snippets)
 
-        # Fetch full text from top 2 URLs for richer content
+        # Fetch full page text from top 2 URLs using trafilatura
         if urls:
             fetch_results = await asyncio.gather(
                 *[self._fetch_page(u) for u in urls[:2]],
@@ -202,9 +213,10 @@ LIVE WEB CONTENT:
             )
             for text in fetch_results:
                 if isinstance(text, str) and text:
-                    snippets.insert(0, text)  # prepend — full page content is richer
+                    snippets.insert(0, text)
 
         snippets = _dedup(snippets)
+        logger.info(f"[ResearchAgent] {len(snippets)} snippets, {len(urls)} URLs")
         return snippets, urls
 
     async def _ddg_html(self, query: str) -> tuple[list[str], list[str]]:
@@ -215,47 +227,32 @@ LIVE WEB CONTENT:
                 async with httpx.AsyncClient(
                     headers=HEADERS, follow_redirects=True, timeout=15
                 ) as client:
-                    resp = await client.post(
-                        DDG_HTML_URL,
-                        data={"q": query, "b": ""},
-                        headers={**HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
-                    )
-                    if resp.status_code in (429, 500, 502, 503) and attempt == 0:
-                        logger.warning(f"[ResearchAgent] DDG returned {resp.status_code}, retrying")
+                    resp = await client.post(DDG_HTML_URL, data={"q": query, "b": ""})
+                    if resp.status_code in (429,500,502,503) and attempt == 0:
                         await asyncio.sleep(2)
                         continue
                     resp.raise_for_status()
                     html_text = resp.text
 
                 soup = BeautifulSoup(html_text, "lxml")
-
                 for result in soup.select(".result"):
-                    # Extract snippet
                     body = result.select_one(".result__body, .result__snippet")
                     if body:
                         text = body.get_text(separator=" ", strip=True)
-                        if len(text) > 40:
-                            snippets.append(text[:1200])
-
-                    # Extract URL (decode DDG redirect)
+                        if len(text) > 40: snippets.append(text[:1200])
                     link = result.select_one(".result__a")
                     if link:
-                        real = _decode_ddg_url(link.get("href", ""))
+                        real = _decode_ddg_url(link.get("href",""))
                         if real and real not in urls and real.startswith("http"):
                             urls.append(real)
-
-                logger.info(
-                    f"[ResearchAgent] DDG HTML: {len(snippets)} snippets, {len(urls)} URLs"
-                )
+                logger.info(f"[ResearchAgent] DDG: {len(snippets)} snips, {len(urls)} URLs")
                 break
-
             except Exception as e:
                 if attempt == 0:
-                    logger.warning(f"[ResearchAgent] DDG HTML attempt 1 failed: {e}")
+                    logger.warning(f"[ResearchAgent] DDG attempt 1: {e}")
                     await asyncio.sleep(2)
                 else:
-                    logger.error(f"[ResearchAgent] DDG HTML completely failed: {e}")
-
+                    logger.error(f"[ResearchAgent] DDG failed: {e}")
         return snippets, urls
 
     async def _ddg_json(self, query: str) -> tuple[list[str], list[str]]:
@@ -269,46 +266,33 @@ LIVE WEB CONTENT:
                 resp = await client.get(url)
                 resp.raise_for_status()
                 data = resp.json()
-
             if data.get("Abstract"):
                 snippets.append(data["Abstract"])
             if data.get("AbstractURL"):
                 urls.append(data["AbstractURL"])
-
-            for topic in data.get("RelatedTopics", [])[:10]:
-                text = topic.get("Text", "")
-                link = topic.get("FirstURL", "")
-                if text and len(text) > 20:
-                    snippets.append(text[:800])
-                if link and link not in urls:
-                    urls.append(link)
-
-            logger.info(f"[ResearchAgent] DDG JSON: {len(snippets)} snippets")
+            for topic in data.get("RelatedTopics",[])[:10]:
+                text = topic.get("Text","")
+                link = topic.get("FirstURL","")
+                if text and len(text) > 20: snippets.append(text[:800])
+                if link and link not in urls: urls.append(link)
         except Exception as e:
             logger.warning(f"[ResearchAgent] DDG JSON failed: {e}")
         return snippets, urls
 
     async def _fetch_page(self, url: str) -> Optional[str]:
-        """Fetch full page content for richer research material."""
+        """Fetch page using trafilatura for clean article extraction."""
         try:
             async with httpx.AsyncClient(
                 headers=HEADERS, follow_redirects=True, timeout=PAGE_FETCH_TIMEOUT
             ) as client:
                 r = await client.get(url)
                 r.raise_for_status()
-                if "html" not in r.headers.get("content-type", ""):
+                if "html" not in r.headers.get("content-type",""):
                     return None
-                page_html = r.text
-
-            soup = BeautifulSoup(page_html, "lxml")
-            for tag in soup(["script","style","nav","footer","header","aside",
-                              "form","button","iframe"]):
-                tag.decompose()
-            text = soup.get_text(separator=" ", strip=True)
-            text = re.sub(r"\s{3,}", "  ", text)
-            logger.info(f"[ResearchAgent] Fetched page: {url[:60]} ({len(text)} chars)")
-            return text[:PAGE_FETCH_LIMIT] if text else None
-
+                text = _extract_page_text(r.text, url)
+                if text:
+                    logger.info(f"[ResearchAgent] Fetched {url[:60]} ({len(text)} chars)")
+                return text
         except Exception as e:
-            logger.debug(f"[ResearchAgent] Page fetch failed {url}: {e}")
+            logger.debug(f"[ResearchAgent] Fetch failed {url}: {e}")
             return None

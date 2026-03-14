@@ -1,35 +1,20 @@
 """
-AetherAI — Device Agent  (Stage 4, patched)
+AetherAI — Device Agent  (Stage 6)
 
-Fix applied
-───────────
-FIX 3  Vision loop WebSocket race condition eliminated.
+Stage 6 upgrade: pywinauto added for proper Windows GUI automation.
+pywinauto interacts with windows by their element names/titles using
+Windows UI Automation API — far more reliable than pyautogui pixel coordinates.
 
-       ROOT CAUSE
-       ──────────
-       The old code ran two concurrent coroutines that both consumed from the
-       same WebSocket stream:
-         • _listen() — main receive loop, handles all message types
-         • _vision_loop() → _wait_for_vision_response() — also `async for raw in ws`
+New actions:
+  find_and_open_file  — search for a file by name and open it
+  open_folder         — open a folder in File Explorer
+  click_button        — click a named button in any window (by text)
+  window_type         — type into a specific named window
+  close_window        — close a window by title
+  list_files          — list files in a directory
+  run_shell           — run a shell command and return output
 
-       Because WebSocket messages are consumed once, whichever coroutine reached
-       `receive()` first would get the message. During a vision loop, a
-       `vision_action` reply from the cloud might be silently swallowed by
-       _listen() (which didn't know what to do with it), leaving
-       _wait_for_vision_response() blocked forever until it timed out.
-
-       FIX
-       ───
-       _listen() is now the single consumer of the WebSocket stream.
-       _wait_for_vision_response() is removed entirely.
-
-       For each in-flight vision loop we create an asyncio.Queue keyed by
-       request_id. When _listen() receives a `vision_action` message it looks
-       up the queue and puts the raw JSON string there. _vision_loop() awaits
-       that queue instead of reading from the WebSocket directly.
-
-       All other message types continue to be handled inside _listen() as
-       before. No message is ever "stolen" by the wrong coroutine.
+pywinauto is only used when available — falls back to pyautogui if not installed.
 """
 
 import asyncio
@@ -48,7 +33,7 @@ import websockets
 import pyautogui
 from PIL import Image, ImageGrab
 
-# ── Config loading ─────────────────────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────────
 
 def _load_config():
     if getattr(sys, "frozen", False):
@@ -57,22 +42,19 @@ def _load_config():
         base_dir = Path(__file__).parent
 
     ini_path = base_dir / "aether_config.ini"
-
     if ini_path.exists():
         cfg = configparser.ConfigParser()
         cfg.read(ini_path)
         return (
-            cfg.get("aether", "cloud_url",  fallback="wss://aetherai.up.railway.app"),
-            cfg.get("aether", "device_id",  fallback="device-" + str(os.getpid())),
-            cfg.get("aether", "api_key",    fallback=""),
+            cfg.get("aether","cloud_url",  fallback="wss://aetherai.up.railway.app"),
+            cfg.get("aether","device_id",  fallback="device-"+str(os.getpid())),
+            cfg.get("aether","api_key",    fallback=""),
         )
-    else:
-        try:
-            from config import CLOUD_BRAIN_URL, DEVICE_ID, API_KEY
-            return CLOUD_BRAIN_URL, DEVICE_ID, API_KEY
-        except ImportError:
-            return "wss://aetherai.up.railway.app", "device-unknown", ""
-
+    try:
+        from config import CLOUD_BRAIN_URL, DEVICE_ID, API_KEY
+        return CLOUD_BRAIN_URL, DEVICE_ID, API_KEY
+    except ImportError:
+        return "wss://aetherai.up.railway.app","device-unknown",""
 
 CLOUD_BRAIN_URL, DEVICE_ID, API_KEY = _load_config()
 
@@ -89,110 +71,87 @@ KEEPALIVE_INTERVAL  = 30
 MAX_ACTION_RETRIES  = 1
 MAX_RECONNECT_DELAY = 30
 
-# ── App paths ──────────────────────────────────────────────────────────────────
+
+# ── pywinauto availability ────────────────────────────────────────────────────
+
+def _check_pywinauto() -> bool:
+    try:
+        import pywinauto  # noqa
+        return True
+    except ImportError:
+        return False
+
+PYWINAUTO_AVAILABLE = _check_pywinauto()
+logger.info(f"[DeviceAgent] pywinauto={'available' if PYWINAUTO_AVAILABLE else 'not installed'}")
+
+
+# ── App paths ─────────────────────────────────────────────────────────────────
 
 NOTEPADPP_PATHS = [
     r"C:\Program Files\Notepad++\notepad++.exe",
     r"C:\Program Files (x86)\Notepad++\notepad++.exe",
     r"C:\Users\patri\AppData\Local\Programs\Notepad++\notepad++.exe",
-    r"C:\Users\patri\scoop\apps\notepadplusplus\current\notepad++.exe",
 ]
 
 CHROME_PATHS = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     r"C:\Users\patri\AppData\Local\Google\Chrome\Application\chrome.exe",
-    r"C:\Users\Public\Desktop\Google Chrome.lnk",
 ]
 
 OFFICE_COM_SCRIPTS = {
     "word": """
-try {
-    $app = [System.Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application')
-} catch {
-    $app = New-Object -ComObject Word.Application
-}
-$app.Visible = $true
-$doc = $app.Documents.Add()
-$app.Activate()
-[System.Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null
-[System.Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null
+$app = try { [Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application') } catch { New-Object -ComObject Word.Application }
+$app.Visible = $true; $doc = $app.Documents.Add(); $app.Activate()
 """,
     "excel": """
-try {
-    $app = [System.Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application')
-} catch {
-    $app = New-Object -ComObject Excel.Application
-}
-$app.Visible = $true
-$wb = $app.Workbooks.Add()
-$app.WindowState = -4137
-$app.Activate()
-[System.Runtime.InteropServices.Marshal]::ReleaseComObject($wb) | Out-Null
-[System.Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null
+$app = try { [Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application') } catch { New-Object -ComObject Excel.Application }
+$app.Visible = $true; $wb = $app.Workbooks.Add(); $app.WindowState = -4137; $app.Activate()
 """,
     "powerpoint": """
-try {
-    $app = [System.Runtime.InteropServices.Marshal]::GetActiveObject('PowerPoint.Application')
-} catch {
-    $app = New-Object -ComObject PowerPoint.Application
-}
-$app.Visible = $true
-$pres = $app.Presentations.Add()
-$app.Activate()
-[System.Runtime.InteropServices.Marshal]::ReleaseComObject($pres) | Out-Null
-[System.Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null
+$app = try { [Runtime.InteropServices.Marshal]::GetActiveObject('PowerPoint.Application') } catch { New-Object -ComObject PowerPoint.Application }
+$app.Visible = $true; $pres = $app.Presentations.Add(); $app.Activate()
 """,
 }
 
-OFFICE_TITLES = {"word": "Word", "excel": "Excel", "powerpoint": "PowerPoint"}
-OFFICE_BODY_Y = {"word": 0.50, "excel": 0.45, "powerpoint": 0.55}
+OFFICE_TITLES = {"word":"Word","excel":"Excel","powerpoint":"PowerPoint"}
+OFFICE_BODY_Y = {"word":0.50,"excel":0.45,"powerpoint":0.55}
 OFFICE_MAP    = {
-    "word": "word", "winword": "word",
-    "excel": "excel",
-    "powerpoint": "powerpoint", "ppt": "powerpoint",
+    "word":"word","winword":"word","excel":"excel",
+    "powerpoint":"powerpoint","ppt":"powerpoint",
 }
 
 BUILTIN_APP_MAP = {
-    "calculator": "calc.exe",
-    "calc":       "calc.exe",
-    "paint":      "mspaint.exe",
-    "mspaint":    "mspaint.exe",
-    "explorer":   "explorer.exe",
-    "files":      "explorer.exe",
-    "file explorer": "explorer.exe",
-    "wordpad":    "wordpad.exe",
-    "cmd":        "cmd.exe",
-    "terminal":   "wt.exe",
-    "powershell": "powershell.exe",
-    "task manager": "taskmgr.exe",
-    "taskmgr":    "taskmgr.exe",
-    "snipping tool": "SnippingTool.exe",
-    "snip":       "SnippingTool.exe",
-    "settings":   "ms-settings:",
-    "store":      "ms-windows-store:",
+    "calculator":"calc.exe", "calc":"calc.exe",
+    "paint":"mspaint.exe",   "mspaint":"mspaint.exe",
+    "explorer":"explorer.exe","files":"explorer.exe",
+    "file explorer":"explorer.exe",
+    "wordpad":"wordpad.exe", "cmd":"cmd.exe",
+    "terminal":"wt.exe",     "powershell":"powershell.exe",
+    "task manager":"taskmgr.exe","taskmgr":"taskmgr.exe",
+    "snipping tool":"SnippingTool.exe","snip":"SnippingTool.exe",
+    "settings":"ms-settings:","store":"ms-windows-store:",
 }
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
 
-def find_notepadpp() -> str | None:
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def find_notepadpp():
     return next((p for p in NOTEPADPP_PATHS if os.path.exists(p)), None)
 
-def find_chrome() -> str | None:
+def find_chrome():
     return next((p for p in CHROME_PATHS if os.path.exists(p)), None)
 
-def activate_window_by_title(title_fragment: str):
+def activate_window(title_fragment: str):
     try:
-        ps_cmd = (
+        ps = (
             "Add-Type -AssemblyName Microsoft.VisualBasic; "
             f"[Microsoft.VisualBasic.Interaction]::AppActivate('{title_fragment}')"
         )
-        subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
-            capture_output=True, timeout=5,
-        )
+        subprocess.run(["powershell","-NoProfile","-NonInteractive","-Command",ps],
+                       capture_output=True, timeout=5)
     except Exception as e:
-        logger.debug(f"activate_window_by_title failed: {e}")
+        logger.debug(f"activate_window failed: {e}")
 
 def capture_screen(max_width: int = 1280, jpeg_quality: int = 70) -> str:
     img = ImageGrab.grab()
@@ -206,58 +165,50 @@ def capture_screen(max_width: int = 1280, jpeg_quality: int = 70) -> str:
 
 def open_office_via_com(office_key: str):
     script = OFFICE_COM_SCRIPTS.get(office_key, "")
-    if not script:
-        return
+    if not script: return
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     try:
         proc = subprocess.Popen(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            ["powershell","-NoProfile","-NonInteractive","-Command",script],
             creationflags=flags,
         )
         proc.wait(timeout=8)
     except subprocess.TimeoutExpired:
-        logger.debug(f"COM script for {office_key} still running after 8s (normal)")
+        logger.debug(f"COM script for {office_key} still running (normal)")
     except Exception as e:
-        logger.warning(f"open_office_via_com({office_key}) error: {e}")
+        logger.warning(f"open_office_via_com({office_key}): {e}")
 
 
-# ── Agent ──────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# DEVICE AGENT
+# ═════════════════════════════════════════════════════════════════════════════
 
 class DeviceAgent:
 
     def __init__(self):
-        self.ws_url  = f"{CLOUD_BRAIN_URL}/ws/device/{DEVICE_ID}"
+        self.ws_url = f"{CLOUD_BRAIN_URL}/ws/device/{DEVICE_ID}"
         self.running = True
-        # FIX 3: per-request queues for vision loop responses.
-        # Key: request_id  Value: asyncio.Queue[str]
         self._vision_queues: dict[str, asyncio.Queue] = {}
 
-    # ── Connection management ──────────────────────────────────────────────────
+    # ── Connection ─────────────────────────────────────────────────────────────
 
     async def connect(self):
         delay = 5
         while self.running:
             try:
-                logger.info(f"Connecting to {self.ws_url} as '{DEVICE_ID}'")
-                # FIX 2: append api_key as query param so the server can validate it
                 url = self.ws_url
-                if API_KEY:
-                    url = f"{url}?api_key={API_KEY}"
+                if API_KEY: url = f"{url}?api_key={API_KEY}"
+                logger.info(f"Connecting to {self.ws_url} as '{DEVICE_ID}'")
                 async with websockets.connect(
-                    url,
-                    ping_interval=None,
-                    ping_timeout=None,
-                    close_timeout=10,
+                    url, ping_interval=None, ping_timeout=None, close_timeout=10,
                 ) as ws:
                     logger.info("Connected to AetherAI Cloud Brain")
                     delay = 5
                     await asyncio.gather(self._listen(ws), self._keepalive(ws))
-
             except websockets.ConnectionClosed as e:
-                logger.warning(f"Disconnected ({e.code} {e.reason}). Reconnecting in {delay}s…")
+                logger.warning(f"Disconnected ({e.code}). Reconnecting in {delay}s…")
             except Exception as e:
                 logger.error(f"Connection error: {e}. Retrying in {delay}s…")
-
             await asyncio.sleep(delay)
             delay = min(delay * 2, MAX_RECONNECT_DELAY)
 
@@ -265,108 +216,76 @@ class DeviceAgent:
         try:
             while True:
                 await asyncio.sleep(KEEPALIVE_INTERVAL)
-                await ws.send(json.dumps({"type": "ping"}))
+                await ws.send(json.dumps({"type":"ping"}))
         except Exception:
             pass
 
-    # ── FIX 3: single-consumer listen loop ────────────────────────────────────
+    # ── Listen loop ────────────────────────────────────────────────────────────
 
     async def _listen(self, ws):
-        """
-        The ONLY coroutine that reads from the WebSocket.
-        All message routing happens here — no other coroutine touches ws directly.
-        """
         async for raw in ws:
             try:
                 data     = json.loads(raw)
                 msg_type = data.get("type")
 
                 if msg_type == "ping":
-                    await ws.send(json.dumps({"type": "pong"}))
-
+                    await ws.send(json.dumps({"type":"pong"}))
                 elif msg_type == "pong":
                     pass
-
                 elif msg_type == "screenshot":
                     await self._handle_screenshot(ws, data)
-
                 elif msg_type == "action":
                     await self._handle_action(ws, data)
-
                 elif msg_type == "vision_task":
                     asyncio.create_task(self._vision_loop(ws, data))
-
                 elif msg_type == "get_screen_info":
                     w, h = pyautogui.size()
                     await ws.send(json.dumps({
-                        "type":       "screen_info",
-                        "width":      w,
-                        "height":     h,
-                        "request_id": data.get("request_id", ""),
+                        "type":"screen_info","width":w,"height":h,
+                        "request_id":data.get("request_id",""),
                     }))
-
                 elif msg_type == "vision_action":
-                    # FIX 3: route to the waiting vision loop via its queue
-                    request_id = data.get("request_id", "")
+                    request_id = data.get("request_id","")
                     q = self._vision_queues.get(request_id)
-                    if q:
-                        await q.put(raw)
-                    else:
-                        logger.debug(
-                            f"[Listen] vision_action for unknown request_id={request_id!r} — ignored"
-                        )
-
+                    if q: await q.put(raw)
                 else:
                     logger.debug(f"Unknown message type: {msg_type}")
-
             except Exception as e:
                 logger.error(f"Message handling error: {e}", exc_info=True)
 
     # ── Screenshot ─────────────────────────────────────────────────────────────
 
     async def _handle_screenshot(self, ws, data: dict):
-        request_id = data.get("request_id", "")
+        request_id = data.get("request_id","")
         try:
             img_b64 = capture_screen()
             await ws.send(json.dumps({
-                "type":         "screenshot_result",
-                "request_id":   request_id,
-                "image_base64": img_b64,
-                "timestamp":    time.time(),
+                "type":"screenshot_result","request_id":request_id,
+                "image_base64":img_b64,"timestamp":time.time(),
             }))
         except Exception as e:
-            await ws.send(json.dumps({
-                "type":       "screenshot_result",
-                "request_id": request_id,
-                "error":      str(e),
-            }))
+            await ws.send(json.dumps({"type":"screenshot_result",
+                                       "request_id":request_id,"error":str(e)}))
 
     # ── Action dispatch ────────────────────────────────────────────────────────
 
     async def _handle_action(self, ws, data: dict):
-        action     = data.get("action", "")
-        params     = data.get("parameters", {})
-        request_id = data.get("request_id", "")
+        action     = data.get("action","")
+        params     = data.get("parameters",{})
+        request_id = data.get("request_id","")
 
         aliases = {
-            "open":       "open_app",
-            "launch":     "open_app",
-            "start":      "open_app",
-            "press":      "hotkey",
-            "key":        "hotkey",
-            "write":      "type",
-            "typing":     "type",
-            "input":      "type",
-            "screenshot": "screenshot_and_return",
+            "open":"open_app","launch":"open_app","start":"open_app",
+            "press":"hotkey","key":"hotkey",
+            "write":"type","typing":"type","input":"type",
+            "screenshot":"screenshot_and_return",
         }
         action = aliases.get(action, action)
         result = await self._execute_with_retry(ws, action, params, request_id)
 
         if request_id and action != "screenshot_and_return":
             await ws.send(json.dumps({
-                "type":       "action_result",
-                "request_id": request_id,
-                "result":     result,
+                "type":"action_result","request_id":request_id,"result":result,
             }))
 
     async def _execute_with_retry(self, ws, action: str, params: dict,
@@ -374,7 +293,7 @@ class DeviceAgent:
         last_error = ""
         for attempt in range(MAX_ACTION_RETRIES + 1):
             if attempt > 0:
-                logger.info(f"Retry {attempt} for action '{action}'")
+                logger.info(f"Retry {attempt} for '{action}'")
                 await asyncio.sleep(0.8 * attempt)
             try:
                 return await self._execute_action(ws, action, params, request_id)
@@ -382,108 +301,129 @@ class DeviceAgent:
                 raise
             except Exception as e:
                 last_error = str(e)
-                logger.warning(f"Action '{action}' attempt {attempt} failed: {e}")
-        return f"Error after {MAX_ACTION_RETRIES + 1} attempts: {last_error}"
+                logger.warning(f"Action '{action}' attempt {attempt}: {e}")
+        return f"Error after {MAX_ACTION_RETRIES+1} attempts: {last_error}"
+
+    # ── Action executor ────────────────────────────────────────────────────────
 
     async def _execute_action(self, ws, action: str, params: dict,
                                request_id: str) -> str:
 
+        # ── Standard pyautogui actions ─────────────────────────────────────────
         if action == "click":
             x, y = int(params["x"]), int(params["y"])
             pyautogui.click(x, y)
-            return f"Clicked ({x}, {y})"
+            return f"Clicked ({x},{y})"
 
         elif action == "double_click":
             x, y = int(params["x"]), int(params["y"])
             pyautogui.doubleClick(x, y)
-            return f"Double-clicked ({x}, {y})"
+            return f"Double-clicked ({x},{y})"
 
         elif action == "right_click":
             x, y = int(params["x"]), int(params["y"])
             pyautogui.rightClick(x, y)
-            return f"Right-clicked ({x}, {y})"
+            return f"Right-clicked ({x},{y})"
 
         elif action == "move":
             x, y = int(params["x"]), int(params["y"])
             pyautogui.moveTo(x, y, duration=0.3)
-            return f"Moved to ({x}, {y})"
+            return f"Moved to ({x},{y})"
 
         elif action == "type":
-            text = params.get("text", "")
-            if not text:
-                return "type: no text provided"
-            activate_app = params.get("activate_app", "").strip()
+            text = params.get("text","")
+            if not text: return "type: no text provided"
+            activate_app = params.get("activate_app","").strip()
             if activate_app:
-                activate_window_by_title(activate_app)
+                activate_window(activate_app)
                 await asyncio.sleep(0.4)
             else:
                 await asyncio.sleep(0.5)
-                try:
-                    pyautogui.click(*pyautogui.position())
-                except Exception:
-                    pass
+                try: pyautogui.click(*pyautogui.position())
+                except Exception: pass
                 await asyncio.sleep(0.2)
             try:
                 import pyperclip
                 pyperclip.copy(text)
                 await asyncio.sleep(0.2)
-                pyautogui.hotkey("ctrl", "v")
+                pyautogui.hotkey("ctrl","v")
                 await asyncio.sleep(0.3)
             except Exception:
                 pyautogui.typewrite(text[:500], interval=0.03)
             return f"Typed {len(text)} chars"
 
-        elif action == "type_special":
-            text = params.get("text", "")
-            try:
-                import pyperclip
-                pyperclip.copy(text)
-                pyautogui.hotkey("ctrl", "v")
-            except Exception:
-                pyautogui.typewrite(text[:500], interval=0.03)
-            return f"Pasted: {text[:120]}"
-
         elif action == "hotkey":
-            keys = params.get("keys", [])
-            if not keys:
-                return "hotkey: no keys provided"
+            keys = params.get("keys",[])
+            if not keys: return "hotkey: no keys provided"
             pyautogui.hotkey(*keys)
             return f"Hotkey: {'+'.join(keys)}"
 
         elif action == "scroll":
-            x      = int(params.get("x", pyautogui.size()[0] // 2))
-            y      = int(params.get("y", pyautogui.size()[1] // 2))
+            x      = int(params.get("x", pyautogui.size()[0]//2))
+            y      = int(params.get("y", pyautogui.size()[1]//2))
             clicks = int(params.get("clicks", 3))
             pyautogui.scroll(clicks, x=x, y=y)
             return f"Scrolled {clicks} at ({x},{y})"
 
         elif action == "open_app":
-            return await self._open_app(params.get("app", "").strip())
+            return await self._open_app(params.get("app","").strip())
 
         elif action == "new_file":
-            return await self._new_file(params.get("app", "notepad").strip().lower())
-
-        elif action == "run_command":
-            cmd  = params.get("command", "")
-            proc = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, timeout=30
-            )
-            return (proc.stdout or proc.stderr or "Done").strip()[:500]
+            return await self._new_file(params.get("app","notepad").strip().lower())
 
         elif action == "wait":
-            ms = int(params.get("ms", 1000))
-            await asyncio.sleep(ms / 1000)
+            ms = int(params.get("ms",1000))
+            await asyncio.sleep(ms/1000)
             return f"Waited {ms}ms"
 
         elif action == "screenshot_and_return":
             img_b64 = capture_screen()
             await ws.send(json.dumps({
-                "type":         "screenshot_result",
-                "request_id":   request_id,
-                "image_base64": img_b64,
-                "timestamp":    time.time(),
+                "type":"screenshot_result","request_id":request_id,
+                "image_base64":img_b64,"timestamp":time.time(),
             }))
             return "screenshot_sent"
+
+        elif action == "run_command":
+            cmd  = params.get("command","")
+            proc = subprocess.run(cmd, shell=True, capture_output=True,
+                                  text=True, timeout=30)
+            return (proc.stdout or proc.stderr or "Done").strip()[:500]
+
+        # ── Stage 6: pywinauto-powered actions ─────────────────────────────────
+
+        elif action == "find_and_open_file":
+            return await self._find_and_open_file(
+                params.get("filename",""),
+                params.get("search_in", str(Path.home())),
+            )
+
+        elif action == "open_folder":
+            return await self._open_folder(params.get("path",""))
+
+        elif action == "click_button":
+            return await self._click_button(
+                params.get("window_title",""),
+                params.get("button_text",""),
+            )
+
+        elif action == "window_type":
+            return await self._window_type(
+                params.get("window_title",""),
+                params.get("text",""),
+            )
+
+        elif action == "close_window":
+            return await self._close_window(params.get("title",""))
+
+        elif action == "list_files":
+            return await self._list_files(params.get("path", str(Path.home())))
+
+        elif action == "focus_window":
+            title = params.get("title","")
+            activate_window(title)
+            await asyncio.sleep(0.5)
+            return f"Focused window: {title}"
 
         else:
             return f"Unknown action: {action}"
@@ -501,7 +441,7 @@ class DeviceAgent:
             if npp:
                 subprocess.Popen([npp])
                 await asyncio.sleep(2.5)
-                activate_window_by_title("Notepad++")
+                activate_window("Notepad++")
                 return "Opened Notepad++"
 
         if app_lc == "notepad":
@@ -509,48 +449,37 @@ class DeviceAgent:
 
         if "chrome" in app_lc:
             chrome_path = find_chrome()
-            if chrome_path and chrome_path.endswith(".exe"):
+            if chrome_path:
                 subprocess.Popen([chrome_path])
                 await asyncio.sleep(2.5)
-                activate_window_by_title("Chrome")
+                activate_window("Chrome")
                 return "Opened Google Chrome"
-            if sys.platform == "win32":
-                subprocess.Popen('start "" "chrome"', shell=True)
-                await asyncio.sleep(2.5)
-                return "Opened Chrome (shell)"
+            subprocess.Popen('start "" "chrome"', shell=True)
+            await asyncio.sleep(2.5)
+            return "Opened Chrome"
 
         if "edge" in app_lc:
-            if sys.platform == "win32":
-                subprocess.Popen('start "" "msedge"', shell=True)
-                await asyncio.sleep(2.5)
-                return "Opened Microsoft Edge"
+            subprocess.Popen('start "" "msedge"', shell=True)
+            await asyncio.sleep(2.5)
+            return "Opened Microsoft Edge"
 
         if "firefox" in app_lc:
-            if sys.platform == "win32":
-                subprocess.Popen('start "" "firefox"', shell=True)
-                await asyncio.sleep(2.5)
-                return "Opened Firefox"
+            subprocess.Popen('start "" "firefox"', shell=True)
+            await asyncio.sleep(2.5)
+            return "Opened Firefox"
 
         for key, exe in BUILTIN_APP_MAP.items():
             if key in app_lc:
                 if exe.endswith(":"):
                     subprocess.Popen(f'start "" "{exe}"', shell=True)
-                    await asyncio.sleep(1.5)
-                    return f"Opened {key}"
-                if sys.platform == "win32":
-                    try:
-                        subprocess.Popen([exe])
+                else:
+                    try: subprocess.Popen([exe])
                     except FileNotFoundError:
                         subprocess.Popen(f'start "" "{exe}"', shell=True)
-                    await asyncio.sleep(1.5)
-                    return f"Opened {key}"
+                await asyncio.sleep(1.5)
+                return f"Opened {key}"
 
-        if sys.platform == "win32":
-            subprocess.Popen(f'start "" "{app}"', shell=True)
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", "-a", app])
-        else:
-            subprocess.Popen([app])
+        subprocess.Popen(f'start "" "{app}"', shell=True)
         await asyncio.sleep(1.5)
         return f"Opened: {app}"
 
@@ -560,26 +489,23 @@ class DeviceAgent:
         if app_lc == "notepad":
             subprocess.Popen(["notepad.exe"])
             await asyncio.sleep(1.5)
-            activate_window_by_title("Notepad")
+            activate_window("Notepad")
             await asyncio.sleep(0.4)
             sw, sh = pyautogui.size()
-            pyautogui.click(sw // 2, sh // 2)
+            pyautogui.click(sw//2, sh//2)
             return "Opened new Notepad window"
 
-        if "notepad++" in app_lc or "notepadpp" in app_lc:
+        if "notepad++" in app_lc:
             npp = find_notepadpp()
             if npp:
                 subprocess.Popen([npp])
                 await asyncio.sleep(2.5)
-                activate_window_by_title("Notepad++")
-                await asyncio.sleep(0.4)
-                pyautogui.hotkey("ctrl", "n")
+                activate_window("Notepad++")
+                pyautogui.hotkey("ctrl","n")
                 await asyncio.sleep(0.5)
                 sw, sh = pyautogui.size()
-                pyautogui.click(sw // 2, sh // 2)
+                pyautogui.click(sw//2, sh//2)
                 return "Opened new Notepad++ window"
-            logger.warning("Notepad++ not found — falling back to Notepad")
-            return await self._new_file("notepad")
 
         office_key = OFFICE_MAP.get(app_lc)
         if office_key:
@@ -587,41 +513,232 @@ class DeviceAgent:
             await asyncio.get_event_loop().run_in_executor(
                 None, open_office_via_com, office_key
             )
-            wait = 5.0 if office_key in ("word", "powerpoint") else 4.0
+            wait = 5.0 if office_key in ("word","powerpoint") else 4.0
             await asyncio.sleep(wait)
             title_hint = OFFICE_TITLES[office_key]
-            activate_window_by_title(title_hint)
+            activate_window(title_hint)
             await asyncio.sleep(0.8)
             sw, sh  = pyautogui.size()
             body_y  = OFFICE_BODY_Y.get(office_key, 0.50)
             click_y = int(sh * body_y)
-            pyautogui.click(sw // 2, click_y)
+            pyautogui.click(sw//2, click_y)
             await asyncio.sleep(0.4)
-            activate_window_by_title(title_hint)
+            activate_window(title_hint)
             await asyncio.sleep(0.3)
-            pyautogui.click(sw // 2, click_y)
+            pyautogui.click(sw//2, click_y)
             return f"Opened new {office_key} document"
 
         return f"new_file: unsupported app '{app}'"
 
+    # ── Stage 6: pywinauto actions ─────────────────────────────────────────────
+
+    async def _find_and_open_file(self, filename: str, search_in: str) -> str:
+        """Search for a file by name and open it."""
+        import glob
+        if not filename:
+            return "find_and_open_file: no filename provided"
+
+        # Search recursively (limit depth for speed)
+        search_path = Path(search_in)
+        matches = []
+
+        # Quick glob first (exact name)
+        for match in search_path.rglob(filename):
+            matches.append(str(match))
+            if len(matches) >= 5: break
+
+        # Fuzzy: glob with wildcard if no exact match
+        if not matches:
+            for match in search_path.rglob(f"*{filename}*"):
+                if match.is_file():
+                    matches.append(str(match))
+                    if len(matches) >= 5: break
+
+        if not matches:
+            return f"⚠️ File '{filename}' not found in {search_in}"
+
+        # Open the first match
+        target = matches[0]
+        os.startfile(target)
+        await asyncio.sleep(1.5)
+
+        result = f"✅ Opened: {target}"
+        if len(matches) > 1:
+            result += f"\n(Also found: {', '.join(matches[1:])})"
+        return result
+
+    async def _open_folder(self, path: str) -> str:
+        """Open a folder in File Explorer."""
+        if not path:
+            path = str(Path.home())
+
+        folder = Path(path)
+        if not folder.exists():
+            # Try as a common folder name
+            known = {
+                "documents": Path.home() / "Documents",
+                "downloads": Path.home() / "Downloads",
+                "desktop":   Path.home() / "Desktop",
+                "pictures":  Path.home() / "Pictures",
+                "music":     Path.home() / "Music",
+                "videos":    Path.home() / "Videos",
+                "home":      Path.home(),
+            }
+            folder = known.get(path.lower(), Path.home())
+
+        subprocess.Popen(["explorer.exe", str(folder)])
+        await asyncio.sleep(1.5)
+        return f"✅ Opened folder: {folder}"
+
+    async def _click_button(self, window_title: str, button_text: str) -> str:
+        """Click a named button in a window using pywinauto UI Automation."""
+        if not PYWINAUTO_AVAILABLE:
+            return "⚠️ pywinauto not installed. Run: pip install pywinauto"
+
+        try:
+            from pywinauto.application import Application
+            from pywinauto import Desktop
+
+            # Find the window
+            windows = Desktop(backend="uia").windows(title_re=f".*{window_title}.*")
+            if not windows:
+                return f"⚠️ Window '{window_title}' not found"
+
+            win = windows[0]
+            win.set_focus()
+            await asyncio.sleep(0.3)
+
+            # Find and click the button
+            btn = win.child_window(title=button_text, control_type="Button")
+            if btn.exists():
+                btn.click_input()
+                return f"✅ Clicked button '{button_text}' in '{window_title}'"
+
+            # Try partial match
+            for ctrl in win.descendants(control_type="Button"):
+                if button_text.lower() in ctrl.window_text().lower():
+                    ctrl.click_input()
+                    return f"✅ Clicked button '{ctrl.window_text()}' in '{window_title}'"
+
+            return f"⚠️ Button '{button_text}' not found in '{window_title}'"
+
+        except Exception as e:
+            logger.error(f"click_button error: {e}")
+            return f"⚠️ click_button failed: {e}"
+
+    async def _window_type(self, window_title: str, text: str) -> str:
+        """Type into a specific named window using pywinauto."""
+        if not PYWINAUTO_AVAILABLE:
+            # Fallback: activate window and use pyperclip
+            activate_window(window_title)
+            await asyncio.sleep(0.5)
+            try:
+                import pyperclip
+                pyperclip.copy(text)
+                pyautogui.hotkey("ctrl","v")
+                return f"✅ Typed {len(text)} chars into '{window_title}' (pyperclip fallback)"
+            except Exception as e:
+                return f"⚠️ window_type failed: {e}"
+
+        try:
+            from pywinauto import Desktop
+            windows = Desktop(backend="uia").windows(title_re=f".*{window_title}.*")
+            if not windows:
+                return f"⚠️ Window '{window_title}' not found"
+
+            win = windows[0]
+            win.set_focus()
+            await asyncio.sleep(0.4)
+
+            # Find an editable text area
+            edit = None
+            for ctrl_type in ["Edit", "Document"]:
+                ctrls = win.descendants(control_type=ctrl_type)
+                if ctrls:
+                    edit = ctrls[0]
+                    break
+
+            if edit:
+                edit.set_focus()
+                import pyperclip
+                pyperclip.copy(text)
+                pyautogui.hotkey("ctrl","v")
+                return f"✅ Typed {len(text)} chars into '{window_title}'"
+
+            # Fallback to pyperclip on focused window
+            import pyperclip
+            pyperclip.copy(text)
+            pyautogui.hotkey("ctrl","v")
+            return f"✅ Pasted {len(text)} chars (fallback)"
+
+        except Exception as e:
+            logger.error(f"window_type error: {e}")
+            return f"⚠️ window_type failed: {e}"
+
+    async def _close_window(self, title: str) -> str:
+        """Close a window by title pattern."""
+        if PYWINAUTO_AVAILABLE:
+            try:
+                from pywinauto import Desktop
+                windows = Desktop(backend="uia").windows(title_re=f".*{title}.*")
+                if not windows:
+                    return f"⚠️ No window matching '{title}'"
+                count = 0
+                for win in windows:
+                    try:
+                        win.close()
+                        count += 1
+                    except Exception:
+                        pass
+                return f"✅ Closed {count} window(s) matching '{title}'"
+            except Exception as e:
+                return f"⚠️ close_window failed: {e}"
+        else:
+            # Fallback: use Alt+F4 after activating
+            activate_window(title)
+            await asyncio.sleep(0.4)
+            pyautogui.hotkey("alt","F4")
+            return f"✅ Sent Alt+F4 to '{title}'"
+
+    async def _list_files(self, path: str) -> str:
+        """List files in a directory."""
+        folder = Path(path)
+        known = {
+            "documents": Path.home() / "Documents",
+            "downloads": Path.home() / "Downloads",
+            "desktop":   Path.home() / "Desktop",
+            "pictures":  Path.home() / "Pictures",
+            "home":      Path.home(),
+        }
+        if not folder.exists():
+            folder = known.get(path.lower(), Path.home())
+
+        try:
+            items = list(folder.iterdir())
+            files = sorted([f.name for f in items if f.is_file()])[:20]
+            dirs  = sorted([f.name + "/" for f in items if f.is_dir()])[:10]
+            result = f"📁 **{folder}**\n\n"
+            if dirs:
+                result += "**Folders:**\n" + "\n".join(f"  📂 {d}" for d in dirs) + "\n\n"
+            if files:
+                result += "**Files:**\n" + "\n".join(f"  📄 {f}" for f in files)
+            if not files and not dirs:
+                result += "_(empty folder)_"
+            return result
+        except PermissionError:
+            return f"⚠️ Permission denied: {folder}"
+        except Exception as e:
+            return f"⚠️ list_files failed: {e}"
+
     # ── Vision loop ────────────────────────────────────────────────────────────
 
     async def _vision_loop(self, ws, data: dict):
-        """
-        FIX 3: Vision loop no longer reads from the WebSocket directly.
-        Instead it writes to ws (sending screenshots) and waits on a
-        per-request asyncio.Queue that _listen() populates when it receives
-        a vision_action reply for this request_id.
-        """
-        goal       = data.get("goal", "")
-        task_id    = data.get("task_id", "")
-        max_steps  = data.get("max_steps", 10)
-        request_id = data.get("request_id", "")
+        goal       = data.get("goal","")
+        task_id    = data.get("task_id","")
+        max_steps  = data.get("max_steps",10)
+        request_id = data.get("request_id","")
 
         logger.info(f"Vision loop started. Goal: {goal}")
-
-        # Register the response queue BEFORE sending the first screenshot
-        # so that a very fast cloud response can never be missed.
         q: asyncio.Queue[str] = asyncio.Queue()
         self._vision_queues[request_id] = q
 
@@ -630,25 +747,18 @@ class DeviceAgent:
                 try:
                     img_b64 = capture_screen()
                     await ws.send(json.dumps({
-                        "type":         "vision_step",
-                        "task_id":      task_id,
-                        "request_id":   request_id,
-                        "step":         step_num,
-                        "image_base64": img_b64,
-                        "goal":         goal,
+                        "type":"vision_step","task_id":task_id,
+                        "request_id":request_id,"step":step_num,
+                        "image_base64":img_b64,"goal":goal,
                     }))
 
-                    # Wait for the cloud to reply via the queue
                     try:
                         response_raw = await asyncio.wait_for(q.get(), timeout=30.0)
                     except asyncio.TimeoutError:
-                        logger.warning(f"Vision step {step_num}: cloud response timed out")
                         await ws.send(json.dumps({
-                            "type":        "vision_complete",
-                            "task_id":     task_id,
-                            "request_id":  request_id,
-                            "message":     "Vision loop timed out waiting for cloud response",
-                            "steps_taken": step_num,
+                            "type":"vision_complete","task_id":task_id,
+                            "request_id":request_id,
+                            "message":"Vision loop timed out","steps_taken":step_num,
                         }))
                         return
 
@@ -657,16 +767,15 @@ class DeviceAgent:
 
                     if action_type == "done":
                         await ws.send(json.dumps({
-                            "type":        "vision_complete",
-                            "task_id":     task_id,
-                            "request_id":  request_id,
-                            "message":     response.get("message", "Task complete"),
-                            "steps_taken": step_num,
+                            "type":"vision_complete","task_id":task_id,
+                            "request_id":request_id,
+                            "message":response.get("message","Task complete"),
+                            "steps_taken":step_num,
                         }))
                         return
 
                     result = await self._execute_with_retry(
-                        ws, action_type, response.get("parameters", {}), ""
+                        ws, action_type, response.get("parameters",{}), ""
                     )
                     logger.info(f"Vision step {step_num} ({action_type}): {result}")
                     await asyncio.sleep(0.8)
@@ -674,26 +783,21 @@ class DeviceAgent:
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
-                    logger.error(f"Vision loop error at step {step_num}: {e}", exc_info=True)
+                    logger.error(f"Vision loop error step {step_num}: {e}", exc_info=True)
                     await ws.send(json.dumps({
-                        "type":        "vision_complete",
-                        "task_id":     task_id,
-                        "request_id":  request_id,
-                        "message":     f"Vision loop error: {e}",
-                        "steps_taken": step_num,
+                        "type":"vision_complete","task_id":task_id,
+                        "request_id":request_id,
+                        "message":f"Error: {e}","steps_taken":step_num,
                     }))
                     return
 
             await ws.send(json.dumps({
-                "type":        "vision_complete",
-                "task_id":     task_id,
-                "request_id":  request_id,
-                "message":     f"Vision loop reached max steps ({max_steps})",
-                "steps_taken": max_steps,
+                "type":"vision_complete","task_id":task_id,
+                "request_id":request_id,
+                "message":f"Reached max steps ({max_steps})",
+                "steps_taken":max_steps,
             }))
-
         finally:
-            # Always clean up the queue so _listen() doesn't accumulate stale entries
             self._vision_queues.pop(request_id, None)
 
 
@@ -702,13 +806,13 @@ class DeviceAgent:
 async def main():
     logger.info(f"AetherAI Device Agent — Device ID: {DEVICE_ID}")
     logger.info(f"Cloud: {CLOUD_BRAIN_URL}")
-    logger.info("Press Ctrl+C to stop. Move mouse to top-left corner to emergency-stop.")
+    logger.info(f"pywinauto: {'available' if PYWINAUTO_AVAILABLE else 'not installed (pip install pywinauto)'}")
+    logger.info("Press Ctrl+C to stop. Move mouse to top-left to emergency-stop.")
     agent = DeviceAgent()
     try:
         await agent.connect()
     except KeyboardInterrupt:
         logger.info("Device Agent stopped.")
-
 
 if __name__ == "__main__":
     if sys.platform == "win32":
