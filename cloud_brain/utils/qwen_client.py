@@ -77,13 +77,24 @@ class QwenClient:
 
     async def answer(self, question: str, context: str = "",
                      user_context: str = "") -> str:
+        from datetime import datetime
+        import pytz
+        try:
+            ph_tz  = pytz.timezone("Asia/Manila")
+            now    = datetime.now(ph_tz)
+            now_str = now.strftime("%A, %B %d, %Y %I:%M %p (Asia/Manila)")
+        except Exception:
+            now_str = datetime.utcnow().strftime("%A, %B %d, %Y %H:%M UTC")
+
         system = (
-            "You are AetherAI, a highly capable personal AI assistant built by "
-            "Patrick Perez, a 26-year-old software engineer from the Philippines.\n\n"
+            f"You are AetherAI, a highly capable personal AI assistant built by "
+            f"Patrick Perez, a 26-year-old software engineer from the Philippines.\n"
+            f"CURRENT DATE AND TIME: {now_str}\n\n"
             "RESPONSE QUALITY RULES:\n"
             "- Give thorough, detailed answers. Do not truncate or oversimplify.\n"
             "- For creative writing: produce the full piece immediately.\n"
-            "- For math: show working then give the answer.\n"
+            "- For math: solve it directly and show the working. Do NOT open any app.\n"
+            "- For date/time questions: use the CURRENT DATE AND TIME provided above.\n"
             "- For translations: give translation and pronunciation.\n"
             "- For health/science: give comprehensive detail.\n"
             "- Use markdown for structured topics.\n"
@@ -103,13 +114,16 @@ class QwenClient:
                 "NEVER say 'as of my knowledge cutoff' or 'I cannot access real-time data'.\n"
                 "Base your summary ENTIRELY on the provided content.\n"
                 "Be thorough — include all key facts, numbers, names, and specific details.\n"
-                "Use clear structure with headings and bullet points."
+                "Use clear structure with headings and bullet points.\n"
+                "CRITICAL: Use ONLY plain markdown. NEVER output HTML tags like <a>, <br>, <p>. "
+                "For links use markdown: [title](url) format only."
             )
         else:
             system = (
                 "You are a thorough content analyst. "
                 "Summarize in detail — include all key facts and important details. "
-                "Use clear structure. Do not truncate."
+                "Use clear structure. Do not truncate.\n"
+                "CRITICAL: Use ONLY plain markdown. NEVER output HTML tags."
             )
         user = f"{context}\n\nContent:\n{content}" if context else content
         return await self.chat(system, user, temperature=0.4)
@@ -253,11 +267,9 @@ class QwenClient:
         "locate the file", "where is the file",
         "open file explorer", "open explorer",
     ]
-    # FIX 4: Broadened calculator keywords
+    # Calculator app open (just opening, no math — math answered by Qwen directly)
     CALCULATOR_KEYWORDS = [
-        "open calculator and", "open calc and",
-        "calculate ", "compute ", "use calculator",
-        "calculator: ", "calc: ",
+        "open calculator", "open calc",
     ]
 
     # Hard-route to document_agent (not automation)
@@ -345,8 +357,8 @@ class QwenClient:
         if self._is_memory_task(c):        return "task"
         if self._is_screenshot_task(c):    return "task"
         if self._is_document_task(c):      return "task"
+        if self._is_app_write(c):          return "task"   # before simple_open
         if self._is_simple_open(c):        return "task"
-        if self._is_app_write(c):          return "task"
         if self._is_open_app_command(c):   return "task"
         if self._is_chrome_automation(c):  return "task"
         if self._is_pc_nav(c):             return "task"
@@ -393,13 +405,13 @@ class QwenClient:
         if self._is_document_task(c):
             return self._build_document_plan(command, c)
 
-        # Hard-route: single-step open, no LLM planner, no loop
-        if self._is_simple_open(c):
-            return self._build_simple_open_plan(command, c)
-
-        # "open [app] and write X" — clean single sequence, no duplicate open
+        # "open [app] and write X" — must come BEFORE simple_open
         if self._is_app_write(c):
             return self._build_app_write_plan(command, c)
+
+        # Single-step plain app open
+        if self._is_simple_open(c):
+            return self._build_simple_open_plan(command, c)
 
         if self._is_chrome_automation(c):
             return self._build_chrome_automation_plan(command, c)
@@ -434,17 +446,16 @@ class QwenClient:
                      "parameters":{"query":command}}]
 
         if self._is_research_task(c):
-            return [{"step":1,"agent":"research_agent",
-                     "description":f"Research: {command}",
-                     "parameters":{"query":command}}]
+            return self._build_research_plan(command, c)
 
         if self._is_browser_task(c):
             return self._build_browser_plan(command, c)
 
+        # Date/time questions — answered directly with injected datetime (no browser)
         if self._is_realtime_task(c):
-            return [{"step":1,"agent":"browser_agent",
-                     "description":f"Real-time: {command}",
-                     "parameters":{"action":"search","query":command,"engine":"google"}}]
+            return [{"step":1,"agent":"chat",
+                     "description":f"Real-time answer: {command}",
+                     "parameters":{"query":command}}]
 
         if self._is_code_task(c):
             lang = self._detect_language_hint(c)
@@ -657,6 +668,23 @@ class QwenClient:
         folder = self._extract_folder_name(c)
         return [{"step":1,"agent":"automation_agent","description":f"Open folder: {folder}",
                  "parameters":{"action":"open_folder","path":folder}}]
+
+    def _build_research_plan(self, command: str, c: str) -> list[dict]:
+        """
+        2-step research pipeline:
+        1. browser_agent searches the web and returns current live content
+        2. research_agent receives that live content as context and writes a
+           structured report with citations
+        This ensures research always uses real current data, not training data.
+        """
+        return [
+            {"step":1,"agent":"browser_agent",
+             "description":f"Search web for: {command}",
+             "parameters":{"action":"search","query":command,"engine":"google"}},
+            {"step":2,"agent":"research_agent",
+             "description":f"Write research report: {command}",
+             "parameters":{"query":command}},
+        ]
 
     def _build_browser_plan(self, command: str, c: str) -> list[dict]:
         if any(k in c for k in ["search youtube for","on youtube","find on youtube",

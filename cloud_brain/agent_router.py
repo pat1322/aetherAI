@@ -1,12 +1,9 @@
 """
-AetherAI — Agent Router  (Stage 6)
-Maps agent names → agent classes and dispatches execution.
+AetherAI — Agent Router  (Stage 5 — patch 10)
 
-Stage 6 additions:
-  • weather_agent  — Open-Meteo weather and forecasts
-  • crypto_agent   — CoinGecko cryptocurrency prices
-  • news_agent     — GNews + Hacker News headlines and briefings
-  • finance_agent  — ExchangeRate-API currency + Alpha Vantage stocks
+Patch 10 addition:
+  • "chat" pseudo-agent — handled directly in router via qwen.answer(),
+    used for real-time date/time queries and direct math answers.
 """
 
 import logging
@@ -53,8 +50,6 @@ class AgentRouter:
         elif agent_name == "memory_agent":
             from agents.memory_agent import MemoryAgent
             return MemoryAgent(**kw)
-
-        # Stage 6 new agents
         elif agent_name == "weather_agent":
             from agents.weather_agent import WeatherAgent
             return WeatherAgent(**kw)
@@ -67,7 +62,6 @@ class AgentRouter:
         elif agent_name == "finance_agent":
             from agents.finance_agent import FinanceAgent
             return FinanceAgent(**kw)
-
         else:
             logger.warning(f"Unknown agent: {agent_name}. Falling back to research_agent.")
             from agents.research_agent import ResearchAgent
@@ -75,6 +69,11 @@ class AgentRouter:
 
     async def execute_step(self, agent_name: str, parameters: dict,
                             task_id: str, previous_output: str = "") -> Optional[str]:
+        # "chat" pseudo-agent — answered directly by Qwen with live datetime injected
+        if agent_name == "chat":
+            query = parameters.get("query", "") or previous_output or ""
+            return await self.qwen.answer(question=query)
+
         agent = self._get_agent(agent_name)
         return await agent.run(
             parameters=parameters,

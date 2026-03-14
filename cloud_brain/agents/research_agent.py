@@ -114,15 +114,60 @@ class ResearchAgent(BaseAgent):
             return f"⚠️ ResearchAgent error: {e}"
 
     async def _run(self, parameters: dict, task_id: str, context: str) -> Optional[str]:
-        raw_query = parameters.get("query") or context or "general research"
+        raw_query = parameters.get("query") or "general research"
         query     = _clean_query(raw_query)
-        logger.info(f"[ResearchAgent] Query: '{query}' | trafilatura={TRAFILATURA_AVAILABLE}")
+        logger.info(f"[ResearchAgent] Query: '{query}' | browser_context={bool(context and len(context)>200)}")
 
+        # Step 2 of research pipeline — browser_agent already fetched live data
+        if context and len(context) > 200:
+            logger.info(f"[ResearchAgent] Synthesizing from browser context ({len(context)} chars)")
+            return await self._write_brief_from_context(query, context)
+
+        # Standalone research — do our own search
         snippets, urls = await self._search(query)
         if not snippets:
             return await self._knowledge_brief(raw_query)
 
         return await self._write_brief(query, snippets, urls)
+
+    async def _write_brief_from_context(self, query: str, browser_output: str) -> str:
+        """Synthesize a research report from browser-fetched live content."""
+        prompt = (
+            f'''You are writing a research brief about: "{query}"
+
+The following was retrieved LIVE from the web seconds ago.
+Base your report ENTIRELY on this content.
+
+FORBIDDEN: "as of my knowledge cutoff" / "based on my training data" / "I cannot access real-time data"
+
+FORMAT:
+
+## Overview
+[2-3 sentence summary]
+
+## Key Findings
+- **[Finding]**: [specific detail with numbers/facts]
+
+## Detailed Analysis
+[2-3 thorough paragraphs]
+
+## Sources
+[URLs found in the content below]
+
+---
+LIVE WEB CONTENT:
+{browser_output[:6000]}'''
+        )
+        return await self.qwen.chat(
+            system_prompt=(
+                "You are a precise research analyst with live web access. "
+                "Write structured research briefs from browser content only. "
+                "Never use knowledge-cutoff disclaimers. Be thorough and specific. "
+                "Use only plain markdown, never HTML tags."
+            ),
+            user_message=prompt,
+            temperature=0.3,
+        )
 
     async def _write_brief(self, query: str, snippets: list[str],
                             urls: list[str]) -> str:

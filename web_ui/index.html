@@ -696,7 +696,12 @@ function fmtSize(kb) {
 
 /* ── Markdown renderer ──────────────────────────────────────────────────────── */
 function renderMarkdown(text) {
-  let s = escHtml(text);
+  // Strip any raw HTML tags that Qwen may have output (e.g. <a href=...>)
+  // but preserve the URL text so we can re-link it properly
+  let cleaned = text
+    .replace(/<a\s[^>]*href="([^"]+)"[^>]*>([^<]*)<\/a>/gi, '$2 ($1)')
+    .replace(/<[^>]+>/g, '');
+  let s = escHtml(cleaned);
 
   // Code fences
   s = s.replace(/```[\w]*\n?([\s\S]*?)```/g,
