@@ -14,6 +14,10 @@ FIX 1  API key is now actually enforced.
 
 FIX 3  delete_all_files no longer relies on `not f.unlink()` (which silently
        swallows errors and is unreadable). Replaced with an explicit loop.
+
+FIX 4  UI WebSocket ping loop now catches RuntimeError in addition to
+       WebSocketDisconnect. This prevents noisy Railway log errors when the
+       browser tab closes and the server tries to send a ping to a closed socket.
 """
 
 from dotenv import load_dotenv
@@ -54,7 +58,6 @@ app.add_middleware(
 
 # ── FIX 1: API key enforcement middleware ─────────────────────────────────────
 
-# Routes that never require a key (UI assets, health probe, WS upgrades)
 _PUBLIC_PREFIXES = ("/ui", "/health", "/docs", "/openapi", "/redoc")
 _PUBLIC_EXACT    = frozenset(["/", "/health"])
 
@@ -70,20 +73,16 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
     that websockets.connect() supports.
     """
     async def dispatch(self, request: Request, call_next):
-        # Skip enforcement when no key is configured (local dev)
         if not settings.API_KEY:
             return await call_next(request)
 
-        # Always allow public routes
         path = request.url.path
         if path in _PUBLIC_EXACT or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
             return await call_next(request)
 
-        # WebSocket upgrade — allow through (WS auth handled separately)
         if request.headers.get("upgrade", "").lower() == "websocket":
             return await call_next(request)
 
-        # Check header
         provided = request.headers.get("X-Api-Key", "")
         if provided != settings.API_KEY:
             return JSONResponse(
@@ -318,7 +317,8 @@ async def ui_websocket(websocket: WebSocket, session_id: str):
         while True:
             await asyncio.sleep(30)
             await websocket.send_text(json.dumps({"type": "ping"}))
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
+        # FIX 4: RuntimeError is raised when ping is sent after browser closes the socket
         ws_manager.disconnect_ui(session_id)
 
 # ── Static files (Web UI) ─────────────────────────────────────────────────────
