@@ -260,6 +260,26 @@ class QwenClient:
         "calculator: ", "calc: ",
     ]
 
+    # Hard-route to document_agent (not automation)
+    DOCUMENT_KEYWORDS = [
+        "create a presentation", "make a presentation", "build a presentation",
+        "create a slide deck", "make a slide deck", "create slides",
+        "create a powerpoint", "make a powerpoint",
+        "create a word document", "make a word document",
+        "write a document about", "create a document about",
+        "create a report about", "make a report about",
+        "create a spreadsheet", "make a spreadsheet",
+        "create an excel", "make an excel",
+        "create a docx", "create a pptx", "create an xlsx",
+    ]
+
+    # Single-step plain app opens (no LLM planner, no loop)
+    SIMPLE_OPEN_KEYWORDS = [
+        "open notepad", "open calculator", "open calc", "open paint",
+        "open mspaint", "open wordpad", "open task manager",
+        "open snipping tool",
+    ]
+
     SITE_URL_MAP = {
         "youtube":       "https://youtube.com",
         "facebook":      "https://facebook.com",
@@ -277,6 +297,9 @@ class QwenClient:
     }
 
     # ── Routing helpers ───────────────────────────────────────────────────────
+
+    def _is_document_task(self, c): return any(k in c for k in self.DOCUMENT_KEYWORDS)
+    def _is_simple_open(self, c):   return any(k in c for k in self.SIMPLE_OPEN_KEYWORDS)
 
     def _is_creative_chat(self, c):
         # FIX 1: Only creative if NOT paired with app-open command
@@ -321,8 +344,10 @@ class QwenClient:
         # Hard task routes — checked in strict priority order
         if self._is_memory_task(c):        return "task"
         if self._is_screenshot_task(c):    return "task"
-        if self._is_app_write(c):          return "task"   # FIX 1: before creative chat
-        if self._is_open_app_command(c):   return "task"   # FIX 1: before creative chat
+        if self._is_document_task(c):      return "task"
+        if self._is_simple_open(c):        return "task"
+        if self._is_app_write(c):          return "task"
+        if self._is_open_app_command(c):   return "task"
         if self._is_chrome_automation(c):  return "task"
         if self._is_pc_nav(c):             return "task"
         if self._is_code_task(c):          return "task"
@@ -364,7 +389,15 @@ class QwenClient:
                      "description":"Take a screenshot",
                      "parameters":{"action":"screenshot_and_return"}}]
 
-        # FIX 2: "open [app] and write X" — clean single sequence, no duplicate open
+        # Hard-route: document_agent for presentation/document/spreadsheet
+        if self._is_document_task(c):
+            return self._build_document_plan(command, c)
+
+        # Hard-route: single-step open, no LLM planner, no loop
+        if self._is_simple_open(c):
+            return self._build_simple_open_plan(command, c)
+
+        # "open [app] and write X" — clean single sequence, no duplicate open
         if self._is_app_write(c):
             return self._build_app_write_plan(command, c)
 
@@ -467,6 +500,42 @@ class QwenClient:
     # =========================================================================
     # PLAN BUILDERS
     # =========================================================================
+
+    def _build_document_plan(self, command: str, c: str) -> list[dict]:
+        """Route 'create presentation/document/spreadsheet' to document_agent."""
+        if any(k in c for k in ["presentation","slide deck","powerpoint","slides","pptx"]):
+            doc_type = "presentation"
+        elif any(k in c for k in ["spreadsheet","excel","xlsx"]):
+            doc_type = "spreadsheet"
+        else:
+            doc_type = "document"
+        # Strip instruction words to get topic
+        topic = c
+        for strip_kw in ["create a presentation about","make a presentation about",
+                      "create a slide deck about","create a powerpoint about",
+                      "create a word document about","create a document about",
+                      "write a document about","create a report about",
+                      "create a spreadsheet about","create an excel about",
+                      "create a","make a","build a","write a"]:
+            topic = re.sub(r"^" + re.escape(strip_kw) + r"\s*", "", topic,
+                           flags=re.IGNORECASE).strip()
+        return [{"step":1,"agent":"document_agent",
+                 "description":f"Create {doc_type}: {topic}",
+                 "parameters":{"type":doc_type,"topic":topic or command}}]
+
+    def _build_simple_open_plan(self, command: str, c: str) -> list[dict]:
+        """Single-step: open notepad/calculator without LLM planner."""
+        if "notepad++" in c:   app = "notepad++"
+        elif "notepad" in c:   app = "notepad"
+        elif "calc" in c:      app = "calculator"
+        elif "paint" in c:     app = "paint"
+        elif "wordpad" in c:   app = "wordpad"
+        elif "task manager" in c: app = "task manager"
+        elif "snipping" in c:  app = "snipping tool"
+        else:                  app = c.split()[-1]
+        return [{"step":1,"agent":"automation_agent",
+                 "description":f"Open {app}",
+                 "parameters":{"action":"open_app","parameters":{"app":app}}}]
 
     def _build_app_write_plan(self, command: str, c: str) -> list[dict]:
         """
