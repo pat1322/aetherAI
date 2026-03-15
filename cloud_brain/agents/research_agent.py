@@ -131,43 +131,92 @@ class ResearchAgent(BaseAgent):
         return await self._write_brief(query, snippets, urls)
 
     async def _write_brief_from_context(self, query: str, browser_output: str) -> str:
-        """Synthesize a research report from browser-fetched live content."""
-        prompt = (
-            f'''You are writing a research brief about: "{query}"
+        """
+        Synthesize a research report from browser-fetched live content.
+        URLs are extracted in Python first so Qwen cannot hallucinate them.
+        """
+        import re
 
-The following was retrieved LIVE from the web seconds ago.
+        # ── Extract REAL URLs from browser output before calling Qwen ──────────
+        raw_urls = re.findall(
+            r'https?://[^\s<>"\')\]]+',
+            browser_output
+        )
+        # Clean trailing punctuation, deduplicate, keep max 8
+        seen, real_urls = set(), []
+        for u in raw_urls:
+            u = u.rstrip(".,;:!?)\'\"")
+            if u not in seen and len(u) > 10:
+                # Skip common noise
+                if not any(noise in u for noise in [
+                    "duckduckgo.com", "google.com/search",
+                    "javascript:", "data:", "example.com",
+                ]):
+                    seen.add(u)
+                    real_urls.append(u)
+            if len(real_urls) >= 8:
+                break
+
+        sources_block = (
+            "\n".join(f"- {u}" for u in real_urls)
+            if real_urls else
+            "_No URLs were returned by the web search for this query._"
+        )
+
+        prompt = f'''You are writing a research brief about: "{query}"
+
+The following content was retrieved LIVE from the web seconds ago.
 Base your report ENTIRELY on this content.
 
-FORBIDDEN: "as of my knowledge cutoff" / "based on my training data" / "I cannot access real-time data"
+ABSOLUTE RULES:
+- NEVER invent, guess, or modify URLs
+- NEVER use "as of my knowledge cutoff" or "based on my training data"
+- The ## Sources section MUST contain ONLY the URLs listed in REAL SOURCES below — copy them exactly
+- Use only plain markdown. Never output HTML tags like <a>, <br>, <p>
 
-FORMAT:
+FORMAT YOUR RESPONSE:
 
 ## Overview
-[2-3 sentence summary]
+[2-3 sentence summary of the most important findings]
 
 ## Key Findings
-- **[Finding]**: [specific detail with numbers/facts]
+- **[Topic]**: [specific fact, stat, or detail from the content]
+[repeat for each major finding]
 
 ## Detailed Analysis
-[2-3 thorough paragraphs]
+[2-3 paragraphs with thorough analysis of the content]
 
 ## Sources
-[URLs found in the content below]
+{sources_block}
+
+---
+REAL SOURCES (copy these exactly into ## Sources, do not modify):
+{sources_block}
 
 ---
 LIVE WEB CONTENT:
-{browser_output[:6000]}'''
-        )
-        return await self.qwen.chat(
+{browser_output[:5000]}'''
+
+        result = await self.qwen.chat(
             system_prompt=(
-                "You are a precise research analyst with live web access. "
-                "Write structured research briefs from browser content only. "
-                "Never use knowledge-cutoff disclaimers. Be thorough and specific. "
+                "You are a precise research analyst. "
+                "Write structured briefs from browser content only. "
+                "NEVER invent URLs — copy them exactly from the REAL SOURCES list provided. "
                 "Use only plain markdown, never HTML tags."
             ),
             user_message=prompt,
             temperature=0.3,
         )
+
+        # ── Safety: replace any remaining <a href...> HTML in output ───────────
+        result = re.sub(
+            r'<a\s[^>]*href=["\']([^"\']+)["\'][^>]*>([^<]*)</a>',
+            r'[\2](\1)',
+            result,
+        )
+        result = re.sub(r'<[^>]+>', '', result)
+
+        return result
 
     async def _write_brief(self, query: str, snippets: list[str],
                             urls: list[str]) -> str:
