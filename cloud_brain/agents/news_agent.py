@@ -124,17 +124,18 @@ class NewsAgent(BaseAgent):
 
         label = search or category.title() or "Today"
         lines = [f"## 📰 {label} News\n"]
-        for i, a in enumerate(articles[:8], 1):
+        for a in articles[:8]:
             title   = a.get("title", "")
             desc    = a.get("description", "") or ""
             url     = a.get("url", "")
             source  = a.get("source", {}).get("name", "")
             pubdate = a.get("publishedAt", "")[:10]
-            short_desc = desc[:100] + "..." if len(desc) > 100 else desc
+            short_desc = desc[:120] + "..." if len(desc) > 120 else desc
 
             lines.append(
-                f"{i}. **{title}** — {short_desc}\n"
-                f"   📌 {source} · {pubdate} · 🔗 {url}"
+                f"• **{title}**\n"
+                f"  {short_desc}\n"
+                f"  📌 _{source} · {pubdate}_ — 🔗 {url}"
             )
 
         # Ask Qwen for a brief synthesis
@@ -204,16 +205,15 @@ class NewsAgent(BaseAgent):
             return "⚠️ Could not fetch Hacker News stories."
 
         lines = ["## 📰 Hacker News — Top Stories\n"]
-        for i, s in enumerate(stories, 1):
+        for s in stories:
             title = s.get("title", "No title")
             url   = s.get("url") or f"https://news.ycombinator.com/item?id={s.get('id','')}"
             score = s.get("score", 0)
             by    = s.get("by", "?")
             comms = s.get("descendants", 0)
             lines.append(
-                f"{i}. **{title}**\n"
-                f"   ▲ {score} pts · by {by} · {comms} comments\n"
-                f"   {url}"
+                f"• **{title}** — ▲{score} pts · by {by} · {comms} comments\n"
+                f"  🔗 {url}"
             )
         return "\n\n".join(lines)
 

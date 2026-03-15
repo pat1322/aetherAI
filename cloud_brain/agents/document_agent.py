@@ -364,16 +364,22 @@ Return ONLY valid JSON — no markdown fences:
   "slides": [
     {{
       "title": "Slide Title",
-      "bullets": ["Point 1", "Point 2", "Point 3"],
+      "bullets": ["Point 1 with specific detail — minimum 12 words", "Point 2 with facts or examples", "Point 3", "Point 4", "Point 5"],
       "stat": "Key stat e.g. '47%' or '$2.4B' (optional)",
       "stat_label": "Short label for the stat",
-      "speaker_note": "Brief note"
+      "speaker_note": "2-3 sentence speaking note for presenter"
     }}
   ]
 }}
 
-Include 6-8 content slides. Max 4 bullets per slide, max 15 words each.
-Include a stat on at least 3 slides. Make content rich and specific."""
+Requirements:
+- Include exactly 6-8 content slides
+- Each slide MUST have 5 bullet points
+- Each bullet must be at least 12 words with specific facts, numbers, or examples
+- Cover: overview, key concepts, real-world examples, statistics/data, challenges, future outlook
+- Include a meaningful stat on at least 4 slides
+- Make content deep, specific, and informative — not generic
+- speaker_note should add context beyond what's on the slide"""
 
         raw = await self.qwen.chat(
             system_prompt="Presentation writer. Return ONLY valid JSON, no markdown fences.",
@@ -583,11 +589,16 @@ Return ONLY valid JSON:
 {{
   "title": "Document Title",
   "sections": [
-    {{"heading": "Section Heading", "paragraphs": ["Paragraph 1...", "Paragraph 2..."]}}
+    {{"heading": "Section Heading", "paragraphs": ["Paragraph 1 — at least 60 words with specific facts and detail...", "Paragraph 2 with supporting information and examples..."]}}
   ],
-  "conclusion": "Concluding paragraph."
+  "conclusion": "Concluding paragraph of at least 60 words with key takeaways and recommendations."
 }}
-Include 4-6 sections with 2-3 paragraphs each."""
+
+Requirements:
+- Include exactly 5-6 sections covering: introduction, key background, main analysis, real-world examples, challenges/limitations, future outlook
+- Each section must have 2-3 paragraphs
+- Each paragraph must be at least 60 words with specific facts, numbers, and concrete details
+- No generic filler — be thorough and informative about the topic"""
 
         raw = await self.qwen.chat(
             system_prompt="Professional document writer. Return ONLY valid JSON, no markdown fences.",
@@ -677,12 +688,19 @@ Return ONLY valid JSON:
   "sheets": [
     {{
       "name": "Sheet Name",
-      "headers": ["Col1", "Col2", "Col3"],
-      "rows": [["val1","val2","val3"]]
+      "headers": ["Col1", "Col2", "Col3", "Col4", "Col5"],
+      "rows": [["val1","val2",100,45.5,"note"]],
+      "has_totals": true
     }}
   ]
 }}
-Include 1-3 sheets with 10-15 data rows each."""
+
+Requirements:
+- Include 2-3 sheets covering different aspects of "{topic}"
+- Each sheet must have 5-7 columns and at least 12 data rows
+- Include numeric columns (integers or decimals) where appropriate
+- Make data realistic, varied, and specific to "{topic}"
+- has_totals: true adds a SUM row at the bottom for numeric columns"""
 
         raw = await self.qwen.chat(
             system_prompt="Data analyst. Return ONLY valid JSON, no markdown fences.",
@@ -746,6 +764,31 @@ Include 1-3 sheets with 10-15 data rows each."""
                     if ri % 2 == 0:
                         cell.fill = alt_fill
                 ws.row_dimensions[ri].height = 18
+
+            # Totals row for numeric columns
+            rows_data = sh.get("rows", [])
+            if sh.get("has_totals") and rows_data:
+                totals_row = 4 + len(rows_data)
+                total_fill = PatternFill("solid", fgColor=hx(T["bg_dark"]))
+                for ci, h in enumerate(headers, 1):
+                    cell = ws.cell(totals_row, ci)
+                    cell.fill = total_fill
+                    cell.border = border
+                    # Check if column has numeric values
+                    col_vals = [r[ci-1] for r in rows_data if ci-1 < len(r)]
+                    if all(isinstance(v, (int, float)) for v in col_vals if v != "" and v is not None):
+                        from openpyxl.utils import get_column_letter as gcl
+                        col_l = gcl(ci)
+                        cell.value = f"=SUM({col_l}4:{col_l}{totals_row-1})"
+                        cell.font = Font(bold=True, color=hx(T["text_light"]), size=11, name=T["body_font"])
+                        cell.alignment = center
+                    elif ci == 1:
+                        cell.value = "TOTAL"
+                        cell.font = Font(bold=True, color=hx(T["text_light"]), size=11, name=T["body_font"])
+                        cell.alignment = left
+                    else:
+                        cell.font = Font(bold=True, color=hx(T["text_light"]), size=11)
+                ws.row_dimensions[totals_row].height = 22
 
             for ci, _ in enumerate(headers, 1):
                 col_letter = get_column_letter(ci)

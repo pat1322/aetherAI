@@ -290,6 +290,16 @@ class QwenClient:
         "open notepad", "open calculator", "open calc", "open paint",
         "open mspaint", "open wordpad", "open task manager",
         "open snipping tool",
+        "open powerpoint", "open excel", "open word",
+    ]
+
+    # "go to [site] and search/play/watch/find X" — navigate then search
+    PC_NAV_SEARCH_KEYWORDS = [
+        "go to youtube and search", "go to youtube and play",
+        "go to youtube and find", "go to youtube and watch",
+        "open youtube and search", "open youtube and play",
+        "go to google and search", "go to google and look up",
+        "go to reddit and search", "go to reddit and find",
     ]
 
     SITE_URL_MAP = {
@@ -310,8 +320,9 @@ class QwenClient:
 
     # ── Routing helpers ───────────────────────────────────────────────────────
 
-    def _is_document_task(self, c): return any(k in c for k in self.DOCUMENT_KEYWORDS)
-    def _is_simple_open(self, c):   return any(k in c for k in self.SIMPLE_OPEN_KEYWORDS)
+    def _is_document_task(self, c):   return any(k in c for k in self.DOCUMENT_KEYWORDS)
+    def _is_simple_open(self, c):     return any(k in c for k in self.SIMPLE_OPEN_KEYWORDS)
+    def _is_pc_nav_search(self, c):   return any(k in c for k in self.PC_NAV_SEARCH_KEYWORDS)
 
     def _is_creative_chat(self, c):
         # FIX 1: Only creative if NOT paired with app-open command
@@ -361,6 +372,7 @@ class QwenClient:
         if self._is_simple_open(c):        return "task"
         if self._is_open_app_command(c):   return "task"
         if self._is_chrome_automation(c):  return "task"
+        if self._is_pc_nav_search(c):      return "task"
         if self._is_pc_nav(c):             return "task"
         if self._is_code_task(c):          return "task"
         if self._is_file_folder_task(c):   return "task"
@@ -415,6 +427,9 @@ class QwenClient:
 
         if self._is_chrome_automation(c):
             return self._build_chrome_automation_plan(command, c)
+
+        if self._is_pc_nav_search(c):
+            return self._build_pc_nav_search_plan(command, c)
 
         if self._is_pc_nav(c):
             return self._build_pc_nav_plan(command, c)
@@ -534,16 +549,55 @@ class QwenClient:
                  "description":f"Create {doc_type}: {topic}",
                  "parameters":{"type":doc_type,"topic":topic or command}}]
 
+    def _build_pc_nav_search_plan(self, command: str, c: str) -> list[dict]:
+        """'go to youtube and search X' — builds a direct search URL, no vision loop."""
+        import re as _re
+        from urllib.parse import quote_plus
+        # Extract search term after "and search/play/find/watch"
+        m = _re.search(
+            r"(?:and\s+(?:search|play|find|watch|look\s+up)\s+(?:for\s+)?)(.*?)$",
+            c, _re.IGNORECASE
+        )
+        search_term = m.group(1).strip() if m else ""
+
+        if search_term and "youtube" in c:
+            nav_url = f"https://www.youtube.com/results?search_query={quote_plus(search_term)}"
+        elif search_term and "google" in c:
+            nav_url = f"https://www.google.com/search?q={quote_plus(search_term)}"
+        elif search_term and "reddit" in c:
+            nav_url = f"https://www.reddit.com/search/?q={quote_plus(search_term)}"
+        else:
+            # Fall back to site root
+            nav_url = next(
+                (url for site, url in self.SITE_URL_MAP.items() if site in c),
+                "https://google.com"
+            )
+
+        return [
+            {"step":1,"agent":"automation_agent",
+             "description":"Open Chrome",
+             "parameters":{"action":"open_app","parameters":{"app":"chrome"}}},
+            {"step":2,"agent":"automation_agent",
+             "description":"Wait for Chrome",
+             "parameters":{"action":"wait","parameters":{"ms":1000}}},
+            {"step":3,"agent":"automation_agent",
+             "description":f"Navigate to search: {search_term or nav_url}",
+             "parameters":{"action":"navigate_chrome","url":nav_url}},
+        ]
+
     def _build_simple_open_plan(self, command: str, c: str) -> list[dict]:
-        """Single-step: open notepad/calculator without LLM planner."""
-        if "notepad++" in c:   app = "notepad++"
-        elif "notepad" in c:   app = "notepad"
-        elif "calc" in c:      app = "calculator"
-        elif "paint" in c:     app = "paint"
-        elif "wordpad" in c:   app = "wordpad"
+        """Single-step: open app directly, no LLM planner, no loop."""
+        if "notepad++" in c:      app = "notepad++"
+        elif "notepad" in c:      app = "notepad"
+        elif "powerpoint" in c:   app = "powerpoint"
+        elif "excel" in c:        app = "excel"
+        elif "word" in c:         app = "word"
+        elif "calc" in c:         app = "calculator"
+        elif "paint" in c:        app = "paint"
+        elif "wordpad" in c:      app = "wordpad"
         elif "task manager" in c: app = "task manager"
-        elif "snipping" in c:  app = "snipping tool"
-        else:                  app = c.split()[-1]
+        elif "snipping" in c:     app = "snipping tool"
+        else:                     app = c.split()[-1]
         return [{"step":1,"agent":"automation_agent",
                  "description":f"Open {app}",
                  "parameters":{"action":"open_app","parameters":{"app":app}}}]

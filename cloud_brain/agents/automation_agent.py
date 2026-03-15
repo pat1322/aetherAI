@@ -41,6 +41,19 @@ ACTION_TIMEOUTS: dict[str, float] = {
     "type":                  40.0,
     "type_special":          40.0,
     "screenshot_and_return": 15.0,
+    # Stage 5/6 device actions
+    "navigate_chrome":       15.0,
+    "calculator_input":      10.0,
+    "open_folder":           10.0,
+    "list_files":            10.0,
+    "find_and_open_file":    20.0,
+    "click_button":          10.0,
+    "window_type":           15.0,
+    "close_window":          10.0,
+    "focus_window":           8.0,
+    "wait":                   5.0,
+    "hotkey":                 8.0,
+    "click":                  8.0,
     "default":               15.0,
 }
 
@@ -112,7 +125,9 @@ class AutomationAgent(BaseAgent):
         device_id      = devices[0]
         effective_goal = goal or context
 
-        if mode == "vision" or (effective_goal and not action and not sequence):
+        # Only use vision loop if there's a real goal AND no explicit action/sequence
+        # This prevents plain open_app/navigate commands from accidentally triggering vision
+        if mode == "vision" or (effective_goal and not action and not sequence and len(effective_goal) > 5):
             return await self._vision_task(device_id, effective_goal, task_id)
         if sequence:
             return await self._run_sequence(device_id, sequence, task_id)

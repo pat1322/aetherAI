@@ -702,17 +702,17 @@ function renderMarkdown(text) {
     .replace(/<[^>]+>/g, '');
   let s = escHtml(cleaned);
 
-  // Math blocks $$ ... $$ — show as styled code
+  // Math blocks $$ ... $$
   s = s.replace(/\$\$([\s\S]*?)\$\$/g,
     '<code style="background:var(--code-bg);padding:2px 8px;border-radius:4px;font-family:Consolas,monospace;display:block;margin:4px 0">$1</code>');
-  // Inline math $...$ — italicize
+  // Inline math $...$
   s = s.replace(/\$([^$\n]{1,80})\$/g, '<em>$1</em>');
 
   // Code fences
   s = s.replace(/```[\w]*\n?([\s\S]*?)```/g,
     '<pre style="background:var(--code-bg);padding:8px 12px;border-radius:6px;overflow-x:auto;font-family:Consolas,Monaco,monospace;font-size:13px;line-height:1.5;margin:6px 0"><code>$1</code></pre>');
 
-  // Headings — h4 first to avoid partial matches with h3/h2/h1
+  // Headings — h4 first
   s = s.replace(/^#### (.+)$/gm, '<h4 style="color:var(--accent);margin:8px 0 3px;font-size:0.9em;font-weight:600">$1</h4>');
   s = s.replace(/^### (.+)$/gm,  '<h3 style="color:var(--accent);margin:10px 0 5px">$1</h3>');
   s = s.replace(/^## (.+)$/gm,   '<h2 style="color:var(--accent);margin:10px 0 5px">$1</h2>');
@@ -737,8 +737,7 @@ function renderMarkdown(text) {
   s = s.replace(/(https?:\/\/[^\s<"')\]]+)/g,
     '<a href="$1" target="_blank" rel="noopener">$1</a>');
 
-  // ── Numbered lists ─────────────────────────────────────────────────────────
-  // Collapse blank lines between numbered items into a single list
+  // ── Numbered lists — collapse blanks then group ────────────────────────────
   s = s.replace(/\n\n(\d+\. )/g, '\n$1');
   s = s.replace(/((?:^\d+\. .+$\n?)+)/gm, function(block) {
     var items = block.split('\n')
@@ -748,11 +747,11 @@ function renderMarkdown(text) {
     return items ? '<ol style="padding-left:20px;margin:6px 0">' + items + '</ol>\n' : block;
   });
 
-  // ── Unordered lists (• and -) ──────────────────────────────────────────────
-  s = s.replace(/\n\n([•\-] )/g, '\n$1');
-  s = s.replace(/((?:^[•\-] .+$\n?)+)/gm, function(block) {
+  // ── Bullet lists (•, -, *) — collapse blanks then group ──────────────────
+  s = s.replace(/\n\n([•\-\*] )/g, '\n$1');
+  s = s.replace(/((?:^[•\-\*] .+$\n?)+)/gm, function(block) {
     var items = block.split('\n')
-      .map(function(l) { return l.replace(/^[•\-] */, '').trim(); })
+      .map(function(l) { return l.replace(/^[•\-\*] */, '').trim(); })
       .filter(function(l) { return l.length > 0; })
       .map(function(l) { return '<li>' + l + '</li>'; }).join('');
     return items ? '<ul style="padding-left:20px;margin:6px 0">' + items + '</ul>\n' : block;
@@ -1101,40 +1100,70 @@ async function selectTask(taskId) {
     if (!res.ok) return;
     const task = await res.json();
 
+    // ── Restore right-side agent steps panel ─────────────────────────────────
     if (task.steps?.length) {
       document.getElementById('stepsList').innerHTML = task.steps.map(s => {
+        const statusIcon = s.status === 'completed' ? '✅' :
+                           s.status === 'failed'    ? '❌' :
+                           s.status === 'running'   ? '⏳' : '⬜';
         const outHtml = s.output
-          ? `<div class="step-output">${escHtml(s.output.slice(0,120))}</div>` : '';
+          ? `<div class="step-output" style="max-height:100px;overflow-y:auto;font-size:11px;color:var(--text-secondary);margin-top:4px;white-space:pre-wrap">${escHtml(s.output.slice(0,300))}${s.output.length>300?'…':''}</div>`
+          : '';
         return `<div class="step-item">
           <div class="step-header">
             <div class="step-dot ${s.status||'pending'}"></div>
-            <span class="step-agent">${escHtml(s.agent)}</span>
+            <span class="step-agent">${statusIcon} ${escHtml(s.agent)}</span>
           </div>
           <div class="step-desc">${escHtml(s.description)}</div>
           ${outHtml}</div>`;
       }).join('');
+    } else {
+      // Chat task — show single agent entry
+      document.getElementById('stepsList').innerHTML =
+        `<div class="step-item">
+          <div class="step-header">
+            <div class="step-dot completed"></div>
+            <span class="step-agent">✅ chat</span>
+          </div>
+          <div class="step-desc">${escHtml(task.command||'')}</div>
+        </div>`;
     }
 
     if (task.status === 'running' || task.status === 'planning') return;
 
+    // ── Restore full conversation log in main output area ─────────────────────
     clearOutput();
     log(`> ${task.command}`, 'system');
-    log(`Task ${taskId.slice(0,8)}… — ${task.status}`, 'info');
 
+    let anyStepOutput = false;
     for (const step of (task.steps||[])) {
-      if (step.output && step.status === 'completed') {
-        log(`${step.agent}: ${step.description}`, 'agent');
-        logMarkdown('✓ ' + step.output, 'result');
-        lastShownOutput = step.output;
+      if (step.status === 'completed') {
+        log(`Step ${step.step_number||''}: ${step.description}`, 'agent');
+        if (step.output) {
+          logMarkdown('✓ ' + step.output, 'result');
+          lastShownOutput = step.output;
+          anyStepOutput = true;
+        }
+      } else if (step.status === 'failed') {
+        log(`✗ ${step.description}`, 'error');
+        if (step.output) log(step.output, 'error');
       }
     }
-    if (task.result && task.status === 'completed') {
-      const rt = task.result.trim(), lt = (lastShownOutput||'').trim();
-      const dup = lt && (rt===lt || (lt.length>40 && rt.startsWith(lt.slice(0,40))));
-      if (!dup) logMarkdown('✓ ' + task.result, 'result');
-    } else if (task.result && task.status === 'failed') {
-      log(`Failed: ${task.result}`, 'error');
+
+    if (task.result) {
+      if (task.status === 'completed') {
+        const rt = task.result.trim(), lt = (lastShownOutput||'').trim();
+        const dup = lt && (rt===lt || (lt.length>40 && rt.startsWith(lt.slice(0,40))));
+        if (!dup && !anyStepOutput) logMarkdown('✓ ' + task.result, 'result');
+      } else if (task.status === 'failed') {
+        log(`Task failed: ${task.result}`, 'error');
+      } else if (task.status === 'cancelled') {
+        log('Task was cancelled.', 'info');
+      }
     }
+
+    log(`[${(task.status||'').toUpperCase()}]`, 'info');
+
   } catch(e) { console.error('selectTask:', e); }
 }
 
