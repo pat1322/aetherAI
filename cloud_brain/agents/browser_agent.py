@@ -135,6 +135,25 @@ async def _fetch_and_extract(url: str, timeout: float = 15.0) -> tuple[str, str]
         return url, ""
 
 
+def _decode_ddg_url(href: str):
+    """Decode a DuckDuckGo redirect URL to get the real destination URL."""
+    if not href:
+        return None
+    if href.startswith("http") and "duckduckgo" not in href:
+        return href
+    if href.startswith("//"):
+        href = "https:" + href
+    try:
+        from urllib.parse import urlparse, parse_qs, unquote
+        qs   = parse_qs(urlparse(href).query)
+        uddg = qs.get("uddg", [None])[0]
+        if uddg:
+            return unquote(uddg)
+    except Exception:
+        pass
+    return None
+
+
 class BrowserAgent(BaseAgent):
     name        = "browser_agent"
     description = "Real-time web: scrape URLs, YouTube, web search, Hacker News"
@@ -168,8 +187,8 @@ class BrowserAgent(BaseAgent):
 
     async def _web_search(self, query: str, engine: str = "google") -> str:
         ddg_url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
-        raw_html = ""
 
+        raw_html = ""
         if PLAYWRIGHT_AVAILABLE:
             raw_html = await self._playwright_get_html(ddg_url)
             text = _extract_text(raw_html, ddg_url)
@@ -187,17 +206,18 @@ class BrowserAgent(BaseAgent):
         if not text.strip():
             return f"🔍 **{query}**\n\n{await self.qwen.answer(query)}"
 
-        # Extract real result URLs from DDG HTML before summarizing
-        # so research_agent downstream can use them as citations
+        # Extract real result URLs from DDG HTML for research_agent citations
         result_urls = []
         if raw_html:
-            soup_ddg = BeautifulSoup(raw_html, "lxml")
-            for a in soup_ddg.select(".result__a")[:8]:
-                href = a.get("href", "")
-                real = _decode_ddg_url(href)
-                if real and real.startswith("http") and "duckduckgo" not in real:
-                    if real not in result_urls:
-                        result_urls.append(real)
+            try:
+                soup_ddg = BeautifulSoup(raw_html, "lxml")
+                for a in soup_ddg.select(".result__a")[:8]:
+                    real = _decode_ddg_url(a.get("href", ""))
+                    if real and real.startswith("http") and "duckduckgo" not in real:
+                        if real not in result_urls:
+                            result_urls.append(real)
+            except Exception:
+                pass
 
         summary = await self.qwen.summarize(
             content=text[:PAGE_TEXT_LIMIT],
@@ -209,7 +229,6 @@ class BrowserAgent(BaseAgent):
             source="web",
         )
 
-        # Append real URLs as a sources block — research_agent will extract these
         url_block = ""
         if result_urls:
             url_lines = "\n".join(f"- {u}" for u in result_urls[:6])
@@ -386,11 +405,9 @@ class BrowserAgent(BaseAgent):
 
         lines = []
         for i, r in enumerate(results[:8], 1):
-            lines.append(
-                f"{i}. **{r['title']}**\n   {r['url']}"
-                + (f"\n   _{r['desc']}_" if r['desc'] else "")
-            )
-        video_list = "\n\n".join(lines)
+            desc_str = f" — {r['desc'][:80]}" if r['desc'] else ""
+            lines.append(f"{i}. **{r['title']}**{desc_str}\n   🔗 {r['url']}")
+        video_list = "\n".join(lines)
         result_text = "\n".join(f"{r['title']}: {r['desc']}" for r in results[:8])
         summary = await self.qwen.summarize(
             content=result_text,
@@ -414,7 +431,7 @@ class BrowserAgent(BaseAgent):
                     self._hn_story(client, sid) for sid in ids
                 ])
             lines = []
-            for s in stories:
+            for i, s in enumerate(stories, 1):
                 if not s: continue
                 title = s.get("title","")
                 url   = s.get("url") or f"https://news.ycombinator.com/item?id={s.get('id','')}"
@@ -422,10 +439,10 @@ class BrowserAgent(BaseAgent):
                 by    = s.get("by","?")
                 comms = s.get("descendants",0)
                 lines.append(
-                    f"• **{title}** — ▲{score} pts · by {by} · {comms} comments\n"
-                    f"  🔗 {url}"
+                    f"{i}. **{title}** — ▲{score} pts · by {by} · {comms} comments\n"
+                    f"   🔗 {url}"
                 )
-            return ("📰 **Hacker News — Top Stories**\n\n" + "\n\n".join(lines)
+            return ("📰 **Hacker News — Top Stories**\n\n" + "\n".join(lines)
                     if lines else "⚠️ Could not retrieve Hacker News stories.")
         except Exception as e:
             return f"⚠️ Hacker News API failed: {e}"
