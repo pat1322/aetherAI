@@ -1,29 +1,12 @@
 """
-AetherAI — Coding Agent  (Stage 4 — hardened)
+AetherAI — Coding Agent  (Stage 4 — patch 2)
 
-WHAT'S NEW vs the previous version
-────────────────────────────────────
-1. Multi-file awareness
-   If Qwen returns multiple fenced code blocks, each is saved as a
-   separate file. The first is used as the primary CODE_BLOCK for the UI.
-
-2. Syntax validation before saving
-   Python: ast.parse(). C/C++: main() presence check. One retry with
-   the error message appended to the prompt if validation fails.
-
-3. Retry on empty/whitespace output
-   If Qwen returns nothing or only fences, retries once with a stricter
-   "return ONLY code" instruction before giving up.
-
-4. Better language detection
-   Word-boundary regex patterns ordered most-specific → least-specific.
-   "c++" and "c#" matched before bare "c". Adds golang, kotlin, swift.
-
-5. Output format unchanged
-   Line 1 = summary (steps panel). [CODE_BLOCK:lang]...[/CODE_BLOCK]
-   for UI rendering. Multi-file: summary lists all files.
-
-6. CancelledError pass-through.
+FIX 13 Cleaned up the double-alias resolution pattern. The old code did:
+         primary_lang = _ALIASES.get(expr, expr)
+       twice by passing the same expression as both key and default, which
+       was functionally correct but confusing. Now uses a clear two-step:
+         raw_lang     = lang_hint or hint or detect_language(...)
+         primary_lang = _ALIASES.get(raw_lang, raw_lang)
 """
 
 import ast
@@ -50,7 +33,6 @@ LANG_EXTENSIONS = {
     "kotlin": "kt", "swift": "swift", "r": "r",
 }
 
-# Most-specific → least-specific (order matters for substring safety)
 _LANG_PATTERNS: list[tuple[str, str]] = [
     (r"\bc\+\+\b",               "cpp"),
     (r"\bcpp\b",                 "cpp"),
@@ -70,7 +52,6 @@ _LANG_PATTERNS: list[tuple[str, str]] = [
     (r"\bphp\b",                 "php"),
     (r"\bruby\b|\brb\b",         "ruby"),
     (r"\br\b",                   "r"),
-    # 'c' last — single letter, high false-match risk
     (r"\bc\s+program|\bin\s+c\b|write\s+a?\s*c\b", "c"),
 ]
 
@@ -82,7 +63,6 @@ def detect_language(task: str, code: str) -> str:
     for pattern, lang in _LANG_PATTERNS:
         if re.search(pattern, task_lc):
             return lang
-    # Code-structure sniff
     if "#include" in code and re.search(r"\b(int|void)\s+main\s*\(", code):
         return "c"
     if re.search(r"\bdef\s+\w+\s*\(|\bimport\s+\w+|\bprint\s*\(", code):
@@ -137,6 +117,8 @@ class CodingAgent(BaseAgent):
     async def _run(self, parameters: dict, task_id: str, context: str) -> str:
         task      = parameters.get("task") or parameters.get("query") or context
         lang_hint = parameters.get("language", "").lower().strip()
+        # Normalise aliases immediately so downstream logic is consistent
+        lang_hint = _ALIASES.get(lang_hint, lang_hint)
 
         logger.info(f"[CodingAgent] task={task[:80]} lang_hint={lang_hint or 'auto'}")
 
@@ -163,14 +145,9 @@ class CodingAgent(BaseAgent):
         if not blocks:
             return "⚠️ CodingAgent: Qwen returned no code."
 
-        # ── Primary language ──────────────────────────────────────────────────
-        primary_lang = _ALIASES.get(
-            lang_hint or blocks[0][0] or detect_language(task or "", blocks[0][1]),
-            lang_hint or blocks[0][0] or detect_language(task or "", blocks[0][1]),
-        )
-        if not primary_lang:
-            primary_lang = detect_language(task or "", blocks[0][1])
-        primary_lang = _ALIASES.get(primary_lang, primary_lang)
+        # FIX 13: clean two-step alias resolution — no more dict.get(x, x) confusion
+        raw_lang     = lang_hint or blocks[0][0] or detect_language(task or "", blocks[0][1])
+        primary_lang = _ALIASES.get(raw_lang, raw_lang) or "python"
 
         # ── Validate + retry ──────────────────────────────────────────────────
         err = _validate(primary_lang, blocks[0][1])
@@ -187,17 +164,15 @@ class CodingAgent(BaseAgent):
         # ── Save files ────────────────────────────────────────────────────────
         ts    = datetime.now().strftime("%H%M%S")
         slug  = _slug(task or "code")
-        saved : list[tuple[str, str, str]] = []  # (fname, lang, code)
+        saved : list[tuple[str, str, str]] = []
 
         for idx, (blk_lang, blk_code) in enumerate(blocks):
             if not blk_code:
                 continue
-            lang = _ALIASES.get(
-                lang_hint or blk_lang or detect_language(task or "", blk_code),
-                lang_hint or blk_lang or detect_language(task or "", blk_code),
-            ) or "python"
-            lang = _ALIASES.get(lang, lang)
-            ext  = LANG_EXTENSIONS.get(lang, "txt")
+            # FIX 13: same clean two-step pattern for per-block language
+            raw_blk_lang = lang_hint or blk_lang or detect_language(task or "", blk_code)
+            lang         = _ALIASES.get(raw_blk_lang, raw_blk_lang) or "python"
+            ext          = LANG_EXTENSIONS.get(lang, "txt")
 
             suffix = f"_{idx}" if idx > 0 else ""
             fname  = f"{slug}{suffix}_{ts}.{ext}"

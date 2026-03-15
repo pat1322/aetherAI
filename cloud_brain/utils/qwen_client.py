@@ -1,5 +1,5 @@
 """
-AetherAI — Qwen API Client  (Stage 5 — patch 8)
+AetherAI — Qwen API Client  (Stage 5 — patch 9)
 
 Fixes
 ─────
@@ -16,10 +16,16 @@ FIX 3  Chrome navigation wait reduced from 2500ms → 1000ms.
 
 FIX 4  Calculator keywords broadened so "calculate X" works without
        needing "open calculator and" prefix.
+
+FIX 5  (patch 9) Replaced pytz with stdlib zoneinfo — pytz was not in
+       requirements.txt and crashed all chat/answer() calls on Railway.
+       Also cleaned up the double-alias resolution pattern in coding_agent
+       cross-reference (see coding_agent.py FIX 13).
 """
 
 import json
 import re
+from zoneinfo import ZoneInfo
 
 from openai import AsyncOpenAI
 from config import settings
@@ -77,11 +83,11 @@ class QwenClient:
 
     async def answer(self, question: str, context: str = "",
                      user_context: str = "") -> str:
+        # FIX 5: use stdlib zoneinfo — no pytz dependency needed
         from datetime import datetime
-        import pytz
         try:
-            ph_tz  = pytz.timezone("Asia/Manila")
-            now    = datetime.now(ph_tz)
+            ph_tz   = ZoneInfo("Asia/Manila")
+            now     = datetime.now(ph_tz)
             now_str = now.strftime("%A, %B %d, %Y %I:%M %p (Asia/Manila)")
         except Exception:
             now_str = datetime.utcnow().strftime("%A, %B %d, %Y %H:%M UTC")
@@ -147,8 +153,6 @@ class QwenClient:
         "capture screen", "capture my screen", "screenshot now",
         "take a screen capture", "screen capture", "take a screenshoot",
     ]
-    # FIX 1: These are creative chat ONLY when there's no app open command
-    # They're checked with _is_open_app_command guard below
     CREATIVE_CHAT_KEYWORDS = [
         "write me a haiku", "write a haiku",
         "write me a poem", "write a poem", "compose a poem",
@@ -157,11 +161,9 @@ class QwenClient:
         "write me a joke", "tell me a joke", "tell me a riddle",
         "write me a limerick", "write a limerick",
         "write me a rap", "write a rap about",
-        # Letters/essays only count as creative if no app is mentioned
         "write me a letter", "write an essay about", "write me an essay",
         "write a paragraph about",
     ]
-    # FIX 2: "open [app] and write/type X" keywords — always task
     APP_WRITE_KEYWORDS = [
         "open notepad and write", "open notepad and type",
         "open notepad++ and write", "open notepad++ and type",
@@ -267,12 +269,9 @@ class QwenClient:
         "locate the file", "where is the file",
         "open file explorer", "open explorer",
     ]
-    # Calculator app open (just opening, no math — math answered by Qwen directly)
     CALCULATOR_KEYWORDS = [
         "open calculator", "open calc",
     ]
-
-    # Hard-route to document_agent (not automation)
     DOCUMENT_KEYWORDS = [
         "create a presentation", "make a presentation", "build a presentation",
         "create a slide deck", "make a slide deck", "create slides",
@@ -284,14 +283,11 @@ class QwenClient:
         "create an excel", "make an excel",
         "create a docx", "create a pptx", "create an xlsx",
     ]
-
-    # Single-step plain app opens (no LLM planner, no loop)
     SIMPLE_OPEN_KEYWORDS = [
         "open notepad", "open calculator", "open calc", "open paint",
         "open mspaint", "open wordpad", "open task manager",
         "open snipping tool",
     ]
-
     SITE_URL_MAP = {
         "youtube":       "https://youtube.com",
         "facebook":      "https://facebook.com",
@@ -314,7 +310,6 @@ class QwenClient:
     def _is_simple_open(self, c):   return any(k in c for k in self.SIMPLE_OPEN_KEYWORDS)
 
     def _is_creative_chat(self, c):
-        # FIX 1: Only creative if NOT paired with app-open command
         if any(k in c for k in self.APP_WRITE_KEYWORDS):
             return False
         return any(k in c for k in self.CREATIVE_CHAT_KEYWORDS)
@@ -353,11 +348,10 @@ class QwenClient:
     async def classify_command(self, command: str, user_context: str = "") -> str:
         c = command.lower()
 
-        # Hard task routes — checked in strict priority order
         if self._is_memory_task(c):        return "task"
         if self._is_screenshot_task(c):    return "task"
         if self._is_document_task(c):      return "task"
-        if self._is_app_write(c):          return "task"   # before simple_open
+        if self._is_app_write(c):          return "task"
         if self._is_simple_open(c):        return "task"
         if self._is_open_app_command(c):   return "task"
         if self._is_chrome_automation(c):  return "task"
@@ -401,15 +395,12 @@ class QwenClient:
                      "description":"Take a screenshot",
                      "parameters":{"action":"screenshot_and_return"}}]
 
-        # Hard-route: document_agent for presentation/document/spreadsheet
         if self._is_document_task(c):
             return self._build_document_plan(command, c)
 
-        # "open [app] and write X" — must come BEFORE simple_open
         if self._is_app_write(c):
             return self._build_app_write_plan(command, c)
 
-        # Single-step plain app open
         if self._is_simple_open(c):
             return self._build_simple_open_plan(command, c)
 
@@ -451,7 +442,6 @@ class QwenClient:
         if self._is_browser_task(c):
             return self._build_browser_plan(command, c)
 
-        # Date/time questions — answered directly with injected datetime (no browser)
         if self._is_realtime_task(c):
             return [{"step":1,"agent":"chat",
                      "description":f"Real-time answer: {command}",
@@ -463,7 +453,6 @@ class QwenClient:
                      "description":f"Write code: {command}",
                      "parameters":{"task":command,"language":lang}}]
 
-        # LLM planner for remaining
         is_open_app = self._is_open_app_command(c)
         no_doc_rule = (
             "\n⚠️ CRITICAL: 'open [app]' — use automation_agent ONLY, NEVER document_agent.\n"
@@ -513,14 +502,12 @@ class QwenClient:
     # =========================================================================
 
     def _build_document_plan(self, command: str, c: str) -> list[dict]:
-        """Route 'create presentation/document/spreadsheet' to document_agent."""
         if any(k in c for k in ["presentation","slide deck","powerpoint","slides","pptx"]):
             doc_type = "presentation"
         elif any(k in c for k in ["spreadsheet","excel","xlsx"]):
             doc_type = "spreadsheet"
         else:
             doc_type = "document"
-        # Strip instruction words to get topic
         topic = c
         for strip_kw in ["create a presentation about","make a presentation about",
                       "create a slide deck about","create a powerpoint about",
@@ -535,7 +522,6 @@ class QwenClient:
                  "parameters":{"type":doc_type,"topic":topic or command}}]
 
     def _build_simple_open_plan(self, command: str, c: str) -> list[dict]:
-        """Single-step: open notepad/calculator without LLM planner."""
         if "notepad++" in c:   app = "notepad++"
         elif "notepad" in c:   app = "notepad"
         elif "calc" in c:      app = "calculator"
@@ -549,11 +535,6 @@ class QwenClient:
                  "parameters":{"action":"open_app","parameters":{"app":app}}}]
 
     def _build_app_write_plan(self, command: str, c: str) -> list[dict]:
-        """
-        FIX 2: 'open [app] and write/type X' → clean single-sequence plan.
-        Uses new_file (not open_app) to avoid double-open, then types content.
-        """
-        # Determine which app
         if any(k in c for k in ["word", "winword"]):
             app = "word"
         elif "excel" in c:
@@ -578,7 +559,6 @@ class QwenClient:
         ]
 
     def _build_chrome_automation_plan(self, command: str, c: str) -> list[dict]:
-        """FIX 3: Reduced wait to 1000ms."""
         intent = c
         for prefix in self.CHROME_AUTOMATION_KEYWORDS:
             intent = re.sub(rf".*{re.escape(prefix)}\s*", "", intent,
@@ -590,14 +570,13 @@ class QwenClient:
              "parameters":{"action":"open_app","parameters":{"app":"chrome"}}},
             {"step":2,"agent":"automation_agent",
              "description":"Wait for Chrome",
-             "parameters":{"action":"wait","parameters":{"ms":1000}}},   # FIX 3
+             "parameters":{"action":"wait","parameters":{"ms":1000}}},
             {"step":3,"agent":"automation_agent",
              "description":f"Navigate to: {url}",
              "parameters":{"action":"navigate_chrome","url":url}},
         ]
 
     def _build_pc_nav_plan(self, command: str, c: str) -> list[dict]:
-        """FIX 3: Reduced wait to 1000ms."""
         url = "https://google.com"
         for site, site_url in self.SITE_URL_MAP.items():
             if site in c:
@@ -609,7 +588,7 @@ class QwenClient:
              "parameters":{"action":"open_app","parameters":{"app":"chrome"}}},
             {"step":2,"agent":"automation_agent",
              "description":"Wait for Chrome",
-             "parameters":{"action":"wait","parameters":{"ms":1000}}},   # FIX 3
+             "parameters":{"action":"wait","parameters":{"ms":1000}}},
             {"step":3,"agent":"automation_agent",
              "description":f"Navigate to {url}",
              "parameters":{"action":"navigate_chrome","url":url}},
@@ -670,49 +649,19 @@ class QwenClient:
                  "parameters":{"action":"open_folder","path":folder}}]
 
     def _build_research_plan(self, command: str, c: str) -> list[dict]:
-        """
-        Smart research routing — checks if the query needs real-time data.
-
-        DEFAULT → research_agent alone
-          research_agent runs its own DDG search + uses training knowledge.
-          Fast, no extra step needed for timeless/historical/explanatory topics.
-
-        REAL-TIME → browser_agent → research_agent
-          browser fetches live web content first; research_agent synthesizes it
-          into a structured report with real URLs as citations.
-          Triggered when the query contains signals that the answer has changed
-          since training data (2024/2025/2026, latest, current, recent, etc.)
-
-        Examples of standalone:
-          "research history of the Philippines"
-          "research quantum computing"
-          "research the Roman Empire"
-          "research how the internet works"
-
-        Examples of browser-first:
-          "research latest AI developments 2025"
-          "research current inflation rates"
-          "research recent cancer treatment breakthroughs"
-          "research new iPhone release"
-        """
         REALTIME_SIGNALS = [
-            # Explicit year/recency
             "2024", "2025", "2026", "latest", "current", "today",
             "this year", "this month", "recent", "recently", "new ",
             "updated", "update", "now ", "right now", "as of",
             "upcoming", "announced", "released", "just ",
-            # Topics that change frequently
             "price", "stock", "crypto", "market", "election",
             "news", "event", "trend", "ranking", "statistic",
             "version", "patch", "release", "launch", "policy",
             "law ", "regulation", "record", "breakthrough",
             "discovery", "study ", "research paper", "publication",
         ]
-
         needs_realtime = any(sig in c for sig in REALTIME_SIGNALS)
-
         if needs_realtime:
-            # 2-step: live web data → structured report with real citations
             return [
                 {"step":1,"agent":"browser_agent",
                  "description":f"Search web for: {command}",
@@ -721,8 +670,6 @@ class QwenClient:
                  "description":f"Write research report: {command}",
                  "parameters":{"query":command}},
             ]
-
-        # Standalone: research_agent handles its own search
         return [
             {"step":1,"agent":"research_agent",
              "description":f"Research: {command}",
@@ -779,7 +726,6 @@ class QwenClient:
     # =========================================================================
 
     def _dedup_open_steps(self, plan: list) -> list:
-        """FIX 2: Remove duplicate open_app/new_file steps for the same app."""
         seen_apps = set()
         result = []
         for step in plan:
@@ -789,7 +735,7 @@ class QwenClient:
                 inner = params.get("parameters", {})
                 app = inner.get("app", "").lower() if isinstance(inner, dict) else ""
                 if app in seen_apps:
-                    continue  # skip duplicate
+                    continue
                 if app:
                     seen_apps.add(app)
             result.append(step)
@@ -809,7 +755,6 @@ class QwenClient:
         return intent or "https://google.com"
 
     def _extract_math_expression(self, command: str) -> str:
-        # Look for math expression with digits and operators
         m = re.search(r"([\d\s\+\-\*\/\(\)\.%]+)", command)
         if m:
             expr = m.group(1).strip()

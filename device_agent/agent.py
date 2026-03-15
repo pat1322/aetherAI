@@ -1,22 +1,9 @@
 """
-AetherAI — Device Agent  (Stage 6 — patch 6)
+AetherAI — Device Agent  (Stage 6 — patch 7)
 
-Fixes applied
-─────────────
-FIX 1  Chrome navigation: Added Ctrl+L hotkey before typing URL so the
-       address bar gets focus. Without this, the URL was being typed into
-       the webpage body instead of the navigation bar.
-
-FIX 2  Office apps (Word, Excel, PowerPoint): Restored the full COM
-       scripts from Stage 4 with proper error handling and ReleaseComObject
-       cleanup. The condensed one-liner in Stage 6 was failing silently.
-
-FIX 3  Calculator math: Added a new `calculator_input` action that
-       types a math expression into the Calculator app using its keyboard
-       input support. Calculator accepts number keys and operators directly.
-
-FIX 4  pywinauto Stage 6 additions retained: find_and_open_file,
-       open_folder, click_button, window_type, close_window, list_files.
+FIX 2  asyncio.get_event_loop() in _new_file() replaced with
+       asyncio.get_running_loop(). get_event_loop() is deprecated in
+       Python 3.10+ and raises RuntimeError in Python 3.12.
 """
 
 import asyncio
@@ -103,7 +90,6 @@ CHROME_PATHS = [
     r"C:\Users\Public\Desktop\Google Chrome.lnk",
 ]
 
-# FIX 2: Restored full COM scripts from Stage 4 with proper cleanup
 OFFICE_COM_SCRIPTS = {
     "word": """
 try {
@@ -374,8 +360,6 @@ class DeviceAgent:
     async def _execute_action(self, ws, action: str, params: dict,
                                request_id: str) -> str:
 
-        # ── Mouse / keyboard ───────────────────────────────────────────────────
-
         if action == "click":
             x, y = int(params["x"]), int(params["y"])
             pyautogui.click(x, y)
@@ -460,15 +444,11 @@ class DeviceAgent:
             }))
             return "screenshot_sent"
 
-        # ── App openers ────────────────────────────────────────────────────────
-
         elif action == "open_app":
             return await self._open_app(params.get("app", "").strip())
 
         elif action == "new_file":
             return await self._new_file(params.get("app", "notepad").strip().lower())
-
-        # ── System commands ────────────────────────────────────────────────────
 
         elif action == "run_command":
             cmd  = params.get("command", "")
@@ -477,17 +457,11 @@ class DeviceAgent:
             )
             return (proc.stdout or proc.stderr or "Done").strip()[:500]
 
-        # ── FIX 3: Calculator math input ───────────────────────────────────────
-
         elif action == "calculator_input":
             return await self._calculator_input(params.get("expression", ""))
 
-        # ── FIX 1: Navigate Chrome (focus address bar first) ──────────────────
-
         elif action == "navigate_chrome":
             return await self._navigate_chrome(params.get("url", ""))
-
-        # ── Stage 6: pywinauto-powered file/folder actions ─────────────────────
 
         elif action == "find_and_open_file":
             return await self._find_and_open_file(
@@ -621,7 +595,9 @@ class DeviceAgent:
         office_key = OFFICE_MAP.get(app_lc)
         if office_key:
             logger.info(f"Opening {office_key} via COM…")
-            await asyncio.get_event_loop().run_in_executor(
+            # FIX 2: use get_running_loop() — get_event_loop() is deprecated
+            # in Python 3.10+ and raises RuntimeError in Python 3.12
+            await asyncio.get_running_loop().run_in_executor(
                 None, open_office_via_com, office_key
             )
             wait = 5.0 if office_key in ("word", "powerpoint") else 4.0
@@ -641,25 +617,18 @@ class DeviceAgent:
 
         return f"new_file: unsupported app '{app}'"
 
-    # ── FIX 1: Chrome navigation with address bar focus ────────────────────────
+    # ── Chrome navigation ──────────────────────────────────────────────────────
 
     async def _navigate_chrome(self, url: str) -> str:
-        """
-        FIX 1: Properly navigate Chrome by pressing Ctrl+L to focus the
-        address bar BEFORE typing the URL. Without this, the URL was being
-        typed into the page body.
-        """
         if not url:
             return "navigate_chrome: no URL provided"
 
         activate_window("Chrome")
         await asyncio.sleep(0.5)
 
-        # Ctrl+L focuses the Chrome address bar on all platforms
         pyautogui.hotkey("ctrl", "l")
         await asyncio.sleep(0.4)
 
-        # Clear current URL and type new one
         pyautogui.hotkey("ctrl", "a")
         await asyncio.sleep(0.1)
 
@@ -676,41 +645,26 @@ class DeviceAgent:
         await asyncio.sleep(1.0)
         return f"Navigated Chrome to: {url}"
 
-    # ── FIX 3: Calculator input ────────────────────────────────────────────────
+    # ── Calculator input ───────────────────────────────────────────────────────
 
     async def _calculator_input(self, expression: str) -> str:
-        """
-        FIX 3: Type a math expression into Windows Calculator.
-        Calculator accepts keyboard input directly — number keys and
-        operators (+, -, *, /) work when it's in focus.
-        """
         if not expression:
             return "calculator_input: no expression provided"
 
         activate_window("Calculator")
         await asyncio.sleep(0.5)
 
-        # Click the Calculator window to ensure focus
         sw, sh = pyautogui.size()
         pyautogui.click(sw // 2, sh // 2)
         await asyncio.sleep(0.3)
 
-        # Clear any existing input first
         pyautogui.press("escape")
         await asyncio.sleep(0.1)
 
-        # Map expression characters to keyboard inputs Calculator understands
-        # Handles: digits, +, -, *, /, ., (, ), Enter/=
         key_map = {
-            "*": ["*"],
-            "/": ["/"],
-            "+": ["+"],
-            "-": ["-"],
-            "=": ["enter"],
-            "(": ["("],
-            ")": [")"],
-            ".": ["."],
-            " ": [],  # ignore spaces
+            "*": ["*"], "/": ["/"], "+": ["+"], "-": ["-"],
+            "=": ["enter"], "(": ["("], ")": [")"], ".": ["."],
+            " ": [],
         }
 
         for char in expression.strip():
@@ -721,14 +675,13 @@ class DeviceAgent:
                     pyautogui.press(k)
             await asyncio.sleep(0.05)
 
-        # Press Enter to calculate
         await asyncio.sleep(0.1)
         pyautogui.press("enter")
         await asyncio.sleep(0.3)
 
         return f"Entered expression into Calculator: {expression}"
 
-    # ── Stage 6: File/folder actions ──────────────────────────────────────────
+    # ── File/folder actions ────────────────────────────────────────────────────
 
     async def _find_and_open_file(self, filename: str, search_in: str) -> str:
         if not filename:

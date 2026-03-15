@@ -493,7 +493,6 @@
       <span class="status-dot connecting" id="statusDot"></span>
       <span id="statusText">CONNECTING</span>
     </div>
-    <!-- Device pill visible in topbar on all screen sizes -->
     <div class="device-topbar-pill none" id="deviceTopbarPill">
       <span class="device-dot none" id="deviceTopbarDot"></span>
       <span id="deviceTopbarText">No device</span>
@@ -550,7 +549,6 @@
       <button class="icon-btn mobile-only" onclick="closeDrawers()" style="font-size:13px;padding:3px 6px">✕</button>
     </div>
 
-    <!-- Device section — always visible, prominently displayed -->
     <div class="devices-section">
       <div class="devices-section-title">Connected Devices</div>
       <div class="devices-list" id="devicesList">
@@ -574,7 +572,7 @@
   </aside>
 </div>
 
-<!-- ── Settings modal — no API key input, fully automatic ── -->
+<!-- ── Settings modal ── -->
 <div class="modal-overlay" id="settingsOverlay" onclick="closeSettingsOnBg(event)">
   <div class="modal">
     <div class="modal-title">
@@ -602,29 +600,25 @@
 </div>
 
 <script>
-/* ── Bootstrap — fetch config from server before anything else ────────────── */
-const BASE_URL   = window.location.origin;
-const WS_BASE    = BASE_URL.replace(/^http/, 'ws');
-const SESSION_ID = crypto.randomUUID();
+/* ── Bootstrap ───────────────────────────────────────────────────────────── */
+const BASE_URL    = window.location.origin;
+const WS_BASE     = BASE_URL.replace(/^http/, 'ws');
+const SESSION_ID  = crypto.randomUUID();
 
-// These are populated by /ui/config before the WebSocket connects
-let API_KEY      = '';
+let API_KEY       = '';
 let SESSION_TOKEN = '';
 
-// Fetch API key + WS session token from the server (always public endpoint).
-// No user input needed. Falls back gracefully if server has no key set.
 async function fetchServerConfig() {
   try {
     const res = await fetch(`${BASE_URL}/ui/config`);
     if (res.ok) {
-      const cfg   = await res.json();
-      API_KEY      = cfg.api_key      || '';
+      const cfg    = await res.json();
+      API_KEY      = cfg.api_key       || '';
       SESSION_TOKEN = cfg.session_token || '';
     }
   } catch(e) {
-    console.warn('[AetherAI] Could not fetch /ui/config — proceeding without key:', e);
+    console.warn('[AetherAI] Could not fetch /ui/config:', e);
   }
-  // Connect WebSocket only after we have the token
   connectWS();
 }
 
@@ -643,7 +637,7 @@ function toggleTheme() {
   document.getElementById('themeBtn').textContent = next === 'dark' ? '🌙' : '☀️';
 }
 
-/* ── Mobile drawers ─────────────────────────────────────────────────────────── */
+/* ── Mobile drawers ──────────────────────────────────────────────────────── */
 function toggleSidebar() {
   const s = document.getElementById('sidebar');
   const p = document.getElementById('panel');
@@ -666,14 +660,14 @@ function closeDrawers() {
   document.getElementById('drawerOverlay').classList.remove('open');
 }
 
-/* ── Clock ─────────────────────────────────────────────────────────────────── */
+/* ── Clock ──────────────────────────────────────────────────────────────── */
 function updateClock() {
   document.getElementById('clockDisplay').textContent =
     new Date().toLocaleTimeString('en-GB', { hour12: false });
 }
 updateClock(); setInterval(updateClock, 1000);
 
-/* ── Utilities ──────────────────────────────────────────────────────────────── */
+/* ── Utilities ──────────────────────────────────────────────────────────── */
 function escHtml(s) {
   return String(s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;')
@@ -681,7 +675,6 @@ function escHtml(s) {
 }
 function now() { return new Date().toLocaleTimeString('en-GB',{hour12:false}); }
 
-// SQLite stores UTC timestamps without 'Z'; append it so browsers parse correctly
 function timeAgo(iso) {
   if (!iso) return '';
   const dateStr = iso.endsWith('Z') ? iso : iso + 'Z';
@@ -694,50 +687,40 @@ function fmtSize(kb) {
   return kb < 1024 ? `${kb} KB` : `${(kb/1024).toFixed(1)} MB`;
 }
 
-/* ── Markdown renderer ──────────────────────────────────────────────────────── */
+/* ── Markdown renderer ──────────────────────────────────────────────────── */
 function renderMarkdown(text) {
-  // Strip raw HTML tags Qwen may output, preserve URL text
   let cleaned = text
     .replace(/<a\s[^>]*href="([^"]+)"[^>]*>([^<]*)<\/a>/gi, '$2 ($1)')
     .replace(/<[^>]+>/g, '');
   let s = escHtml(cleaned);
 
-  // Math blocks $$ ... $$
   s = s.replace(/\$\$([\s\S]*?)\$\$/g,
     '<code style="background:var(--code-bg);padding:2px 8px;border-radius:4px;font-family:Consolas,monospace;display:block;margin:4px 0">$1</code>');
-  // Inline math $...$
   s = s.replace(/\$([^$\n]{1,80})\$/g, '<em>$1</em>');
 
-  // Code fences
   s = s.replace(/```[\w]*\n?([\s\S]*?)```/g,
     '<pre style="background:var(--code-bg);padding:8px 12px;border-radius:6px;overflow-x:auto;font-family:Consolas,Monaco,monospace;font-size:13px;line-height:1.5;margin:6px 0"><code>$1</code></pre>');
 
-  // Headings — h4 first
   s = s.replace(/^#### (.+)$/gm, '<h4 style="color:var(--accent);margin:8px 0 3px;font-size:0.9em;font-weight:600">$1</h4>');
   s = s.replace(/^### (.+)$/gm,  '<h3 style="color:var(--accent);margin:10px 0 5px">$1</h3>');
   s = s.replace(/^## (.+)$/gm,   '<h2 style="color:var(--accent);margin:10px 0 5px">$1</h2>');
   s = s.replace(/^# (.+)$/gm,    '<h1 style="color:var(--accent);margin:10px 0 5px">$1</h1>');
 
-  // Bold / italic
   s = s.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
   s = s.replace(/\*\*(.+?)\*\*/g,     '<strong>$1</strong>');
   s = s.replace(/\*([^*\n]+)\*/g,     '<em>$1</em>');
 
-  // Inline code
   s = s.replace(/`([^`]+)`/g,
     '<code style="background:var(--code-bg);padding:1px 6px;border-radius:4px;font-family:Consolas,Monaco,monospace">$1</code>');
 
-  // Horizontal rule
   s = s.replace(/^[-*]{3,}$/gm,
     '<hr style="border:none;border-top:1px solid var(--border);margin:8px 0">');
 
-  // Links [text](url) then bare URLs
   s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
     '<a href="$2" target="_blank" rel="noopener">$1</a>');
   s = s.replace(/(https?:\/\/[^\s<"')\]]+)/g,
     '<a href="$1" target="_blank" rel="noopener">$1</a>');
 
-  // ── Numbered lists — collapse blanks then group ────────────────────────────
   s = s.replace(/\n\n(\d+\. )/g, '\n$1');
   s = s.replace(/((?:^\d+\. .+$\n?)+)/gm, function(block) {
     var items = block.split('\n')
@@ -747,7 +730,6 @@ function renderMarkdown(text) {
     return items ? '<ol style="padding-left:20px;margin:6px 0">' + items + '</ol>\n' : block;
   });
 
-  // ── Bullet lists (•, -, *) — collapse blanks then group ──────────────────
   s = s.replace(/\n\n([•\-\*] )/g, '\n$1');
   s = s.replace(/((?:^[•\-\*] .+$\n?)+)/gm, function(block) {
     var items = block.split('\n')
@@ -757,12 +739,10 @@ function renderMarkdown(text) {
     return items ? '<ul style="padding-left:20px;margin:6px 0">' + items + '</ul>\n' : block;
   });
 
-  // Paragraphs and line breaks
   s = s.replace(/\n\n+/g, '</p><p>');
   s = '<p>' + s + '</p>';
   s = s.replace(/\n/g, '<br>');
   s = s.replace(/<p>\s*<\/p>/g, '');
-  // Unwrap block elements from <p>
   ['h1','h2','h3','h4','ul','ol','pre','hr'].forEach(function(tag) {
     s = s.replace(new RegExp('<p>(<' + tag + '[\\s>])', 'g'), '$1');
     s = s.replace(new RegExp('<\/' + tag + '><\/p>', 'g'), '</' + tag + '>');
@@ -775,7 +755,7 @@ function setBusy(on) {
   document.getElementById('busyBar').classList.toggle('active', on);
 }
 
-/* ── Log helpers ────────────────────────────────────────────────────────────── */
+/* ── Log helpers ─────────────────────────────────────────────────────────── */
 function log(msg, cls='info') {
   appendLog(`<span class="log-msg ${cls}">${escHtml(msg)}</span>`);
 }
@@ -816,7 +796,6 @@ function appendLog(inner) {
 function clearOutput() {
   document.getElementById('outputArea').innerHTML = '';
   lastShownOutput = null;
-  // Clear right-side task detail panel so stale agents don't show on new task
   document.getElementById('stepsList').innerHTML =
     '<div style="color:var(--muted);padding:14px;font-size:12px">Waiting for task...</div>';
   const agentEl = document.getElementById('currentAgent');
@@ -839,9 +818,8 @@ function copyResult(btnId, raw) {
   });
 }
 
-/* ── Device display ─────────────────────────────────────────────────────────── */
+/* ── Device display ──────────────────────────────────────────────────────── */
 function renderDevices(devices) {
-  // Panel device list
   const list = document.getElementById('devicesList');
   if (!devices || !devices.length) {
     list.innerHTML = '<span class="no-device-msg">No devices connected</span>';
@@ -852,8 +830,6 @@ function renderDevices(devices) {
         ${escHtml(d)}
       </span>`).join('');
   }
-
-  // Topbar pill
   const pill = document.getElementById('deviceTopbarPill');
   const dot  = document.getElementById('deviceTopbarDot');
   const txt  = document.getElementById('deviceTopbarText');
@@ -864,44 +840,50 @@ function renderDevices(devices) {
   } else {
     pill.className = 'device-topbar-pill';
     dot.className  = 'device-dot';
-    txt.textContent = devices.length === 1
-      ? devices[0]
-      : `${devices.length} devices`;
+    txt.textContent = devices.length === 1 ? devices[0] : `${devices.length} devices`;
   }
 }
 
-/* ── WebSocket ──────────────────────────────────────────────────────────────── */
-let ws        = null;
-let wsDelay   = 3000;
+/* ── WebSocket ───────────────────────────────────────────────────────────── */
+let ws           = null;
+let wsDelay      = 3000;
 let taskRunning  = false;
 let activeTaskId = null;
-let lastShownOutput = null;
+let lastShownOutput  = null;
 let cmdHistory   = JSON.parse(localStorage.getItem('aether_cmd_history') || '[]');
 let historyIdx   = -1;
 let historyDraft = '';
 
 function connectWS() {
-  // Pass the session token as a query param (required by the server)
   const tokenParam = SESSION_TOKEN ? `?token=${encodeURIComponent(SESSION_TOKEN)}` : '';
   ws = new WebSocket(`${WS_BASE}/ws/ui/${SESSION_ID}${tokenParam}`);
 
-  ws.onopen  = () => {
+  ws.onopen = () => {
     wsDelay = 3000;
     document.getElementById('statusDot').className = 'status-dot';
     document.getElementById('statusText').textContent = 'ONLINE';
-    // Refresh devices immediately on reconnect — don't wait for the 15s poll
     refreshDevices();
   };
-  ws.onclose = () => {
+
+  // FIX 11: stop hammering the server when auth fails (code 4401)
+  ws.onclose = (e) => {
+    if (e.code === 4401) {
+      document.getElementById('statusDot').className = 'status-dot error';
+      document.getElementById('statusText').textContent = 'AUTH ERROR';
+      log('⚠️ Session expired or invalid. Please refresh the page.', 'error');
+      return;   // do NOT retry — would loop forever
+    }
     document.getElementById('statusDot').className = 'status-dot offline';
     document.getElementById('statusText').textContent = 'OFFLINE';
     setTimeout(connectWS, wsDelay);
     wsDelay = Math.min(wsDelay * 1.5, 30000);
   };
+
   ws.onerror = () => {
     document.getElementById('statusDot').className = 'status-dot error';
     document.getElementById('statusText').textContent = 'ERROR';
   };
+
   ws.onmessage = e => {
     let data; try { data = JSON.parse(e.data); } catch { return; }
     if (data.type === 'task_update')         handleTaskUpdate(data);
@@ -911,7 +893,7 @@ function connectWS() {
   };
 }
 
-/* ── Task updates ───────────────────────────────────────────────────────────── */
+/* ── Task updates ─────────────────────────────────────────────────────────── */
 function handleTaskUpdate(data) {
   const { task_id, status, message, agent, result, plan, code_block } = data;
 
@@ -977,7 +959,7 @@ function unlockInput() {
   document.getElementById('cmdInput').focus();
 }
 
-/* ── Send command ───────────────────────────────────────────────────────────── */
+/* ── Send command ─────────────────────────────────────────────────────────── */
 async function sendCommand() {
   const input = document.getElementById('cmdInput');
   const cmd   = input.value.trim();
@@ -1004,6 +986,12 @@ async function sendCommand() {
       headers: { 'Content-Type': 'application/json', 'X-Api-Key': API_KEY },
       body: JSON.stringify({ command: cmd, source: 'web' }),
     });
+    if (res.status === 429) {
+      const err = await res.json();
+      log(`⚠️ ${err.detail}`, 'error');
+      unlockInput();
+      return;
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data   = await res.json();
     activeTaskId = data.task_id;
@@ -1025,7 +1013,7 @@ async function stopTask() {
 }
 async function cancelActiveTask() { await stopTask(); }
 
-/* ── Plan visualization ─────────────────────────────────────────────────────── */
+/* ── Plan visualization ──────────────────────────────────────────────────── */
 function renderPlan(plan) {
   document.getElementById('stepsList').innerHTML = plan.map(s => `
     <div class="step-item" id="step-${s.step}">
@@ -1061,7 +1049,7 @@ async function loadSteps(taskId) {
   } catch {}
 }
 
-/* ── Task list ──────────────────────────────────────────────────────────────── */
+/* ── Task list ────────────────────────────────────────────────────────────── */
 async function loadTasks() {
   if (document.hidden) return;
   try {
@@ -1100,7 +1088,6 @@ async function selectTask(taskId) {
     if (!res.ok) return;
     const task = await res.json();
 
-    // ── Restore right-side agent steps panel ─────────────────────────────────
     if (task.steps?.length) {
       document.getElementById('stepsList').innerHTML = task.steps.map(s => {
         const statusIcon = s.status === 'completed' ? '✅' :
@@ -1118,7 +1105,6 @@ async function selectTask(taskId) {
           ${outHtml}</div>`;
       }).join('');
     } else {
-      // Chat task — show single agent entry
       document.getElementById('stepsList').innerHTML =
         `<div class="step-item">
           <div class="step-header">
@@ -1131,7 +1117,6 @@ async function selectTask(taskId) {
 
     if (task.status === 'running' || task.status === 'planning') return;
 
-    // ── Restore full conversation log in main output area ─────────────────────
     clearOutput();
     log(`> ${task.command}`, 'system');
 
@@ -1192,7 +1177,7 @@ function confirmDeleteAllTasks() {
   });
 }
 
-/* ── Files ──────────────────────────────────────────────────────────────────── */
+/* ── Files ────────────────────────────────────────────────────────────────── */
 async function deleteFile(filename, e) {
   e.stopPropagation();
   await fetch(`${BASE_URL}/files/${encodeURIComponent(filename)}`,
@@ -1235,7 +1220,7 @@ async function refreshFiles() {
 refreshFiles();
 setInterval(refreshFiles, 8000);
 
-/* ── Devices ────────────────────────────────────────────────────────────────── */
+/* ── Devices ──────────────────────────────────────────────────────────────── */
 async function refreshDevices() {
   if (document.hidden) return;
   try {
@@ -1246,18 +1231,18 @@ async function refreshDevices() {
   } catch {}
 }
 refreshDevices();
-setInterval(refreshDevices, 10000);   // poll every 10s (was 15s)
+setInterval(refreshDevices, 10000);
 
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { loadTasks(); refreshFiles(); refreshDevices(); }
 });
 
-/* ── Settings modal ─────────────────────────────────────────────────────────── */
+/* ── Settings modal ───────────────────────────────────────────────────────── */
 function openSettings()          { document.getElementById('settingsOverlay').classList.add('open'); }
 function closeSettings()         { document.getElementById('settingsOverlay').classList.remove('open'); }
 function closeSettingsOnBg(e)    { if (e.target.id==='settingsOverlay') closeSettings(); }
 
-/* ── Confirm dialog ─────────────────────────────────────────────────────────── */
+/* ── Confirm dialog ───────────────────────────────────────────────────────── */
 let _confirmCb = null;
 function showConfirm(msg, cb) {
   document.getElementById('confirmMsg').textContent = msg;
@@ -1269,7 +1254,7 @@ document.getElementById('confirmYes').addEventListener('click', () => {
   if (_confirmCb) _confirmCb(); closeConfirm();
 });
 
-/* ── Keyboard ───────────────────────────────────────────────────────────────── */
+/* ── Keyboard ─────────────────────────────────────────────────────────────── */
 document.getElementById('cmdInput').addEventListener('keydown', e => {
   if (e.key==='Enter') { e.preventDefault(); sendCommand(); return; }
   if (e.key==='ArrowUp') {
@@ -1290,8 +1275,8 @@ document.addEventListener('keydown', e => {
   if ((e.ctrlKey||e.metaKey) && e.key==='l') { e.preventDefault(); clearOutput(); }
 });
 
-/* ── Kick everything off ────────────────────────────────────────────────────── */
-fetchServerConfig();   // fetches API key + WS token, then calls connectWS()
+/* ── Kick everything off ──────────────────────────────────────────────────── */
+fetchServerConfig();
 </script>
 </body>
 </html>

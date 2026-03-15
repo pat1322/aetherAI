@@ -1,21 +1,13 @@
 """
-AetherAI — Orchestrator  (Stage 5 — fully patched)
+AetherAI — Orchestrator  (Stage 5 — patch 3)
 
-All fixes applied
-─────────────────
-FIX A  cancel_task() now calls asyncio_task.cancel() on the actual running
-       coroutine instead of just setting a flag. The old flag-based approach
-       only took effect between steps — if a step was mid-execution (a 60s
-       browser scrape, for example) the task wouldn't stop until that step
-       naturally finished. True cancellation interrupts it immediately via
-       CancelledError propagation.
+FIX 7  _last_broadcast memory leak: ws_manager.clear_broadcast_cache() is
+       now called in the finally block so completed task entries don't
+       accumulate indefinitely.
 
-Stage 5 features retained:
-  • User context (preferences) injected into every Qwen call
-  • MemoryAgent hard-routing
-  • document_agent deduplication
-  • __GENERATED_CONTENT__ placeholder resolution
-  • Code block extraction for the UI
+FIX 9  STEP_OUTPUT_PREVIEW raised from 300 → 800 chars. The old value was
+       too short for weather / crypto / research step outputs, causing the
+       task detail panel in the UI to show truncated garbage.
 """
 
 import asyncio
@@ -29,7 +21,8 @@ from agent_router import AgentRouter
 
 logger = logging.getLogger(__name__)
 
-STEP_OUTPUT_PREVIEW = 300
+# FIX 9: 300 was too aggressive — weather/crypto outputs were getting mangled
+STEP_OUTPUT_PREVIEW = 800
 
 
 def extract_code_block(output: str) -> tuple[str, str, str]:
@@ -64,11 +57,9 @@ class Orchestrator:
         self.ws_manager = ws_manager
         self.qwen       = QwenClient()
         self.router     = AgentRouter(memory=memory, ws_manager=ws_manager, qwen=self.qwen)
-        # FIX A: store the actual asyncio.Task objects for real cancellation
         self._task_handles: dict[str, asyncio.Task] = {}
 
     async def run_task(self, task_id: str, command: str):
-        # FIX A: register this coroutine's Task handle so cancel_task() can cancel it
         current = asyncio.current_task()
         if current:
             self._task_handles[task_id] = current
@@ -192,6 +183,7 @@ class Orchestrator:
                             db_output   = chat_output
                         else:
                             db_output = summary if summary else output
+                            # FIX 9: 800 chars preserves enough context for the UI panel
                             if len(db_output) > STEP_OUTPUT_PREVIEW:
                                 db_output = db_output[:STEP_OUTPUT_PREVIEW] + "…"
                             chat_output            = output
@@ -219,10 +211,9 @@ class Orchestrator:
                         self.memory.update_step(task_id, step_num, "completed", "")
 
                 except asyncio.CancelledError:
-                    # FIX A: propagate cancellation — task was cancelled by cancel_task()
                     logger.info(f"[{task_id}] Step {step_num} cancelled")
                     self.memory.update_step(task_id, step_num, "cancelled", "Cancelled")
-                    raise   # let the outer except handle status update
+                    raise
 
                 except asyncio.TimeoutError:
                     msg = f"Step {step_num} timed out"
@@ -245,7 +236,6 @@ class Orchestrator:
             })
 
         except asyncio.CancelledError:
-            # FIX A: clean up when the task is externally cancelled
             logger.info(f"[{task_id}] Task cancelled")
             self.memory.update_task_status(task_id, "cancelled")
             await self.ws_manager.broadcast_task_update(task_id, {
@@ -262,12 +252,11 @@ class Orchestrator:
             })
         finally:
             self._task_handles.pop(task_id, None)
+            # FIX 7: clear the broadcast dedup cache so completed tasks don't
+            # accumulate entries in _last_broadcast indefinitely
+            self.ws_manager.clear_broadcast_cache(task_id)
 
     def cancel_task(self, task_id: str) -> bool:
-        """
-        FIX A: Cancel the running asyncio.Task for real — this raises CancelledError
-        inside the coroutine immediately, interrupting whatever step is running.
-        """
         task_handle = self._task_handles.get(task_id)
         if task_handle and not task_handle.done():
             task_handle.cancel()

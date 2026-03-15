@@ -1,16 +1,19 @@
 """
-AetherAI Cloud Brain — Stage 5 (patch 2)
+AetherAI Cloud Brain — Stage 5 (patch 3)
 
-Fixes applied this patch
-────────────────────────
-FIX P1  StatusResponse now includes `command` field. Without it, clicking
-        any old task in the sidebar showed "> undefined" because the frontend
-        reads `task.command` which FastAPI was stripping from the response.
+FIX 12 Route order: DELETE /files/all/clear now registered BEFORE
+       DELETE /files/{filename} so FastAPI's first-match routing can
+       never shadow the specific path. Previously the registration order
+       was safe only because {filename} lacks :path, but this makes it
+       explicit and future-proof.
 
-FIX P2  /files/download/* added to _PUBLIC_PREFIXES. Browser <a href download>
-        tags cannot send custom headers, so every file download was returning
-        401 from the ApiKeyMiddleware. Download links are safe to make public
-        because filenames are opaque random strings — no auth needed.
+FIX 15 Basic in-flight task cap: POST /command now rejects new tasks
+       when MAX_CONCURRENT_TASKS running tasks are already in progress.
+       Prevents a single user / browser tab from flooding the queue.
+       Default cap is 5 — raise via MAX_CONCURRENT_TASKS env var if needed.
+
+FIX P1 (retained) StatusResponse includes `command` field.
+FIX P2 (retained) /files/download/* is public.
 """
 
 from contextlib import asynccontextmanager
@@ -20,6 +23,7 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
 
 import asyncio
 import json
+import os
 import secrets
 import uuid
 from datetime import datetime
@@ -45,6 +49,9 @@ orchestrator = Orchestrator(memory=memory, ws_manager=ws_manager)
 
 _UI_SESSION_TOKEN = secrets.token_urlsafe(24)
 
+# FIX 15: cap concurrent running tasks to prevent queue flooding
+MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "5"))
+
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -57,7 +64,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AetherAI Cloud Brain",
     description="Personal AI Agent System — Stage 5",
-    version="5.2.0",
+    version="5.3.0",
     lifespan=lifespan,
 )
 
@@ -75,7 +82,7 @@ _PUBLIC_PREFIXES = (
     "/docs",
     "/openapi",
     "/redoc",
-    "/files/download",   # FIX P2: browser <a href> can't send headers
+    "/files/download",
 )
 _PUBLIC_EXACT = frozenset(["/", "/health", "/ui/config"])
 
@@ -117,7 +124,7 @@ class CommandResponse(BaseModel):
 
 class StatusResponse(BaseModel):
     task_id:    str
-    command:    str          # FIX P1: was missing — caused "> undefined" in UI
+    command:    str
     status:     str
     steps:      list
     result:     Optional[str] = None
@@ -132,7 +139,7 @@ class PrefRequest(BaseModel):
 
 @app.get("/")
 async def root():
-    return {"system": "AetherAI Cloud Brain", "status": "online", "version": "5.2.0"}
+    return {"system": "AetherAI Cloud Brain", "status": "online", "version": "5.3.0"}
 
 @app.get("/health")
 async def health():
@@ -152,6 +159,18 @@ async def ui_config():
 
 @app.post("/command", response_model=CommandResponse)
 async def receive_command(req: CommandRequest):
+    # FIX 15: reject if too many tasks are already in flight
+    stats = memory.get_task_stats()
+    running_count = stats.get("running", 0) + stats.get("planning", 0)
+    if running_count >= MAX_CONCURRENT_TASKS:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Too many tasks in progress ({running_count}/{MAX_CONCURRENT_TASKS}). "
+                "Wait for a task to finish before sending another."
+            ),
+        )
+
     task_id = str(uuid.uuid4())
     memory.create_task(task_id, req.command, req.source)
     asyncio.create_task(orchestrator.run_task(task_id, req.command))
@@ -219,17 +238,7 @@ async def download_file(filename: str):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(path=str(fpath), filename=filename)
 
-@app.delete("/files/{filename}")
-async def delete_file(filename: str):
-    import re as _re
-    if not _re.match(r'^[\w\-. ]+$', filename):
-        raise HTTPException(status_code=400, detail="Invalid filename")
-    fpath = Path(__file__).parent.parent / "output" / filename
-    if not fpath.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    fpath.unlink()
-    return {"filename": filename, "deleted": True}
-
+# FIX 12: specific route registered BEFORE the wildcard to avoid shadow risk
 @app.delete("/files/all/clear")
 async def delete_all_files():
     output_dir = Path(__file__).parent.parent / "output"
@@ -242,6 +251,17 @@ async def delete_all_files():
             except Exception:
                 pass
     return {"deleted_count": count}
+
+@app.delete("/files/{filename}")
+async def delete_file(filename: str):
+    import re as _re
+    if not _re.match(r'^[\w\-. ]+$', filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    fpath = Path(__file__).parent.parent / "output" / filename
+    if not fpath.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    fpath.unlink()
+    return {"filename": filename, "deleted": True}
 
 # ── Preference endpoints ──────────────────────────────────────────────────────
 

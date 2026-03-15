@@ -1,19 +1,10 @@
 """
-AetherAI — Automation Agent  (Stage 5 — fully patched)
+AetherAI — Automation Agent  (Stage 5 — patch 11)
 
-All fixes applied
-─────────────────
-FIX A  _vision_step_handler() now extracts image_base64 from step_data and
-       passes it to qwen.chat_with_image() so Qwen actually sees the screen
-       before deciding the next action. Previously no image was sent at all,
-       making the vision loop completely blind.
-
-Original Stage 4 hardening retained:
-  • _normalise() parameter canonicalisation
-  • SendResult enum checks
-  • Sequence step timeouts per ACTION_TIMEOUTS
-  • Vision future always unregistered in finally block
-  • CancelledError pass-through
+FIX 6  Vision handler memory leak: when send_to_device() fails after
+       register_vision_task(), the _vision_handlers dict entry was not
+       cleaned up. unregister_pending() only clears _pending and
+       _pending_ts. Added explicit pop of _vision_handlers on early exit.
 """
 
 import asyncio
@@ -41,7 +32,6 @@ ACTION_TIMEOUTS: dict[str, float] = {
     "type":                  40.0,
     "type_special":          40.0,
     "screenshot_and_return": 15.0,
-    # Stage 5/6 device actions
     "navigate_chrome":       15.0,
     "calculator_input":      10.0,
     "open_folder":           10.0,
@@ -125,8 +115,6 @@ class AutomationAgent(BaseAgent):
         device_id      = devices[0]
         effective_goal = goal or context
 
-        # Only use vision loop if there's a real goal AND no explicit action/sequence
-        # This prevents plain open_app/navigate commands from accidentally triggering vision
         if mode == "vision" or (effective_goal and not action and not sequence and len(effective_goal) > 5):
             return await self._vision_task(device_id, effective_goal, task_id)
         if sequence:
@@ -247,7 +235,10 @@ class AutomationAgent(BaseAgent):
         })
 
         if send_result != SendResult.OK:
+            # FIX 6: unregister_pending only clears _pending/_pending_ts,
+            # NOT _vision_handlers — must explicitly clean that up too.
             self.ws_manager.unregister_pending(request_id)
+            self.ws_manager._vision_handlers.pop(request_id, None)
             return "⚠️ Device unavailable for vision task."
 
         try:
@@ -260,10 +251,6 @@ class AutomationAgent(BaseAgent):
 
     async def _vision_step_handler(self, device_id: str, request_id: str,
                                     step_data: dict) -> dict:
-        """
-        FIX A: Extract the screenshot from step_data and pass it to Qwen
-        as a multimodal message. Previously no image was sent at all.
-        """
         goal      = step_data.get("goal", "")
         step_num  = step_data.get("step", 1)
         img_b64   = step_data.get("image_base64", "")
@@ -286,7 +273,6 @@ Screen is 1920x1080. Be precise with coordinates."""
 
         try:
             if img_b64:
-                # FIX A: pass the actual screenshot to Qwen for visual analysis
                 response = await self.qwen.chat_with_image(
                     system_prompt=(
                         "You are a computer vision agent. "
@@ -297,7 +283,6 @@ Screen is 1920x1080. Be precise with coordinates."""
                     temperature=0.1,
                 )
             else:
-                # Fallback if no image received (shouldn't happen)
                 logger.warning(f"[Vision] Step {step_num}: no image in step_data")
                 response = await self.qwen.chat(
                     system_prompt=(

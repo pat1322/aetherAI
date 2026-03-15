@@ -1,19 +1,24 @@
 """
-AetherAI — Browser Agent  (Stage 6)
+AetherAI — Browser Agent  (Stage 6 — patch 2)
 
-Stage 6 upgrades:
-  • trafilatura replaces BeautifulSoup for web scraping — much cleaner text extraction
-  • yt-dlp replaces DDG YouTube search — real YouTube metadata, no API needed
-  • source="web" on all summarize() calls — prevents "knowledge cutoff" responses
-  • Increased PAGE_TEXT_LIMIT to 10000 for richer context
+Fixes
+─────
+FIX 3  Removed duplicate `import json as _json` / `import json` — now a
+       single `import json`. The _json alias was only used once and caused
+       confusion.
+
+FIX 4  MAX_HTTP_RETRIES and HTTP_BACKOFF were defined but never used. They
+       are now wired into the DDG httpx fetch path in _web_search().
+
+FIX 10 _check_ytdlp() is now lazy (cached result) so it doesn't block the
+       event loop / uvicorn startup for up to 5 seconds on Railway.
 """
 
 import asyncio
-import json as _json
+import json
 import logging
 import re
 import subprocess
-import json
 from typing import Optional
 from urllib.parse import quote_plus, urlparse, parse_qs, unquote
 
@@ -43,7 +48,7 @@ NOISE_TAGS     = ["script","style","nav","footer","header","aside",
                    "noscript","iframe","form","button","svg"]
 
 
-# ── Availability checks ────────────────────────────────────────────────────────
+# ── Availability checks (lazy-cached) ─────────────────────────────────────────
 
 def _check_playwright() -> bool:
     try:
@@ -61,20 +66,28 @@ def _check_trafilatura() -> bool:
     except ImportError:
         return False
 
+# FIX 10: lazy cache — avoids blocking subprocess at import/startup time
+_ytdlp_available: Optional[bool] = None
+
 def _check_ytdlp() -> bool:
-    try:
-        result = subprocess.run(["yt-dlp", "--version"],
-                                capture_output=True, text=True, timeout=5)
-        return result.returncode == 0
-    except Exception:
-        return False
+    global _ytdlp_available
+    if _ytdlp_available is None:
+        try:
+            result = subprocess.run(
+                ["yt-dlp", "--version"],
+                capture_output=True, text=True, timeout=3,
+            )
+            _ytdlp_available = result.returncode == 0
+        except Exception:
+            _ytdlp_available = False
+    return _ytdlp_available
 
 PLAYWRIGHT_AVAILABLE  = _check_playwright()
 TRAFILATURA_AVAILABLE = _check_trafilatura()
-YTDLP_AVAILABLE       = _check_ytdlp()
+# yt-dlp checked lazily on first use — do NOT call _check_ytdlp() here
 
 logger.info(f"[BrowserAgent] playwright={PLAYWRIGHT_AVAILABLE} "
-            f"trafilatura={TRAFILATURA_AVAILABLE} yt-dlp={YTDLP_AVAILABLE}")
+            f"trafilatura={TRAFILATURA_AVAILABLE}")
 
 
 # ── Text extraction helpers ────────────────────────────────────────────────────
@@ -144,7 +157,6 @@ def _decode_ddg_url(href: str):
     if href.startswith("//"):
         href = "https:" + href
     try:
-        from urllib.parse import urlparse, parse_qs, unquote
         qs   = parse_qs(urlparse(href).query)
         uddg = qs.get("uddg", [None])[0]
         if uddg:
@@ -164,10 +176,11 @@ class BrowserAgent(BaseAgent):
         query  = parameters.get("query", "") or context
         goal   = parameters.get("goal", "") or query
 
+        ytdlp = _check_ytdlp()  # lazy — safe to call here
         logger.info(f"[BrowserAgent] action={action} "
                     f"playwright={PLAYWRIGHT_AVAILABLE} "
                     f"trafilatura={TRAFILATURA_AVAILABLE} "
-                    f"yt-dlp={YTDLP_AVAILABLE}")
+                    f"yt-dlp={ytdlp}")
 
         goal_lc = goal.lower()
         if any(k in goal_lc for k in HN_KEYWORDS):
@@ -186,21 +199,31 @@ class BrowserAgent(BaseAgent):
     # ── Web search ─────────────────────────────────────────────────────────────
 
     async def _web_search(self, query: str, engine: str = "google") -> str:
-        ddg_url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
-
+        ddg_url  = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
         raw_html = ""
+
         if PLAYWRIGHT_AVAILABLE:
             raw_html = await self._playwright_get_html(ddg_url)
             text = _extract_text(raw_html, ddg_url)
         else:
-            try:
-                async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True,
-                                             timeout=15.0) as client:
-                    resp = await client.post(DDG_HTML_URL, data={"q": query, "b": ""})
-                    raw_html = resp.text
-                    text = _extract_text(raw_html, DDG_HTML_URL)
-            except Exception as e:
-                logger.error(f"[BrowserAgent] DDG failed: {e}")
+            # FIX 4: wire up MAX_HTTP_RETRIES / HTTP_BACKOFF
+            last_exc = None
+            for attempt in range(MAX_HTTP_RETRIES):
+                try:
+                    async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True,
+                                                 timeout=15.0) as client:
+                        resp = await client.post(DDG_HTML_URL, data={"q": query, "b": ""})
+                        raw_html = resp.text
+                        text = _extract_text(raw_html, DDG_HTML_URL)
+                    last_exc = None
+                    break
+                except Exception as e:
+                    last_exc = e
+                    logger.warning(f"[BrowserAgent] DDG attempt {attempt+1} failed: {e}")
+                    if attempt < MAX_HTTP_RETRIES - 1:
+                        await asyncio.sleep(HTTP_BACKOFF * (attempt + 1))
+            if last_exc:
+                logger.error(f"[BrowserAgent] DDG all retries failed: {last_exc}")
                 return f"🔍 **{query}**\n\n{await self.qwen.answer(query)}"
 
         if not text.strip():
@@ -275,10 +298,9 @@ class BrowserAgent(BaseAgent):
             return (f"⚠️ YouTube search timed out.\nDirect search: {search_url}")
 
     async def _youtube_inner(self, query: str) -> str:
-        if YTDLP_AVAILABLE:
+        if _check_ytdlp():
             result = await self._youtube_via_ytdlp(query)
             if result: return result
-
         return await self._youtube_via_ddg(query)
 
     async def _youtube_via_ytdlp(self, query: str) -> Optional[str]:
@@ -336,7 +358,6 @@ class BrowserAgent(BaseAgent):
 
             video_list = "\n\n".join(lines)
 
-            # Summarize the results
             result_text = "\n".join(
                 f"{v['title']} — {v['channel']} — {v['desc']}"
                 for v in videos[:8]
@@ -527,7 +548,7 @@ class BrowserAgent(BaseAgent):
                         break
                     raw = re.sub(r"```(?:json)?","",raw).strip().rstrip("`").strip()
                     try:
-                        cmd = _json.loads(raw)
+                        cmd = json.loads(raw)
                     except Exception:
                         results.append(text[:2000])
                         break

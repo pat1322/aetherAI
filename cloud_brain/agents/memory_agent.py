@@ -1,14 +1,15 @@
 """
-AetherAI — Memory Agent  (Stage 5, patched)
+AetherAI — Memory Agent  (Stage 5 — patch 2)
 
-Fixes applied
-─────────────
-FIX 2  _forget() and _recall() now call memory.delete_preference(key) instead
-       of memory.set_preference(key, None). This removes the row from SQLite
-       rather than leaving a zombie 'null' entry.
+FIX 8  _INDEX_KEY changed from "pref:__index__" to "pref:@@index@@".
+       The old key could be reached by a user saying "remember my
+       __index__ is foo" because _slug strips non-word chars and produces
+       "__index__". The new key uses @@ which _slug strips completely,
+       making it unreachable via any user input and protecting the index.
 
-FIX 4  Duplicate "everything" string in the _forget() wipe-all check removed.
-       The tuple previously contained "everything" twice — harmless but wrong.
+Previous fixes retained:
+  FIX 2  _forget() / _recall() call memory.delete_preference(key) (real DELETE).
+  FIX 4  Duplicate "everything" entry in _WIPE_ALL_WORDS removed.
 """
 
 import json
@@ -38,9 +39,10 @@ _FORGET_TRIGGERS = [
 ]
 
 _PREF_PREFIX = "pref:"
-_INDEX_KEY   = "pref:__index__"
 
-# FIX 4: removed duplicate "everything" entry
+# FIX 8: @@ characters are stripped by _slug → can never be produced by user input
+_INDEX_KEY   = "pref:@@index@@"
+
 _WIPE_ALL_WORDS = frozenset(["all", "everything", "all preferences"])
 
 
@@ -179,10 +181,9 @@ If intent is 'recall' or 'forget', label and value may be empty strings."""
         index    = self._get_index()
         removed  = []
 
-        # FIX 4: use the deduplicated frozenset
         if topic_lc in _WIPE_ALL_WORDS:
             for key in list(index):
-                self.memory.delete_preference(key)   # FIX 2: real DELETE
+                self.memory.delete_preference(key)
             self._set_index([])
             return "✅ All preferences cleared."
 
@@ -190,12 +191,11 @@ If intent is 'recall' or 'forget', label and value may be empty strings."""
         for key in index:
             entry = self.memory.get_preference(key)
             if not entry or not isinstance(entry, dict):
-                # Key already gone — clean it from the index
                 continue
             lbl = entry.get("label", "")
             val = entry.get("value", "")
             if topic_lc in lbl.lower() or topic_lc in val.lower() or topic_lc in key.lower():
-                self.memory.delete_preference(key)   # FIX 2: real DELETE
+                self.memory.delete_preference(key)
                 removed.append(lbl or key)
             else:
                 new_index.append(key)
