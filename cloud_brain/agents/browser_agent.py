@@ -168,22 +168,36 @@ class BrowserAgent(BaseAgent):
 
     async def _web_search(self, query: str, engine: str = "google") -> str:
         ddg_url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+        raw_html = ""
 
         if PLAYWRIGHT_AVAILABLE:
-            html = await self._playwright_get_html(ddg_url)
-            text = _extract_text(html, ddg_url)
+            raw_html = await self._playwright_get_html(ddg_url)
+            text = _extract_text(raw_html, ddg_url)
         else:
             try:
                 async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True,
                                              timeout=15.0) as client:
                     resp = await client.post(DDG_HTML_URL, data={"q": query, "b": ""})
-                    text = _extract_text(resp.text, DDG_HTML_URL)
+                    raw_html = resp.text
+                    text = _extract_text(raw_html, DDG_HTML_URL)
             except Exception as e:
                 logger.error(f"[BrowserAgent] DDG failed: {e}")
                 return f"🔍 **{query}**\n\n{await self.qwen.answer(query)}"
 
         if not text.strip():
             return f"🔍 **{query}**\n\n{await self.qwen.answer(query)}"
+
+        # Extract real result URLs from DDG HTML before summarizing
+        # so research_agent downstream can use them as citations
+        result_urls = []
+        if raw_html:
+            soup_ddg = BeautifulSoup(raw_html, "lxml")
+            for a in soup_ddg.select(".result__a")[:8]:
+                href = a.get("href", "")
+                real = _decode_ddg_url(href)
+                if real and real.startswith("http") and "duckduckgo" not in real:
+                    if real not in result_urls:
+                        result_urls.append(real)
 
         summary = await self.qwen.summarize(
             content=text[:PAGE_TEXT_LIMIT],
@@ -194,7 +208,14 @@ class BrowserAgent(BaseAgent):
             ),
             source="web",
         )
-        return f"🔍 **{query}**\n\n{summary}"
+
+        # Append real URLs as a sources block — research_agent will extract these
+        url_block = ""
+        if result_urls:
+            url_lines = "\n".join(f"- {u}" for u in result_urls[:6])
+            url_block = f"\n\n**SEARCH_SOURCES:**\n{url_lines}"
+
+        return f"🔍 **{query}**\n\n{summary}{url_block}"
 
     # ── Scrape URL ─────────────────────────────────────────────────────────────
 
@@ -365,9 +386,11 @@ class BrowserAgent(BaseAgent):
 
         lines = []
         for i, r in enumerate(results[:8], 1):
-            desc_str = f" — {r['desc'][:80]}" if r['desc'] else ""
-            lines.append(f"{i}. **{r['title']}**{desc_str}\n   🔗 {r['url']}")
-        video_list = "\n".join(lines)
+            lines.append(
+                f"{i}. **{r['title']}**\n   {r['url']}"
+                + (f"\n   _{r['desc']}_" if r['desc'] else "")
+            )
+        video_list = "\n\n".join(lines)
         result_text = "\n".join(f"{r['title']}: {r['desc']}" for r in results[:8])
         summary = await self.qwen.summarize(
             content=result_text,
@@ -391,7 +414,7 @@ class BrowserAgent(BaseAgent):
                     self._hn_story(client, sid) for sid in ids
                 ])
             lines = []
-            for i, s in enumerate(stories, 1):
+            for s in stories:
                 if not s: continue
                 title = s.get("title","")
                 url   = s.get("url") or f"https://news.ycombinator.com/item?id={s.get('id','')}"
@@ -399,10 +422,10 @@ class BrowserAgent(BaseAgent):
                 by    = s.get("by","?")
                 comms = s.get("descendants",0)
                 lines.append(
-                    f"{i}. **{title}** — ▲{score} pts · by {by} · {comms} comments\n"
-                    f"   🔗 {url}"
+                    f"• **{title}** — ▲{score} pts · by {by} · {comms} comments\n"
+                    f"  🔗 {url}"
                 )
-            return ("📰 **Hacker News — Top Stories**\n\n" + "\n".join(lines)
+            return ("📰 **Hacker News — Top Stories**\n\n" + "\n\n".join(lines)
                     if lines else "⚠️ Could not retrieve Hacker News stories.")
         except Exception as e:
             return f"⚠️ Hacker News API failed: {e}"
