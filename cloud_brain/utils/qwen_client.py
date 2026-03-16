@@ -39,6 +39,8 @@ class QwenClient:
         self._client = AsyncOpenAI(
             api_key=settings.QWEN_API_KEY,
             base_url=settings.QWEN_BASE_URL,
+            timeout=30.0,   # 30s hard cap — prevents Railway from killing the dyno
+                            # on slow Qwen responses during classify/plan/chat
         )
         self.model        = settings.QWEN_MODEL
         self.vision_model = settings.QWEN_VISION_MODEL
@@ -358,6 +360,11 @@ class QwenClient:
         "open notepad", "open calculator", "open calc", "open paint",
         "open mspaint", "open wordpad", "open task manager",
         "open snipping tool",
+        # Office apps — "open powerpoint" alone should NOT trigger vision loop
+        "open powerpoint", "open excel", "open word",
+        "launch powerpoint", "launch excel", "launch word",
+        "open chrome", "open firefox", "open edge",
+        "launch chrome", "launch firefox", "launch edge",
     ]
     SITE_URL_MAP = {
         "youtube":       "https://youtube.com",
@@ -510,6 +517,14 @@ class QwenClient:
         if self._is_research_task(c):
             return self._build_research_plan(command, c)
 
+        # Code task must come BEFORE browser task — "write a script to scrape..."
+        # contains "scrape" which is also a BROWSER_KEYWORD, but intent is coding.
+        if self._is_code_task(c):
+            lang = self._detect_language_hint(c)
+            return [{"step":1,"agent":"coding_agent",
+                     "description":f"Write code: {command}",
+                     "parameters":{"task":command,"language":lang}}]
+
         if self._is_browser_task(c):
             return self._build_browser_plan(command, c)
 
@@ -517,12 +532,6 @@ class QwenClient:
             return [{"step":1,"agent":"chat",
                      "description":f"Real-time answer: {command}",
                      "parameters":{"query":command}}]
-
-        if self._is_code_task(c):
-            lang = self._detect_language_hint(c)
-            return [{"step":1,"agent":"coding_agent",
-                     "description":f"Write code: {command}",
-                     "parameters":{"task":command,"language":lang}}]
 
         is_open_app = self._is_open_app_command(c)
         no_doc_rule = (
@@ -593,14 +602,20 @@ class QwenClient:
                  "parameters":{"type":doc_type,"topic":topic or command}}]
 
     def _build_simple_open_plan(self, command: str, c: str) -> list[dict]:
-        if "notepad++" in c:   app = "notepad++"
-        elif "notepad" in c:   app = "notepad"
-        elif "calc" in c:      app = "calculator"
-        elif "paint" in c:     app = "paint"
-        elif "wordpad" in c:   app = "wordpad"
-        elif "task manager" in c: app = "task manager"
-        elif "snipping" in c:  app = "snipping tool"
-        else:                  app = c.split()[-1]
+        if "notepad++" in c:        app = "notepad++"
+        elif "notepad" in c:        app = "notepad"
+        elif "calc" in c:           app = "calculator"
+        elif "paint" in c:          app = "paint"
+        elif "wordpad" in c:        app = "wordpad"
+        elif "task manager" in c:   app = "task manager"
+        elif "snipping" in c:       app = "snipping tool"
+        elif "powerpoint" in c or "ppt" in c: app = "powerpoint"
+        elif "excel" in c:          app = "excel"
+        elif "word" in c:           app = "word"
+        elif "chrome" in c:         app = "chrome"
+        elif "firefox" in c:        app = "firefox"
+        elif "edge" in c:           app = "edge"
+        else:                       app = c.split()[-1]
         return [{"step":1,"agent":"automation_agent",
                  "description":f"Open {app}",
                  "parameters":{"action":"open_app","parameters":{"app":app}}}]

@@ -690,6 +690,20 @@
       </select>
     </div>
 
+    <div class="setting-row" style="border-top:1px solid var(--border);margin-top:4px;padding-top:14px">
+      <div>
+        <div class="setting-label">🗑️ Clear All Preferences</div>
+        <div class="setting-desc">Erase everything AetherAI has remembered about you</div>
+      </div>
+      <button onclick="confirmClearPreferences()"
+        style="background:var(--warn);color:#fff;border:none;border-radius:6px;
+               padding:5px 14px;font-family:inherit;font-size:11px;font-weight:700;
+               cursor:pointer;transition:opacity 0.15s"
+        onmouseover="this.style.opacity=0.8" onmouseout="this.style.opacity=1">
+        Clear
+      </button>
+    </div>
+
     <button class="modal-save" onclick="closeSettings()">Done</button>
   </div>
 </div>
@@ -1534,6 +1548,16 @@ async function deleteFile(filename, e) {
     { method:'DELETE', headers:{'X-Api-Key':API_KEY} });
   refreshFiles();
 }
+function confirmClearPreferences() {
+  closeSettings();
+  showConfirm('Clear ALL preferences? AetherAI will forget everything you told it.', async () => {
+    try {
+      await fetch(`${BASE_URL}/preferences/all`, { method:'DELETE', headers:{'X-Api-Key':API_KEY} });
+      log('✅ All preferences cleared.', 'system');
+    } catch(e) { log(`Failed to clear preferences: ${e}`, 'error'); }
+  });
+}
+
 function confirmDeleteAllFiles() {
   showConfirm('Delete ALL generated files?', async () => {
     await fetch(`${BASE_URL}/files/all/clear`, { method:'DELETE', headers:{'X-Api-Key':API_KEY} });
