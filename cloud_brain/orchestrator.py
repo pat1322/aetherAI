@@ -87,12 +87,16 @@ class Orchestrator:
 
             # ── CHAT MODE — streamed (Stage 6) ────────────────────────────────
             if command_type == "chat":
-                # Signal UI to open a streaming bubble
+                # FIX: use "stream_event" instead of "type" to avoid key
+                # collision with broadcast_task_update()'s own "type":"task_update"
+                # wrapper. Python dict unpacking (**data) comes last so any
+                # "type" key inside data would override "task_update", causing
+                # ws.onmessage to never route the message to handleTaskUpdate().
                 await self.ws_manager.broadcast_task_update(task_id, {
-                    "status":  "streaming",
-                    "message": "Thinking...",
-                    "type":    "stream_start",
-                    "is_chat": True,
+                    "status":       "streaming",
+                    "message":      "Thinking...",
+                    "stream_event": "stream_start",
+                    "is_chat":      True,
                 })
                 self.memory.update_task_status(task_id, "running")
 
@@ -107,7 +111,6 @@ class Orchestrator:
                     raise
                 except Exception as e:
                     logger.error(f"[{task_id}] Stream error: {e}", exc_info=True)
-                    # Append error inline so the UI bubble shows it, not a blank entry
                     error_chunk = f"\n\n⚠️ Error: {e}"
                     full_text += error_chunk
                     await self.ws_manager.stream_chunk_to_ui(task_id, error_chunk)
@@ -115,10 +118,10 @@ class Orchestrator:
                 # Finalise
                 self.memory.update_task_status(task_id, "completed", result=full_text)
                 await self.ws_manager.broadcast_task_update(task_id, {
-                    "status":  "completed",
-                    "message": "Done.",
-                    "type":    "stream_end",
-                    "is_chat": True,
+                    "status":       "completed",
+                    "message":      "Done.",
+                    "stream_event": "stream_end",
+                    "is_chat":      True,
                 })
                 return
 

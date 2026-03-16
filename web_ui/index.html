@@ -1078,12 +1078,14 @@ function handleTaskUpdate(data) {
   const { task_id, status, message, agent, result, plan, code_block } = data;
 
   // ── Streaming events ──
-  if (data.type === 'stream_start' || (data.status === 'streaming' && data.is_chat)) {
+  // FIX: orchestrator now sends stream_event (not type) to avoid key collision
+  // with broadcast_task_update's own "type":"task_update" wrapper.
+  if (data.stream_event === 'stream_start' || data.status === 'streaming') {
     setBusy(true);
     handleStreamStart(task_id);
     return;
   }
-  if (data.type === 'stream_end' || (data.status === 'completed' && data.is_chat && _streamEntries[task_id])) {
+  if (data.stream_event === 'stream_end' || (data.status === 'completed' && data.is_chat && _streamEntries[task_id])) {
     setBusy(false);
     handleStreamEnd(task_id);
     return;
