@@ -20,10 +20,11 @@ All Stage 5 + Stage 6 fixes retained:
 import asyncio
 import json
 import logging
+import os
 import re
 import subprocess
 from typing import Optional
-from urllib.parse import quote_plus, urlparse, parse_qs, unquote
+from urllib.parse import quote_plus, urlparse, parse_qs, unquote, quote
 
 import httpx
 from bs4 import BeautifulSoup
@@ -40,15 +41,27 @@ HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
+        "Chrome/124.0.0.0 Safari/537.36"
     ),
+    "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "DNT":             "1",
 }
 
-HN_KEYWORDS  = ("hacker news","hackernews","ycombinator","news.ycombinator","hn top")
-DDG_HTML_URL = "https://html.duckduckgo.com/html/"
-NOISE_TAGS   = ["script","style","nav","footer","header","aside",
-                "noscript","iframe","form","button","svg"]
+HN_KEYWORDS   = ("hacker news","hackernews","ycombinator","news.ycombinator","hn top")
+DDG_HTML_URL  = "https://html.duckduckgo.com/html/"
+DDG_LITE_URL  = "https://lite.duckduckgo.com/lite/"
+BRAVE_API_URL = "https://api.search.brave.com/res/v1/web/search"
+NOISE_TAGS    = ["script","style","nav","footer","header","aside",
+                 "noscript","iframe","form","button","svg"]
+
+# Public SearXNG instances — tried in order if Brave key not set
+SEARXNG_INSTANCES = [
+    "https://searx.be/search",
+    "https://search.mdosch.de/search",
+    "https://searxng.site/search",
+]
 
 
 # ── Availability checks (lazy-cached) ─────────────────────────────────────────
@@ -193,80 +206,149 @@ class BrowserAgent(BaseAgent):
 
     async def _web_search(self, query: str, engine: str = "google") -> str:
         """
-        Multi-endpoint DDG search. Tries these in order:
-          1. Playwright headless (if installed)
-          2. DDG HTML POST endpoint (html.duckduckgo.com — blocked on some hosts)
-          3. DDG Lite GET endpoint  (duckduckgo.com/lite  — different IP, often works)
-          4. DDG JSON instant answer API (api.duckduckgo.com — lightweight, usually allowed)
-          5. Knowledge fallback via stream_llm (never leaves bubble empty)
+        Search priority:
+          1. Brave Search API   — structured JSON, clean URLs, no scraping needed
+                                  Free: 2000 req/month — https://api.search.brave.com
+          2. SearXNG instances  — meta-search (Google + Bing + others), public free instances
+          3. Playwright + Google — headless real Google if Playwright installed
+          4. DDG Lite           — last HTML scrape fallback
+          5. Knowledge fallback — streams answer from model, never leaves bubble empty
         """
-        raw_html = ""
-        text     = ""
+        from config import settings
 
-        # ── Attempt 1: Playwright ──────────────────────────────────────────────
-        if PLAYWRIGHT_AVAILABLE:
-            ddg_url  = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
-            raw_html = await self._playwright_get_html(ddg_url)
-            text     = _extract_text(raw_html, ddg_url)
-            logger.info(f"[BrowserAgent] Playwright search: {len(text)} chars")
+        results: list[dict] = []   # list of {title, url, snippet}
+        source_name = ""
 
-        # ── Attempt 2: DDG HTML POST ───────────────────────────────────────────
-        if not text.strip():
+        # ── Attempt 1: Brave Search API ───────────────────────────────────────
+        brave_key = getattr(settings, "BRAVE_SEARCH_API_KEY", "") or os.getenv("BRAVE_SEARCH_API_KEY", "")
+        if brave_key and not results:
             try:
-                async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True,
-                                             timeout=12.0) as client:
-                    resp = await client.post(DDG_HTML_URL, data={"q": query, "b": ""})
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(
+                        BRAVE_API_URL,
+                        headers={
+                            "Accept":              "application/json",
+                            "Accept-Encoding":     "gzip",
+                            "X-Subscription-Token": brave_key,
+                        },
+                        params={
+                            "q":      query,
+                            "count":  10,
+                            "safesearch": "off",
+                        },
+                    )
                     if resp.status_code == 200:
-                        raw_html = resp.text
-                        text = _extract_text(raw_html, DDG_HTML_URL)
-                        logger.info(f"[BrowserAgent] DDG HTML POST: {len(text)} chars")
+                        data = resp.json()
+                        for item in data.get("web", {}).get("results", [])[:10]:
+                            url     = item.get("url", "")
+                            title   = item.get("title", "")
+                            snippet = item.get("description", "") or item.get("extra_snippets", [""])[0]
+                            if url and url.startswith("http"):
+                                results.append({"title": title, "url": url, "snippet": snippet})
+                        source_name = "Brave Search"
+                        logger.info(f"[BrowserAgent] Brave Search: {len(results)} results")
+                    elif resp.status_code == 401:
+                        logger.warning("[BrowserAgent] Brave API key invalid")
+                    elif resp.status_code == 429:
+                        logger.warning("[BrowserAgent] Brave API rate limited")
+                    else:
+                        logger.warning(f"[BrowserAgent] Brave API returned {resp.status_code}")
             except Exception as e:
-                logger.warning(f"[BrowserAgent] DDG HTML POST failed: {e}")
+                logger.warning(f"[BrowserAgent] Brave Search failed: {e}")
 
-        # ── Attempt 3: DDG Lite GET ────────────────────────────────────────────
-        if not text.strip():
-            try:
-                lite_url = f"https://lite.duckduckgo.com/lite/?q={quote_plus(query)}"
-                async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True,
-                                             timeout=12.0) as client:
-                    resp = await client.get(lite_url)
-                    if resp.status_code == 200:
-                        raw_html = resp.text
-                        text = _extract_text(raw_html, lite_url)
-                        logger.info(f"[BrowserAgent] DDG Lite GET: {len(text)} chars")
-            except Exception as e:
-                logger.warning(f"[BrowserAgent] DDG Lite failed: {e}")
+        # ── Attempt 2: SearXNG public instances ───────────────────────────────
+        if not results:
+            for instance_url in SEARXNG_INSTANCES:
+                try:
+                    async with httpx.AsyncClient(
+                        headers={**HEADERS, "Accept": "application/json"},
+                        follow_redirects=True, timeout=8.0,
+                    ) as client:
+                        resp = await client.get(instance_url, params={
+                            "q":        query,
+                            "format":   "json",
+                            "engines":  "google,bing,duckduckgo",
+                            "language": "en",
+                        })
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            for item in data.get("results", [])[:10]:
+                                url     = item.get("url", "")
+                                title   = item.get("title", "")
+                                snippet = item.get("content", "") or item.get("publishedDate", "")
+                                if url and url.startswith("http"):
+                                    results.append({"title": title, "url": url, "snippet": snippet})
+                            if results:
+                                source_name = f"SearXNG ({instance_url.split('/')[2]})"
+                                logger.info(f"[BrowserAgent] SearXNG {instance_url}: {len(results)} results")
+                                break
+                except Exception as e:
+                    logger.debug(f"[BrowserAgent] SearXNG {instance_url} failed: {e}")
+                    continue
 
-        # ── Attempt 4: DDG JSON instant answer API ─────────────────────────────
-        if not text.strip():
+        # ── Attempt 3: Playwright + Google ────────────────────────────────────
+        if not results and PLAYWRIGHT_AVAILABLE:
             try:
-                json_url = (
-                    f"https://api.duckduckgo.com/?q={quote_plus(query)}"
-                    f"&format=json&no_html=1&skip_disambig=1"
-                )
-                async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True,
-                                             timeout=10.0) as client:
-                    resp = await client.get(json_url)
-                    if resp.status_code == 200:
-                        data   = resp.json()
-                        chunks = []
-                        if data.get("Abstract"):
-                            chunks.append(data["Abstract"])
-                        if data.get("Answer"):
-                            chunks.append(data["Answer"])
-                        for t in data.get("RelatedTopics", [])[:8]:
-                            if isinstance(t, dict) and t.get("Text"):
-                                chunks.append(t["Text"])
-                        if data.get("AbstractURL"):
-                            raw_html = f'<a href="{data["AbstractURL"]}">{data["AbstractURL"]}</a>'
-                        text = " ".join(chunks)
-                        logger.info(f"[BrowserAgent] DDG JSON API: {len(text)} chars")
+                google_url = f"https://www.google.com/search?q={quote_plus(query)}&hl=en&num=10"
+                html = await self._playwright_get_html(google_url)
+                soup = BeautifulSoup(html, "lxml")
+                for div in soup.select("div.g, div[data-sokoban-container]")[:10]:
+                    link = div.select_one("a[href]")
+                    h3   = div.select_one("h3")
+                    snip = div.select_one("div[data-sncf], span.st, div.VwiC3b")
+                    if not link or not h3: continue
+                    href = link.get("href", "")
+                    if href.startswith("/url?q="):
+                        href = href.split("/url?q=")[1].split("&")[0]
+                    if href.startswith("http") and "google.com" not in href:
+                        results.append({
+                            "title":   h3.get_text(),
+                            "url":     href,
+                            "snippet": snip.get_text() if snip else "",
+                        })
+                if results:
+                    source_name = "Google (Playwright)"
+                    logger.info(f"[BrowserAgent] Google Playwright: {len(results)} results")
             except Exception as e:
-                logger.warning(f"[BrowserAgent] DDG JSON API failed: {e}")
+                logger.warning(f"[BrowserAgent] Playwright Google failed: {e}")
+
+        # ── Attempt 4: DDG Lite HTML scrape ───────────────────────────────────
+        if not results:
+            for attempt in range(2):
+                try:
+                    async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True,
+                                                 timeout=12.0) as client:
+                        resp = await client.get(DDG_LITE_URL, params={"q": query})
+                        if resp.status_code == 200:
+                            soup = BeautifulSoup(resp.text, "lxml")
+                            for row in soup.select("tr")[:20]:
+                                link = row.select_one("a.result-link")
+                                snip = row.select_one("td.result-snippet")
+                                if not link: continue
+                                href = link.get("href", "")
+                                # DDG Lite wraps URLs — decode
+                                if "uddg=" in href:
+                                    from urllib.parse import parse_qs, urlparse, unquote
+                                    qs = parse_qs(urlparse(href).query)
+                                    href = unquote(qs.get("uddg", [""])[0])
+                                if href.startswith("http") and "duckduckgo" not in href:
+                                    results.append({
+                                        "title":   link.get_text(strip=True),
+                                        "url":     href,
+                                        "snippet": snip.get_text(strip=True) if snip else "",
+                                    })
+                            if results:
+                                source_name = "DuckDuckGo Lite"
+                                logger.info(f"[BrowserAgent] DDG Lite: {len(results)} results")
+                                break
+                    break
+                except Exception as e:
+                    logger.warning(f"[BrowserAgent] DDG Lite attempt {attempt+1}: {e}")
+                    if attempt == 0: await asyncio.sleep(1.5)
 
         # ── Attempt 5: Knowledge fallback ─────────────────────────────────────
-        if not text.strip():
-            logger.error("[BrowserAgent] All web search attempts failed — using knowledge fallback")
+        if not results:
+            logger.error("[BrowserAgent] All search attempts failed — using knowledge fallback")
             answer = await self.stream_llm(
                 "You are AetherAI. Answer thoroughly and accurately using your knowledge. "
                 "Use clear markdown formatting with headings and bullet points. "
@@ -277,35 +359,38 @@ class BrowserAgent(BaseAgent):
             )
             return f"🔍 **{query}**\n\n{answer}"
 
-        # Extract real result URLs for citations
-        result_urls = []
-        if raw_html:
-            try:
-                soup_ddg = BeautifulSoup(raw_html, "lxml")
-                # DDG HTML/Lite: result links
-                for a in soup_ddg.select(".result__a, .result-link, td a")[:8]:
-                    real = _decode_ddg_url(a.get("href", ""))
-                    if real and real.startswith("http") and "duckduckgo" not in real:
-                        if real not in result_urls:
-                            result_urls.append(real)
-            except Exception:
-                pass
+        # ── Build content for LLM from clean structured results ───────────────
+        # No HTML scraping = no broken links. URLs come directly from API/JSON.
+        content_lines = []
+        clean_urls    = []
+        for r in results[:8]:
+            url   = r["url"].strip().rstrip("/.,;")
+            title = r["title"].strip()
+            snip  = r["snippet"].strip()
+            # Validate URL — must be a real absolute URL
+            if url.startswith("http") and "." in url and len(url) > 10:
+                content_lines.append(f"**{title}**\n{url}\n{snip}")
+                clean_urls.append(url)
 
-        # STREAMING — final summary streams token-by-token
+        content_block = "\n\n".join(content_lines)
+
+        # STREAMING — summary streams token-by-token
         summary = await self.stream_summarize(
-            content=text[:PAGE_TEXT_LIMIT],
+            content=content_block[:PAGE_TEXT_LIMIT],
             context=(
-                f"Web search for: {query}\n"
-                f"Summarize the search results thoroughly. "
-                f"Include all specific facts, figures, and important details found."
+                f"Web search results for: {query}\n"
+                f"Source: {source_name}\n"
+                f"Summarize the key findings thoroughly. "
+                f"Include specific facts, figures, dates, and important details from the results."
             ),
             source="web",
         )
 
+        # Append clean source URLs (already validated — no HTML attributes, no breakage)
         url_block = ""
-        if result_urls:
-            url_lines = "\n".join(f"- {u}" for u in result_urls[:6])
-            url_block = f"\n\n**SEARCH_SOURCES:**\n{url_lines}"
+        if clean_urls:
+            url_lines = "\n".join(f"- {u}" for u in clean_urls[:6])
+            url_block = f"\n\n**Sources ({source_name}):**\n{url_lines}"
 
         return f"🔍 **{query}**\n\n{summary}{url_block}"
 

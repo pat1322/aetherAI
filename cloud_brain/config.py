@@ -30,7 +30,7 @@ class Settings:
         )
     )
     QWEN_MODEL: str = field(
-        default_factory=lambda: os.getenv("QWEN_MODEL", "qwen-turbo")
+        default_factory=lambda: os.getenv("QWEN_MODEL", "qwen-turbo-latest")
     )
     QWEN_VISION_MODEL: str = field(
         default_factory=lambda: os.getenv(
@@ -64,6 +64,13 @@ class Settings:
     # ── Stage 6: Voice / TTS ──────────────────────────────────────────────────
     TTS_VOICE: str = field(
         default_factory=lambda: os.getenv("TTS_VOICE", "en-US-AriaNeural")
+    )
+
+    # ── Search API (Stage 6 patch) ────────────────────────────────────────────
+    # Brave Search API — free 2000 req/month, no credit card
+    # Get key at: https://api.search.brave.com/app/keys
+    BRAVE_SEARCH_API_KEY: str = field(
+        default_factory=lambda: os.getenv("BRAVE_SEARCH_API_KEY", "")
     )
 
 
