@@ -160,22 +160,56 @@ class WebSocketManager:
     async def stream_chunk_to_ui(self, task_id: str, chunk: str):
         """
         STREAM 1 — Broadcast a single streaming token to all UI sessions.
-
-        Bypasses the broadcast_task_update() deduplication cache intentionally:
-        the dedup cache is keyed on the full payload JSON and is designed to
-        suppress repeated identical status messages, not individual token chunks.
-        Calling broadcast_task_update() for every token would (a) pollute the
-        dedup cache with thousands of entries, and (b) incorrectly suppress any
-        two consecutive identical tokens (e.g. "  " whitespace pairs).
-
-        This method calls broadcast_ui_event() directly — same delivery path,
-        no dedup, no cache mutation.
+        NOTE: Use stream_chunk_to_session() for multi-user isolation.
         """
         await self.broadcast_ui_event({
             "type":    "stream_chunk",
             "task_id": task_id,
             "chunk":   chunk,
         })
+
+    async def broadcast_to_session(self, session_id: str, data: dict):
+        """
+        Send a task_update event to ONE specific UI session only.
+        Used for multi-user isolation — each user only sees their own task results.
+        Falls back to broadcast_ui_event() if session_id is unknown (e.g. old client).
+        """
+        if not session_id or session_id not in self._ui_queues:
+            # Session not connected — fall back to broadcast so the task isn't silently lost
+            await self.broadcast_ui_event(data)
+            return
+        payload = data if isinstance(data, str) else __import__('json').dumps(data)
+        q = self._ui_queues[session_id]
+        if q.full():
+            try: q.get_nowait()
+            except: pass
+        try: q.put_nowait(payload)
+        except: pass
+
+    async def broadcast_task_update_to_session(self, session_id: str, task_id: str, data: dict):
+        """
+        Session-targeted version of broadcast_task_update().
+        Sends only to the session that created the task.
+        Dedup cache still applies (same key logic as broadcast_task_update).
+        """
+        import json as _json
+        payload = {"type": "task_update", "task_id": task_id, **data}
+        key     = _json.dumps(payload, sort_keys=True)
+        if self._last_broadcast.get(task_id) == key:
+            return
+        self._last_broadcast[task_id] = key
+        await self.broadcast_to_session(session_id, _json.dumps(payload))
+
+    async def stream_chunk_to_session(self, session_id: str, task_id: str, chunk: str):
+        """
+        Session-targeted streaming chunk — only the owning session sees it.
+        """
+        import json as _json
+        await self.broadcast_to_session(session_id, _json.dumps({
+            "type":    "stream_chunk",
+            "task_id": task_id,
+            "chunk":   chunk,
+        }))
 
     # ── Pending futures ────────────────────────────────────────────────────────
 

@@ -90,14 +90,14 @@ class Orchestrator:
         self.router     = AgentRouter(memory=memory, ws_manager=ws_manager, qwen=self.qwen)
         self._task_handles: dict[str, asyncio.Task] = {}
 
-    async def run_task(self, task_id: str, command: str):
+    async def run_task(self, task_id: str, command: str, session_id: str = ""):
         current = asyncio.current_task()
         if current:
             self._task_handles[task_id] = current
 
         try:
             self.memory.update_task_status(task_id, "planning")
-            await self.ws_manager.broadcast_task_update(task_id, {
+            await self.ws_manager.broadcast_task_update_to_session(session_id, task_id, {
                 "status":  "planning",
                 "message": "AetherAI is analyzing your command...",
             })
@@ -111,7 +111,7 @@ class Orchestrator:
 
             # ── CHAT MODE — streamed ──────────────────────────────────────────
             if command_type == "chat":
-                await self.ws_manager.broadcast_task_update(task_id, {
+                await self.ws_manager.broadcast_task_update_to_session(session_id, task_id, {
                     "status":       "streaming",
                     "message":      "Thinking...",
                     "stream_event": "stream_start",
@@ -125,17 +125,17 @@ class Orchestrator:
                         command, user_context=user_context
                     ):
                         full_text += chunk
-                        await self.ws_manager.stream_chunk_to_ui(task_id, chunk)
+                        await self.ws_manager.stream_chunk_to_session(session_id, task_id, chunk)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
                     logger.error(f"[{task_id}] Stream error: {e}", exc_info=True)
                     error_chunk = f"\n\n⚠️ Error: {e}"
                     full_text += error_chunk
-                    await self.ws_manager.stream_chunk_to_ui(task_id, error_chunk)
+                    await self.ws_manager.stream_chunk_to_session(session_id, task_id, error_chunk)
 
                 self.memory.update_task_status(task_id, "completed", result=full_text)
-                await self.ws_manager.broadcast_task_update(task_id, {
+                await self.ws_manager.broadcast_task_update_to_session(session_id, task_id, {
                     "status":       "completed",
                     "message":      "Done.",
                     "stream_event": "stream_end",
@@ -175,7 +175,7 @@ class Orchestrator:
                     description=step.get("description", ""),
                 )
 
-            await self.ws_manager.broadcast_task_update(task_id, {
+            await self.ws_manager.broadcast_task_update_to_session(session_id, task_id, {
                 "status":  "running",
                 "message": f"Plan ready. Executing {len(plan)} steps...",
                 "plan":    plan,
@@ -199,7 +199,7 @@ class Orchestrator:
                         resolved_text = last_code
                     else:
                         logger.info(f"[{task_id}] Generating content for type step...")
-                        await self.ws_manager.broadcast_task_update(task_id, {
+                        await self.ws_manager.broadcast_task_update_to_session(session_id, task_id, {
                             "status":  "running",
                             "message": "Generating content...",
                         })
@@ -212,7 +212,7 @@ class Orchestrator:
                     logger.info(f"[{task_id}] Resolved content ({len(resolved_text)} chars)")
 
                 self.memory.update_step(task_id, step_num, "running")
-                await self.ws_manager.broadcast_task_update(task_id, {
+                await self.ws_manager.broadcast_task_update_to_session(session_id, task_id, {
                     "status":       "running",
                     "current_step": step_num,
                     "agent":        agent_name,
@@ -221,7 +221,7 @@ class Orchestrator:
 
                 # ── Open stream bubble for streaming agents ────────────────────
                 if is_streaming_step:
-                    await self.ws_manager.broadcast_task_update(task_id, {
+                    await self.ws_manager.broadcast_task_update_to_session(session_id, task_id, {
                         "status":         "running",
                         "stream_event":   "agent_stream_start",
                         "current_step":   step_num,
@@ -235,6 +235,7 @@ class Orchestrator:
                             parameters=parameters,
                             task_id=task_id,
                             previous_output=last_output,
+                            session_id=session_id,
                         ),
                         timeout=120.0,
                     )
@@ -262,12 +263,12 @@ class Orchestrator:
                         if code:
                             # ── Close stream bubble then show code block ───────
                             if is_streaming_step:
-                                await self.ws_manager.broadcast_task_update(task_id, {
+                                await self.ws_manager.broadcast_task_update_to_session(session_id, task_id, {
                                     "status":       "running",
                                     "stream_event": "agent_stream_end",
                                     "current_step": step_num,
                                 })
-                            await self.ws_manager.broadcast_task_update(task_id, {
+                            await self.ws_manager.broadcast_task_update_to_session(session_id, task_id, {
                                 "status":       "running",
                                 "current_step": step_num,
                                 "step_status":  "completed",
@@ -276,7 +277,7 @@ class Orchestrator:
                             })
                         elif is_streaming_step:
                             # ── Close stream bubble — content already streamed ─
-                            await self.ws_manager.broadcast_task_update(task_id, {
+                            await self.ws_manager.broadcast_task_update_to_session(session_id, task_id, {
                                 "status":       "running",
                                 "stream_event": "agent_stream_end",
                                 "current_step": step_num,
@@ -286,7 +287,7 @@ class Orchestrator:
                         else:
                             # ── Non-streaming agent — broadcast normally ────────
                             last_step_streamed = False
-                            await self.ws_manager.broadcast_task_update(task_id, {
+                            await self.ws_manager.broadcast_task_update_to_session(session_id, task_id, {
                                 "status":       "running",
                                 "current_step": step_num,
                                 "step_status":  "completed",
@@ -294,7 +295,7 @@ class Orchestrator:
                             })
                     else:
                         if is_streaming_step:
-                            await self.ws_manager.broadcast_task_update(task_id, {
+                            await self.ws_manager.broadcast_task_update_to_session(session_id, task_id, {
                                 "status":       "running",
                                 "stream_event": "agent_stream_end",
                                 "current_step": step_num,
@@ -325,7 +326,7 @@ class Orchestrator:
             # rendered in a stream bubble — do NOT send result in the completion
             # broadcast or the UI will render it a second time below the bubble.
             # The full result is saved to the DB for history replay.
-            await self.ws_manager.broadcast_task_update(task_id, {
+            await self.ws_manager.broadcast_task_update_to_session(session_id, task_id, {
                 "status":  "completed",
                 "message": "Task completed.",
                 "result":  "" if last_step_streamed else display,
@@ -334,7 +335,7 @@ class Orchestrator:
         except asyncio.CancelledError:
             logger.info(f"[{task_id}] Task cancelled")
             self.memory.update_task_status(task_id, "cancelled")
-            await self.ws_manager.broadcast_task_update(task_id, {
+            await self.ws_manager.broadcast_task_update_to_session(session_id, task_id, {
                 "status":  "cancelled",
                 "message": "Task cancelled.",
             })
@@ -342,7 +343,7 @@ class Orchestrator:
         except Exception as e:
             logger.error(f"[{task_id}] Orchestrator error: {e}", exc_info=True)
             self.memory.update_task_status(task_id, "failed", result=str(e))
-            await self.ws_manager.broadcast_task_update(task_id, {
+            await self.ws_manager.broadcast_task_update_to_session(session_id, task_id, {
                 "status":  "failed",
                 "message": f"Task failed: {e}",
             })

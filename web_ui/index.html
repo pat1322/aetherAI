@@ -1312,7 +1312,7 @@ async function sendCommand() {
     const res = await fetch(`${BASE_URL}/command`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Api-Key': API_KEY },
-      body: JSON.stringify({ command: cmd, source: 'web' }),
+      body: JSON.stringify({ command: cmd, source: 'web', session_id: SESSION_ID }),
     });
     if (res.status === 429) {
       const err = await res.json();

@@ -70,7 +70,8 @@ class AgentRouter:
             return ResearchAgent(**kw)
 
     async def execute_step(self, agent_name: str, parameters: dict,
-                           task_id: str, previous_output: str = "") -> Optional[str]:
+                           task_id: str, previous_output: str = "",
+                           session_id: str = "") -> Optional[str]:
         # "chat" pseudo-agent — handled directly via qwen.answer()
         # Streaming for chat is handled in orchestrator, not here
         if agent_name == "chat":
@@ -79,11 +80,9 @@ class AgentRouter:
 
         agent = self._get_agent(agent_name)
 
-        # Inject stream context so the agent can stream its final LLM
-        # write step token-by-token to the UI via stream_llm() /
-        # stream_summarize(). Agents that don't call those methods are
-        # unaffected — set_stream_context() just sets an attribute.
-        agent.set_stream_context(task_id)
+        # Inject stream context — task_id AND session_id so streaming
+        # chunks only go to the session that created this task.
+        agent.set_stream_context(task_id, session_id)
 
         return await agent.run(
             parameters=parameters,

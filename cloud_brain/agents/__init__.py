@@ -35,14 +35,17 @@ class BaseAgent(ABC):
         self.ws_manager = ws_manager
         self.memory     = memory
         # Set by AgentRouter before each run() call
-        self._stream_task_id: Optional[str] = None
+        self._stream_task_id:    Optional[str] = None
+        self._stream_session_id: str            = ""
 
-    def set_stream_context(self, task_id: str):
+    def set_stream_context(self, task_id: str, session_id: str = ""):
         """
         Called by AgentRouter before agent.run() so the agent knows
-        which WebSocket task to stream chunks to.
+        which WebSocket task and session to stream chunks to.
+        session_id ensures chunks only go to the user who made the request.
         """
-        self._stream_task_id = task_id
+        self._stream_task_id      = task_id
+        self._stream_session_id   = session_id
 
     async def stream_llm(self, system_prompt: str, user_message: str,
                          temperature: float = 0.7) -> str:
@@ -63,8 +66,8 @@ class BaseAgent(ABC):
                 system_prompt, user_message, temperature
             ):
                 full += chunk
-                await self.ws_manager.stream_chunk_to_ui(
-                    self._stream_task_id, chunk
+                await self.ws_manager.stream_chunk_to_session(
+                    self._stream_session_id, self._stream_task_id, chunk
                 )
             return full
         else:

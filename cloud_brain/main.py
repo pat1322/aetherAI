@@ -153,9 +153,10 @@ async def receive_command(req: CommandRequest):
             status_code=429,
             detail=f"Too many tasks in progress. Wait for one to finish.",
         )
-    task_id = str(uuid.uuid4())
+    task_id    = str(uuid.uuid4())
+    session_id = req.session_id or ""
     memory.create_task(task_id, req.command, req.source)
-    asyncio.create_task(orchestrator.run_task(task_id, req.command))
+    asyncio.create_task(orchestrator.run_task(task_id, req.command, session_id))
     return CommandResponse(
         task_id=task_id, status="started",
         message=f"Task received: '{req.command}'",
@@ -194,9 +195,10 @@ async def stream_command(req: CommandRequest):
                 yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
             yield f"data: {json.dumps({'type': 'stream_end', 'full_text': full})}\n\n"
         else:
-            task_id = str(uuid.uuid4())
+            task_id    = str(uuid.uuid4())
+            session_id = req.session_id or ""
             memory.create_task(task_id, req.command, req.source)
-            asyncio.create_task(orchestrator.run_task(task_id, req.command))
+            asyncio.create_task(orchestrator.run_task(task_id, req.command, session_id))
             yield f"data: {json.dumps({'type': 'task_created', 'task_id': task_id})}\n\n"
 
     return StreamingResponse(
