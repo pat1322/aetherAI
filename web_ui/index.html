@@ -997,6 +997,47 @@ function handleStreamEnd(task_id) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   AGENT STREAM END  (Stage 6 — for research/browser/coding/news agents)
+═══════════════════════════════════════════════════════════════════════════ */
+function handleAgentStreamEnd(task_id) {
+  // Finalise the streaming bubble exactly like handleStreamEnd but:
+  //   - Do NOT call unlockInput() — task may have more steps remaining
+  //   - Do NOT hide panelActions — Cancel Task should stay visible
+  //   - Do NOT call loadTasks() — task is still running
+  const fullText = _streamBuffers[task_id] || '';
+  const bodyId   = (_streamEntries[task_id] || '') + '_body';
+  const body     = document.getElementById(bodyId);
+
+  if (body) {
+    const rid = 'cr_' + Math.random().toString(36).slice(2);
+    body.innerHTML = renderMarkdown(fullText);
+
+    const entry = document.getElementById(_streamEntries[task_id]);
+    if (entry) {
+      const btn = document.createElement('button');
+      btn.className   = 'copy-result-btn';
+      btn.id          = rid;
+      btn.title       = 'Copy';
+      btn.textContent = '⎘';
+      btn.onclick     = () => {
+        navigator.clipboard.writeText(fullText).then(() => {
+          btn.textContent = '✓';
+          setTimeout(() => btn.textContent = '⎘', 1500);
+        });
+      };
+      entry.appendChild(btn);
+    }
+  }
+
+  lastShownOutput = fullText;
+  // No TTS for intermediate agent steps — only final chat answers are read aloud
+
+  delete _streamBuffers[task_id];
+  delete _streamEntries[task_id];
+  // Intentionally NOT calling unlockInput() or loadTasks()
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    DEVICE DISPLAY
 ═══════════════════════════════════════════════════════════════════════════ */
 function renderDevices(devices) {
@@ -1083,8 +1124,8 @@ function handleTaskUpdate(data) {
   const { task_id, status, message, agent, result, plan, code_block } = data;
 
   // ── Streaming events ──
-  // FIX: orchestrator now sends stream_event (not type) to avoid key collision
-  // with broadcast_task_update's own "type":"task_update" wrapper.
+  // Streaming event routing — stream_event key avoids collision with "type":"task_update"
+  // Chat streaming (full task is just this stream):
   if (data.stream_event === 'stream_start' || data.status === 'streaming') {
     setBusy(true);
     handleStreamStart(task_id);
@@ -1093,6 +1134,15 @@ function handleTaskUpdate(data) {
   if (data.stream_event === 'stream_end' || (data.status === 'completed' && data.is_chat && _streamEntries[task_id])) {
     setBusy(false);
     handleStreamEnd(task_id);
+    return;
+  }
+  // Agent streaming (one step inside a multi-step task):
+  if (data.stream_event === 'agent_stream_start') {
+    handleStreamStart(task_id);   // open bubble, keep busy bar on
+    return;
+  }
+  if (data.stream_event === 'agent_stream_end') {
+    handleAgentStreamEnd(task_id); // finalise bubble, DON'T unlock input
     return;
   }
 

@@ -1,12 +1,17 @@
 """
-AetherAI — Coding Agent  (Stage 4 — patch 2)
+AetherAI — Coding Agent  (Stage 6 — streaming patch)
 
-FIX 13 Cleaned up the double-alias resolution pattern. The old code did:
-         primary_lang = _ALIASES.get(expr, expr)
-       twice by passing the same expression as both key and default, which
-       was functionally correct but confusing. Now uses a clear two-step:
-         raw_lang     = lang_hint or hint or detect_language(...)
-         primary_lang = _ALIASES.get(raw_lang, raw_lang)
+Streaming change
+────────────────
+The primary code generation call now uses self.stream_llm() so code
+appears character-by-character in the stream bubble before being
+extracted into the final syntax-highlighted code block.
+
+The retry call (on syntax error) also uses stream_llm() so the
+corrected code streams too.
+
+All Stage 4 fixes retained:
+  FIX 13  Clean two-step alias resolution (no double dict.get(x,x))
 """
 
 import ast
@@ -93,7 +98,6 @@ def _validate(language: str, code: str) -> Optional[str]:
 
 
 def _extract_blocks(raw: str) -> list[tuple[str, str]]:
-    """Return list of (lang_hint, code) from fenced blocks, or whole string."""
     matches = re.findall(r"```(\w*)\n?(.*?)```", raw, re.DOTALL)
     if matches:
         return [(l.strip().lower(), c.strip()) for l, c in matches if c.strip()]
@@ -117,7 +121,6 @@ class CodingAgent(BaseAgent):
     async def _run(self, parameters: dict, task_id: str, context: str) -> str:
         task      = parameters.get("task") or parameters.get("query") or context
         lang_hint = parameters.get("language", "").lower().strip()
-        # Normalise aliases immediately so downstream logic is consistent
         lang_hint = _ALIASES.get(lang_hint, lang_hint)
 
         logger.info(f"[CodingAgent] task={task[:80]} lang_hint={lang_hint or 'auto'}")
@@ -130,46 +133,43 @@ class CodingAgent(BaseAgent):
         lang_instr = f"Write the code in {lang_hint}." if lang_hint else ""
         user_msg   = f"Write code for: {task}\n{lang_instr}"
 
-        # ── Generation ────────────────────────────────────────────────────────
-        raw    = await self.qwen.chat(system_prompt=sys_prompt, user_message=user_msg)
+        # STREAMING — code generation streams token-by-token
+        raw    = await self.stream_llm(sys_prompt, user_msg)
         blocks = _extract_blocks(raw)
 
         if not blocks:
             logger.warning("[CodingAgent] Empty response — retrying")
-            raw    = await self.qwen.chat(
-                system_prompt=sys_prompt,
-                user_message=user_msg + "\n\nIMPORTANT: Return ONLY source code.",
+            raw    = await self.stream_llm(
+                sys_prompt,
+                user_msg + "\n\nIMPORTANT: Return ONLY source code.",
             )
             blocks = _extract_blocks(raw)
 
         if not blocks:
             return "⚠️ CodingAgent: Qwen returned no code."
 
-        # FIX 13: clean two-step alias resolution — no more dict.get(x, x) confusion
         raw_lang     = lang_hint or blocks[0][0] or detect_language(task or "", blocks[0][1])
         primary_lang = _ALIASES.get(raw_lang, raw_lang) or "python"
 
-        # ── Validate + retry ──────────────────────────────────────────────────
         err = _validate(primary_lang, blocks[0][1])
         if err:
             logger.warning(f"[CodingAgent] Validation: {err} — retrying")
-            raw2    = await self.qwen.chat(
-                system_prompt=sys_prompt,
-                user_message=f"{user_msg}\n\nPrevious attempt error: {err}\nFix it. Return ONLY code.",
+            # STREAMING — retry also streams
+            raw2    = await self.stream_llm(
+                sys_prompt,
+                f"{user_msg}\n\nPrevious attempt error: {err}\nFix it. Return ONLY code.",
             )
             blocks2 = _extract_blocks(raw2)
             if blocks2 and blocks2[0][1]:
                 blocks = blocks2
 
-        # ── Save files ────────────────────────────────────────────────────────
-        ts    = datetime.now().strftime("%H%M%S")
-        slug  = _slug(task or "code")
-        saved : list[tuple[str, str, str]] = []
+        ts   = datetime.now().strftime("%H%M%S")
+        slug = _slug(task or "code")
+        saved: list[tuple[str, str, str]] = []
 
         for idx, (blk_lang, blk_code) in enumerate(blocks):
             if not blk_code:
                 continue
-            # FIX 13: same clean two-step pattern for per-block language
             raw_blk_lang = lang_hint or blk_lang or detect_language(task or "", blk_code)
             lang         = _ALIASES.get(raw_blk_lang, raw_blk_lang) or "python"
             ext          = LANG_EXTENSIONS.get(lang, "txt")

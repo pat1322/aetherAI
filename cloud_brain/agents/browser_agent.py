@@ -1,17 +1,20 @@
 """
-AetherAI — Browser Agent  (Stage 6 — patch 2)
+AetherAI — Browser Agent  (Stage 6 — streaming patch)
 
-Fixes
-─────
-FIX 3  Removed duplicate `import json as _json` / `import json` — now a
-       single `import json`. The _json alias was only used once and caused
-       confusion.
+Streaming change
+────────────────
+The final summarize/synthesis call in each public action now uses
+self.stream_summarize() so the output streams token-by-token.
 
-FIX 4  MAX_HTTP_RETRIES and HTTP_BACKOFF were defined but never used. They
-       are now wired into the DDG httpx fetch path in _web_search().
+  _web_search()       →  self.stream_summarize() for the final summary
+  _scrape_url()       →  self.stream_summarize() for the page summary
+  _youtube_search()   →  self.stream_summarize() for the "what you'll find" blurb
+  _hacker_news_top()  →  no LLM call, already instant (just formats data)
 
-FIX 10 _check_ytdlp() is now lazy (cached result) so it doesn't block the
-       event loop / uvicorn startup for up to 5 seconds on Railway.
+All Stage 5 + Stage 6 fixes retained:
+  FIX 3   single import json
+  FIX 4   MAX_HTTP_RETRIES / HTTP_BACKOFF wired into DDG fetch
+  FIX 10  _check_ytdlp() lazy cached
 """
 
 import asyncio
@@ -42,10 +45,10 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-HN_KEYWORDS    = ("hacker news","hackernews","ycombinator","news.ycombinator","hn top")
-DDG_HTML_URL   = "https://html.duckduckgo.com/html/"
-NOISE_TAGS     = ["script","style","nav","footer","header","aside",
-                   "noscript","iframe","form","button","svg"]
+HN_KEYWORDS  = ("hacker news","hackernews","ycombinator","news.ycombinator","hn top")
+DDG_HTML_URL = "https://html.duckduckgo.com/html/"
+NOISE_TAGS   = ["script","style","nav","footer","header","aside",
+                "noscript","iframe","form","button","svg"]
 
 
 # ── Availability checks (lazy-cached) ─────────────────────────────────────────
@@ -66,7 +69,6 @@ def _check_trafilatura() -> bool:
     except ImportError:
         return False
 
-# FIX 10: lazy cache — avoids blocking subprocess at import/startup time
 _ytdlp_available: Optional[bool] = None
 
 def _check_ytdlp() -> bool:
@@ -84,7 +86,6 @@ def _check_ytdlp() -> bool:
 
 PLAYWRIGHT_AVAILABLE  = _check_playwright()
 TRAFILATURA_AVAILABLE = _check_trafilatura()
-# yt-dlp checked lazily on first use — do NOT call _check_ytdlp() here
 
 logger.info(f"[BrowserAgent] playwright={PLAYWRIGHT_AVAILABLE} "
             f"trafilatura={TRAFILATURA_AVAILABLE}")
@@ -93,15 +94,11 @@ logger.info(f"[BrowserAgent] playwright={PLAYWRIGHT_AVAILABLE} "
 # ── Text extraction helpers ────────────────────────────────────────────────────
 
 def _extract_text(html: str, url: str = "") -> str:
-    """
-    Use trafilatura if available (far better quality), else fall back to BeautifulSoup.
-    """
     if TRAFILATURA_AVAILABLE:
         try:
             import trafilatura
             text = trafilatura.extract(
-                html,
-                url=url or None,
+                html, url=url or None,
                 include_comments=False,
                 include_tables=True,
                 no_fallback=False,
@@ -112,7 +109,6 @@ def _extract_text(html: str, url: str = "") -> str:
         except Exception as e:
             logger.debug(f"[BrowserAgent] trafilatura failed: {e}")
 
-    # Fallback: BeautifulSoup
     soup = BeautifulSoup(html, "lxml")
     for tag in soup(NOISE_TAGS): tag.decompose()
     raw   = soup.get_text(separator="\n", strip=True)
@@ -131,14 +127,12 @@ def _extract_text(html: str, url: str = "") -> str:
 
 
 async def _fetch_and_extract(url: str, timeout: float = 15.0) -> tuple[str, str]:
-    """Fetch URL and extract clean text. Returns (title, text)."""
     try:
         async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True,
                                      timeout=timeout) as client:
             r = await client.get(url)
             r.raise_for_status()
             html = r.text
-
         soup  = BeautifulSoup(html, "lxml")
         title = soup.title.string.strip() if soup.title else url
         text  = _extract_text(html, url)
@@ -149,7 +143,6 @@ async def _fetch_and_extract(url: str, timeout: float = 15.0) -> tuple[str, str]
 
 
 def _decode_ddg_url(href: str):
-    """Decode a DuckDuckGo redirect URL to get the real destination URL."""
     if not href:
         return None
     if href.startswith("http") and "duckduckgo" not in href:
@@ -176,7 +169,7 @@ class BrowserAgent(BaseAgent):
         query  = parameters.get("query", "") or context
         goal   = parameters.get("goal", "") or query
 
-        ytdlp = _check_ytdlp()  # lazy — safe to call here
+        ytdlp = _check_ytdlp()
         logger.info(f"[BrowserAgent] action={action} "
                     f"playwright={PLAYWRIGHT_AVAILABLE} "
                     f"trafilatura={TRAFILATURA_AVAILABLE} "
@@ -206,7 +199,6 @@ class BrowserAgent(BaseAgent):
             raw_html = await self._playwright_get_html(ddg_url)
             text = _extract_text(raw_html, ddg_url)
         else:
-            # FIX 4: wire up MAX_HTTP_RETRIES / HTTP_BACKOFF
             last_exc = None
             for attempt in range(MAX_HTTP_RETRIES):
                 try:
@@ -229,7 +221,7 @@ class BrowserAgent(BaseAgent):
         if not text.strip():
             return f"🔍 **{query}**\n\n{await self.qwen.answer(query)}"
 
-        # Extract real result URLs from DDG HTML for research_agent citations
+        # Extract real result URLs for citations
         result_urls = []
         if raw_html:
             try:
@@ -242,7 +234,8 @@ class BrowserAgent(BaseAgent):
             except Exception:
                 pass
 
-        summary = await self.qwen.summarize(
+        # STREAMING — final summary streams token-by-token
+        summary = await self.stream_summarize(
             content=text[:PAGE_TEXT_LIMIT],
             context=(
                 f"Web search for: {query}\n"
@@ -276,7 +269,8 @@ class BrowserAgent(BaseAgent):
         if not text.strip():
             return f"⚠️ No readable content found at {url}"
 
-        summary = await self.qwen.summarize(
+        # STREAMING — page summary streams token-by-token
+        summary = await self.stream_summarize(
             content=text[:PAGE_TEXT_LIMIT],
             context=(
                 f"URL: {url}\n"
@@ -288,7 +282,7 @@ class BrowserAgent(BaseAgent):
         )
         return f"🌐 **{title}**\n{url}\n\n{summary}"
 
-    # ── YouTube (yt-dlp preferred, DDG fallback) ───────────────────────────────
+    # ── YouTube ────────────────────────────────────────────────────────────────
 
     async def _youtube_search(self, query: str) -> str:
         try:
@@ -304,20 +298,14 @@ class BrowserAgent(BaseAgent):
         return await self._youtube_via_ddg(query)
 
     async def _youtube_via_ytdlp(self, query: str) -> Optional[str]:
-        """Use yt-dlp to get real YouTube video metadata."""
         try:
             proc = await asyncio.create_subprocess_exec(
-                "yt-dlp",
-                "--dump-json",
-                "--flat-playlist",
-                "--no-warnings",
+                "yt-dlp", "--dump-json", "--flat-playlist", "--no-warnings",
                 f"ytsearch8:{query}",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=20.0
-            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20.0)
 
             if proc.returncode != 0:
                 logger.warning(f"[BrowserAgent] yt-dlp error: {stderr.decode()[:200]}")
@@ -329,12 +317,12 @@ class BrowserAgent(BaseAgent):
                 try:
                     v = json.loads(line)
                     videos.append({
-                        "title":    v.get("title", ""),
-                        "url":      v.get("url") or f"https://youtube.com/watch?v={v.get('id','')}",
+                        "title":   v.get("title", ""),
+                        "url":     v.get("url") or f"https://youtube.com/watch?v={v.get('id','')}",
                         "duration": v.get("duration", 0),
-                        "views":    v.get("view_count", 0),
-                        "channel":  v.get("channel") or v.get("uploader", ""),
-                        "desc":     (v.get("description") or "")[:150],
+                        "views":   v.get("view_count", 0),
+                        "channel": v.get("channel") or v.get("uploader", ""),
+                        "desc":    (v.get("description") or "")[:150],
                     })
                 except json.JSONDecodeError:
                     continue
@@ -356,13 +344,14 @@ class BrowserAgent(BaseAgent):
                     + (f"\n   _{v['desc']}_" if v['desc'] else "")
                 )
 
-            video_list = "\n\n".join(lines)
-
+            video_list  = "\n\n".join(lines)
             result_text = "\n".join(
                 f"{v['title']} — {v['channel']} — {v['desc']}"
                 for v in videos[:8]
             )
-            summary = await self.qwen.summarize(
+
+            # STREAMING — "what you'll find" blurb streams token-by-token
+            summary = await self.stream_summarize(
                 content=result_text,
                 context=(
                     f"YouTube search results for: {query}\n"
@@ -387,15 +376,13 @@ class BrowserAgent(BaseAgent):
             return None
 
     async def _youtube_via_ddg(self, query: str) -> str:
-        """Fallback: DDG search with site:youtube.com."""
         ddg_query = f"{query} site:youtube.com"
         results: list[dict] = []
 
         try:
             async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True,
                                          timeout=15.0) as client:
-                resp = await client.post(DDG_HTML_URL,
-                                         data={"q": ddg_query, "b": ""})
+                resp = await client.post(DDG_HTML_URL, data={"q": ddg_query, "b": ""})
                 resp.raise_for_status()
                 soup = BeautifulSoup(resp.text, "lxml")
 
@@ -428,9 +415,11 @@ class BrowserAgent(BaseAgent):
         for i, r in enumerate(results[:8], 1):
             desc_str = f" — {r['desc'][:80]}" if r['desc'] else ""
             lines.append(f"{i}. **{r['title']}**{desc_str}\n   🔗 {r['url']}")
-        video_list = "\n".join(lines)
+        video_list  = "\n".join(lines)
         result_text = "\n".join(f"{r['title']}: {r['desc']}" for r in results[:8])
-        summary = await self.qwen.summarize(
+
+        # STREAMING
+        summary = await self.stream_summarize(
             content=result_text,
             context=f"YouTube search: {query}\nDescribe what types of videos appeared.",
             source="web",
@@ -440,6 +429,7 @@ class BrowserAgent(BaseAgent):
                 f"**Videos:**\n\n{video_list}")
 
     # ── Hacker News ─────────────────────────────────────────────────────────────
+    # No LLM call — just formats data, already instant
 
     async def _hacker_news_top(self, n: int = 10) -> str:
         try:
@@ -565,7 +555,8 @@ class BrowserAgent(BaseAgent):
                 if not results:
                     results.append(_extract_text(await page.content()))
 
-                summary = await self.qwen.summarize(
+                # STREAMING — workflow summary streams token-by-token
+                summary = await self.stream_summarize(
                     content="\n\n".join(results),
                     context=f"Goal: {goal}\nSummarize everything found in detail.",
                     source="web",

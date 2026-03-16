@@ -1,21 +1,27 @@
 """
-AetherAI — Orchestrator  (Stage 6 — Layer 1)
+AetherAI — Orchestrator  (Stage 6 — streaming patch)
 
-Stage 6 change
-──────────────
-STREAM 1  The chat branch now streams tokens to the UI instead of waiting
-          for the full answer. Sequence:
-            1. Broadcast  type=stream_start  (UI creates the message bubble)
-            2. For every chunk: ws_manager.stream_chunk_to_ui()
-            3. Broadcast  type=stream_end    (UI finalises + runs markdown)
+Streaming addition
+──────────────────
+STREAMING_AGENTS defines which agents stream their final LLM write step
+token-by-token. For these agents the orchestrator:
 
-          The agent (task) branch is completely unchanged — multi-step tasks
-          already show step-by-step progress and don't benefit from streaming
-          in the same way.
+  1. Sends  stream_event="agent_stream_start"  before execute_step()
+     so the UI opens a streaming bubble for this step.
+  2. The agent streams chunks internally via stream_llm() / stream_summarize()
+     directly into the WebSocket (no orchestrator involvement needed).
+  3. Sends  stream_event="agent_stream_end"  after execute_step() so
+     the UI finalises the bubble (renders markdown, adds copy button).
+  4. Skips broadcasting the step output as a plain logMarkdown entry
+     because the streaming bubble already showed it.
 
-All Stage 5 fixes retained:
-  FIX 7   _last_broadcast memory leak cleared in finally block
-  FIX 9   STEP_OUTPUT_PREVIEW raised to 800 chars
+The coding_agent is a special case: it streams the code generation call
+but then returns a [CODE_BLOCK:...] tagged string. The orchestrator
+detects the code block tag and renders it as a syntax-highlighted block
+as before — the stream bubble is already finalised by then.
+
+All Stage 5 fixes retained.
+All Stage 6 Layer 1 fixes retained (FIX 7, FIX 9).
 """
 
 import asyncio
@@ -30,6 +36,16 @@ from agent_router import AgentRouter
 logger = logging.getLogger(__name__)
 
 STEP_OUTPUT_PREVIEW = 800
+
+# Agents that stream their final LLM write step via stream_llm() /
+# stream_summarize(). The orchestrator sends agent_stream_start/end
+# around these so the UI can open and close the streaming bubble.
+STREAMING_AGENTS = frozenset({
+    "research_agent",
+    "browser_agent",
+    "coding_agent",
+    "news_agent",
+})
 
 
 def extract_code_block(output: str) -> tuple[str, str, str]:
@@ -85,13 +101,8 @@ class Orchestrator:
             command_type = await self.qwen.classify_command(command, user_context=user_context)
             logger.info(f"[{task_id}] Classified: {command_type}")
 
-            # ── CHAT MODE — streamed (Stage 6) ────────────────────────────────
+            # ── CHAT MODE — streamed ──────────────────────────────────────────
             if command_type == "chat":
-                # FIX: use "stream_event" instead of "type" to avoid key
-                # collision with broadcast_task_update()'s own "type":"task_update"
-                # wrapper. Python dict unpacking (**data) comes last so any
-                # "type" key inside data would override "task_update", causing
-                # ws.onmessage to never route the message to handleTaskUpdate().
                 await self.ws_manager.broadcast_task_update(task_id, {
                     "status":       "streaming",
                     "message":      "Thinking...",
@@ -115,7 +126,6 @@ class Orchestrator:
                     full_text += error_chunk
                     await self.ws_manager.stream_chunk_to_ui(task_id, error_chunk)
 
-                # Finalise
                 self.memory.update_task_status(task_id, "completed", result=full_text)
                 await self.ws_manager.broadcast_task_update(task_id, {
                     "status":       "completed",
@@ -125,7 +135,7 @@ class Orchestrator:
                 })
                 return
 
-            # ── TASK MODE — unchanged from Stage 5 ───────────────────────────
+            # ── TASK MODE ─────────────────────────────────────────────────────
             plan = await self.qwen.plan_task(command, user_context=user_context)
 
             doc_idx = [i for i, s in enumerate(plan) if s.get("agent") == "document_agent"]
@@ -173,6 +183,7 @@ class Orchestrator:
                 agent_name  = step.get("agent", "research_agent")
                 description = step.get("description", "")
                 parameters  = step.get("parameters", {})
+                is_streaming_step = agent_name in STREAMING_AGENTS
 
                 if step.get("_needs_content"):
                     if last_code:
@@ -199,6 +210,15 @@ class Orchestrator:
                     "message":      f"Step {step_num}: {description}",
                 })
 
+                # ── Open stream bubble for streaming agents ────────────────────
+                if is_streaming_step:
+                    await self.ws_manager.broadcast_task_update(task_id, {
+                        "status":         "running",
+                        "stream_event":   "agent_stream_start",
+                        "current_step":   step_num,
+                        "agent":          agent_name,
+                    })
+
                 try:
                     output = await asyncio.wait_for(
                         self.router.execute_step(
@@ -218,6 +238,8 @@ class Orchestrator:
                         if is_type_action(agent_name, parameters):
                             chat_output = type_action_summary(parameters)
                             db_output   = chat_output
+                            # type actions are not streaming — broadcast normally
+                            is_streaming_step = False
                         else:
                             db_output = summary if summary else output
                             if len(db_output) > STEP_OUTPUT_PREVIEW:
@@ -229,6 +251,13 @@ class Orchestrator:
                         last_output = output
 
                         if code:
+                            # ── Close stream bubble then show code block ───────
+                            if is_streaming_step:
+                                await self.ws_manager.broadcast_task_update(task_id, {
+                                    "status":       "running",
+                                    "stream_event": "agent_stream_end",
+                                    "current_step": step_num,
+                                })
                             await self.ws_manager.broadcast_task_update(task_id, {
                                 "status":       "running",
                                 "current_step": step_num,
@@ -236,7 +265,17 @@ class Orchestrator:
                                 "output":       summary,
                                 "code_block":   {"language": lang, "code": code},
                             })
+                        elif is_streaming_step:
+                            # ── Close stream bubble — content already streamed ─
+                            await self.ws_manager.broadcast_task_update(task_id, {
+                                "status":       "running",
+                                "stream_event": "agent_stream_end",
+                                "current_step": step_num,
+                            })
+                            # Do NOT send chat_output again — it was already
+                            # streamed token-by-token to the UI bubble
                         else:
+                            # ── Non-streaming agent — broadcast normally ────────
                             await self.ws_manager.broadcast_task_update(task_id, {
                                 "status":       "running",
                                 "current_step": step_num,
@@ -244,6 +283,12 @@ class Orchestrator:
                                 "output":       chat_output,
                             })
                     else:
+                        if is_streaming_step:
+                            await self.ws_manager.broadcast_task_update(task_id, {
+                                "status":       "running",
+                                "stream_event": "agent_stream_end",
+                                "current_step": step_num,
+                            })
                         self.memory.update_step(task_id, step_num, "completed", "")
 
                 except asyncio.CancelledError:

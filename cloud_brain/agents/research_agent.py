@@ -1,8 +1,20 @@
 """
-AetherAI — Research Agent  (Stage 6)
+AetherAI — Research Agent  (Stage 6 — streaming patch)
 
-Stage 6 upgrade: trafilatura replaces BeautifulSoup for page fetching,
-giving much cleaner article text with no ads/navbars/cookie banners.
+Streaming change
+────────────────
+The three final LLM write methods now use self.stream_llm() instead of
+self.qwen.chat() so the report appears token-by-token in the UI.
+
+  _write_brief_from_context()  →  self.stream_llm()
+  _write_brief()               →  self.stream_llm()
+  _knowledge_brief()           →  self.stream_llm()
+
+All intermediate calls (DDG search, page fetch, dedup) remain blocking
+since they are not LLM calls — they are HTTP fetches that happen before
+the write step begins.
+
+Stage 6 base: trafilatura replaces BeautifulSoup for page fetching.
 """
 
 import asyncio
@@ -27,8 +39,8 @@ HEADERS = {
     )
 }
 
-DDG_HTML_URL    = "https://html.duckduckgo.com/html/"
-DDG_JSON_URL    = "https://api.duckduckgo.com/?q={q}&format=json&no_html=1&skip_disambig=1"
+DDG_HTML_URL       = "https://html.duckduckgo.com/html/"
+DDG_JSON_URL       = "https://api.duckduckgo.com/?q={q}&format=json&no_html=1&skip_disambig=1"
 PAGE_FETCH_LIMIT   = 6000
 PAGE_FETCH_TIMEOUT = 10.0
 MAX_SNIPPETS       = 8
@@ -45,7 +57,6 @@ TRAFILATURA_AVAILABLE = _check_trafilatura()
 
 
 def _extract_page_text(html: str, url: str = "") -> Optional[str]:
-    """Use trafilatura if available, else BeautifulSoup fallback."""
     if TRAFILATURA_AVAILABLE:
         try:
             import trafilatura
@@ -60,7 +71,6 @@ def _extract_page_text(html: str, url: str = "") -> Optional[str]:
         except Exception as e:
             logger.debug(f"[ResearchAgent] trafilatura failed: {e}")
 
-    # BeautifulSoup fallback
     soup = BeautifulSoup(html, "lxml")
     for tag in soup(["script","style","nav","footer","header","aside","form"]):
         tag.decompose()
@@ -118,12 +128,10 @@ class ResearchAgent(BaseAgent):
         query     = _clean_query(raw_query)
         logger.info(f"[ResearchAgent] Query: '{query}' | browser_context={bool(context and len(context)>200)}")
 
-        # Step 2 of research pipeline — browser_agent already fetched live data
         if context and len(context) > 200:
             logger.info(f"[ResearchAgent] Synthesizing from browser context ({len(context)} chars)")
             return await self._write_brief_from_context(query, context)
 
-        # Standalone research — do our own search
         snippets, urls = await self._search(query)
         if not snippets:
             return await self._knowledge_brief(raw_query)
@@ -131,23 +139,12 @@ class ResearchAgent(BaseAgent):
         return await self._write_brief(query, snippets, urls)
 
     async def _write_brief_from_context(self, query: str, browser_output: str) -> str:
-        """
-        Synthesize a research report from browser-fetched live content.
-        URLs are extracted in Python first so Qwen cannot hallucinate them.
-        """
-        import re
-
-        # ── Extract REAL URLs from browser output before calling Qwen ──────────
-        raw_urls = re.findall(
-            r'https?://[^\s<>"\')\]]+',
-            browser_output
-        )
-        # Clean trailing punctuation, deduplicate, keep max 8
+        """Synthesize a research report from browser-fetched content — STREAMED."""
+        raw_urls = re.findall(r'https?://[^\s<>"\')\]]+', browser_output)
         seen, real_urls = set(), []
         for u in raw_urls:
             u = u.rstrip(".,;:!?)\'\"")
             if u not in seen and len(u) > 10:
-                # Skip common noise
                 if not any(noise in u for noise in [
                     "duckduckgo.com", "google.com/search",
                     "javascript:", "data:", "example.com",
@@ -171,7 +168,7 @@ Base your report ENTIRELY on this content.
 ABSOLUTE RULES:
 - NEVER invent, guess, or modify URLs
 - NEVER use "as of my knowledge cutoff" or "based on my training data"
-- The ## Sources section MUST contain ONLY the URLs listed in REAL SOURCES below — copy them exactly
+- The ## Sources section MUST contain ONLY the URLs listed in REAL SOURCES below
 - Use only plain markdown. Never output HTML tags like <a>, <br>, <p>
 
 FORMAT YOUR RESPONSE:
@@ -197,7 +194,8 @@ REAL SOURCES (copy these exactly into ## Sources, do not modify):
 LIVE WEB CONTENT:
 {browser_output[:5000]}'''
 
-        result = await self.qwen.chat(
+        # STREAMING — tokens appear in UI as they arrive
+        result = await self.stream_llm(
             system_prompt=(
                 "You are a precise research analyst. "
                 "Write structured briefs from browser content only. "
@@ -208,18 +206,16 @@ LIVE WEB CONTENT:
             temperature=0.3,
         )
 
-        # ── Safety: replace any remaining <a href...> HTML in output ───────────
+        # Safety: strip any remaining HTML tags
         result = re.sub(
             r'<a\s[^>]*href=["\']([^"\']+)["\'][^>]*>([^<]*)</a>',
-            r'[\2](\1)',
-            result,
+            r'[\2](\1)', result,
         )
         result = re.sub(r'<[^>]+>', '', result)
-
         return result
 
-    async def _write_brief(self, query: str, snippets: list[str],
-                            urls: list[str]) -> str:
+    async def _write_brief(self, query: str, snippets: list[str], urls: list[str]) -> str:
+        """Write a research brief from DDG snippets — STREAMED."""
         combined = "\n\n---SOURCE---\n\n".join(snippets[:MAX_SNIPPETS])
 
         prompt = f"""You are writing a research brief about: "{query}"
@@ -255,7 +251,8 @@ FORMAT:
 LIVE WEB CONTENT:
 {combined}"""
 
-        brief = await self.qwen.chat(
+        # STREAMING — tokens appear in UI as they arrive
+        brief = await self.stream_llm(
             system_prompt=(
                 "You are a precise academic research assistant with live web access. "
                 "Write structured research briefs based strictly on provided content. "
@@ -266,9 +263,7 @@ LIVE WEB CONTENT:
         )
 
         if urls:
-            source_lines = "\n".join(
-                f"{i+1}. {u}" for i, u in enumerate(urls[:6])
-            )
+            source_lines = "\n".join(f"{i+1}. {u}" for i, u in enumerate(urls[:6]))
             if "## Sources" in brief:
                 brief = re.sub(r"## Sources.*$",
                                f"## Sources\n{source_lines}",
@@ -279,15 +274,20 @@ LIVE WEB CONTENT:
         return brief
 
     async def _knowledge_brief(self, query: str) -> str:
-        return await self.qwen.answer(
-            question=query,
-            context=(
-                "Web search returned no results. Answer from training knowledge. "
-                "Use Overview/Key Findings/Analysis structure. "
-                "Note at the end this is training knowledge, not live data, "
-                "and suggest where to check for current info."
-            ),
+        """Answer from training knowledge when web search returns nothing — STREAMED."""
+        system = (
+            "You are a precise academic research assistant. "
+            "Answer from training knowledge. "
+            "Use Overview/Key Findings/Analysis structure. "
+            "Note at the end this is training knowledge, not live data, "
+            "and suggest where to check for current info. "
+            "Never use knowledge-cutoff disclaimers."
         )
+        user = (
+            f"Request: {query}\n\n"
+            "Web search returned no results. Answer from training knowledge."
+        )
+        return await self.stream_llm(system, user, temperature=0.5)
 
     async def _search(self, query: str) -> tuple[list[str], list[str]]:
         snippets, urls = await self._ddg_html(query)
@@ -299,7 +299,6 @@ LIVE WEB CONTENT:
 
         snippets = _dedup(snippets)
 
-        # Fetch full page text from top 2 URLs using trafilatura
         if urls:
             fetch_results = await asyncio.gather(
                 *[self._fetch_page(u) for u in urls[:2]],
@@ -374,7 +373,6 @@ LIVE WEB CONTENT:
         return snippets, urls
 
     async def _fetch_page(self, url: str) -> Optional[str]:
-        """Fetch page using trafilatura for clean article extraction."""
         try:
             async with httpx.AsyncClient(
                 headers=HEADERS, follow_redirects=True, timeout=PAGE_FETCH_TIMEOUT

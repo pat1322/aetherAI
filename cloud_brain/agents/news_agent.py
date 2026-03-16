@@ -1,23 +1,14 @@
 """
-AetherAI — News Agent
-Primary:  GNews API (100 req/day free, requires GNEWS_API_KEY in env)
-Fallback: Hacker News Firebase API (no key, always free)
+AetherAI — News Agent  (Stage 6 — streaming patch)
 
-Capabilities:
-  • Top headlines by topic (tech, business, sports, health, science, entertainment)
-  • Country-specific news (defaults to Philippines)
-  • Search news by keyword
-  • Morning briefing (curated summary)
-  • Hacker News top stories (no key needed)
+Streaming change
+────────────────
+The final LLM synthesis/briefing calls now use self.stream_llm() so
+the summary appears token-by-token.
 
-Trigger examples:
-  "give me today's tech news"
-  "what's the latest news"
-  "morning briefing"
-  "news about AI today"
-  "top news in the Philippines"
-  "business news"
-  "science news this week"
+  _gnews()             →  synthesis at the end streams via stream_llm()
+  _morning_briefing()  →  full briefing streams via stream_llm()
+  _hacker_news()       →  no LLM call, instant (just formats API data)
 """
 
 import asyncio
@@ -64,10 +55,9 @@ class NewsAgent(BaseAgent):
             return f"⚠️ NewsAgent error: {e}"
 
     async def _run(self, parameters: dict, task_id: str, context: str) -> Optional[str]:
-        query    = parameters.get("query") or context or ""
-        ql       = query.lower()
+        query = parameters.get("query") or context or ""
+        ql    = query.lower()
 
-        # Detect intent
         if any(k in ql for k in ["hacker news", "hackernews", "hn"]):
             return await self._hacker_news()
 
@@ -91,10 +81,10 @@ class NewsAgent(BaseAgent):
             async with httpx.AsyncClient(timeout=12.0) as client:
                 if search:
                     params = {
-                        "q":       search,
-                        "lang":    "en",
-                        "max":     10,
-                        "apikey":  self.gnews_key,
+                        "q":      search,
+                        "lang":   "en",
+                        "max":    10,
+                        "apikey": self.gnews_key,
                     }
                     r = await client.get(f"{GNEWS_BASE}/search", params=params)
                 else:
@@ -125,25 +115,25 @@ class NewsAgent(BaseAgent):
         label = search or category.title() or "Today"
         lines = [f"## 📰 {label} News\n"]
         for a in articles[:8]:
-            title   = a.get("title", "")
-            desc    = a.get("description", "") or ""
-            url     = a.get("url", "")
-            source  = a.get("source", {}).get("name", "")
-            pubdate = a.get("publishedAt", "")[:10]
+            title      = a.get("title", "")
+            desc       = a.get("description", "") or ""
+            url        = a.get("url", "")
+            source     = a.get("source", {}).get("name", "")
+            pubdate    = a.get("publishedAt", "")[:10]
             short_desc = desc[:120] + "..." if len(desc) > 120 else desc
-
             lines.append(
                 f"• **{title}**\n"
                 f"  {short_desc}\n"
                 f"  📌 _{source} · {pubdate}_ — 🔗 {url}"
             )
 
-        # Ask Qwen for a brief synthesis
         headlines_text = "\n".join(
             f"- {a.get('title','')}. {a.get('description','')}"
             for a in articles[:8]
         )
-        synthesis = await self.qwen.chat(
+
+        # STREAMING — synthesis streams token-by-token
+        synthesis = await self.stream_llm(
             system_prompt=(
                 "You are a news analyst. Given these headlines, write a 2-3 sentence "
                 "synthesis of the key themes and what matters most. Be concise and direct."
@@ -159,9 +149,6 @@ class NewsAgent(BaseAgent):
     # ── Morning briefing ──────────────────────────────────────────────────────
 
     async def _morning_briefing(self) -> str:
-        results = []
-
-        # Fetch tech + world news in parallel
         if self.gnews_key:
             tech_task  = self._fetch_gnews_raw("technology")
             world_task = self._fetch_gnews_raw("world")
@@ -184,7 +171,8 @@ class NewsAgent(BaseAgent):
                 f"- [Hacker News] {s.get('title','')}" for s in hn_stories
             )
 
-        briefing = await self.qwen.chat(
+        # STREAMING — full briefing streams token-by-token
+        briefing = await self.stream_llm(
             system_prompt=(
                 "You are a professional news briefer. Given these headlines, write a "
                 "concise morning briefing in 3-5 paragraphs. Cover the most important "
@@ -197,7 +185,7 @@ class NewsAgent(BaseAgent):
 
         return f"## ☀️ Morning Briefing\n\n{briefing}\n\n_Powered by GNews.io + Hacker News_"
 
-    # ── Hacker News ───────────────────────────────────────────────────────────
+    # ── Hacker News — no LLM call, already instant ────────────────────────────
 
     async def _hacker_news(self, n: int = 10) -> str:
         stories = await self._fetch_hn_raw(n)
@@ -273,7 +261,6 @@ class NewsAgent(BaseAgent):
             m = re.search(pat, query_lc)
             if m:
                 term = m.group(1).strip()
-                # Skip if it's just a category word
                 if term not in CATEGORY_MAP:
                     return term
         return ""

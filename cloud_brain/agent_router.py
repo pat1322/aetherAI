@@ -1,9 +1,11 @@
 """
-AetherAI — Agent Router  (Stage 5 — patch 10)
+AetherAI — Agent Router  (Stage 6 — streaming patch)
 
-Patch 10 addition:
-  • "chat" pseudo-agent — handled directly in router via qwen.answer(),
-    used for real-time date/time queries and direct math answers.
+Streaming addition
+──────────────────
+execute_step() now calls agent.set_stream_context(task_id) before
+agent.run() so every agent knows which task to stream chunks to.
+The "chat" pseudo-agent is unchanged — it streams via the orchestrator.
 """
 
 import logging
@@ -68,13 +70,21 @@ class AgentRouter:
             return ResearchAgent(**kw)
 
     async def execute_step(self, agent_name: str, parameters: dict,
-                            task_id: str, previous_output: str = "") -> Optional[str]:
-        # "chat" pseudo-agent — answered directly by Qwen with live datetime injected
+                           task_id: str, previous_output: str = "") -> Optional[str]:
+        # "chat" pseudo-agent — handled directly via qwen.answer()
+        # Streaming for chat is handled in orchestrator, not here
         if agent_name == "chat":
             query = parameters.get("query", "") or previous_output or ""
             return await self.qwen.answer(question=query)
 
         agent = self._get_agent(agent_name)
+
+        # Inject stream context so the agent can stream its final LLM
+        # write step token-by-token to the UI via stream_llm() /
+        # stream_summarize(). Agents that don't call those methods are
+        # unaffected — set_stream_context() just sets an attribute.
+        agent.set_stream_context(task_id)
+
         return await agent.run(
             parameters=parameters,
             task_id=task_id,
