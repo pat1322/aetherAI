@@ -720,14 +720,20 @@ async function fetchServerConfig() {
   try {
     const res = await fetch(`${BASE_URL}/ui/config`);
     if (res.ok) {
-      const cfg    = await res.json();
-      API_KEY      = cfg.api_key       || '';
+      const cfg     = await res.json();
+      API_KEY       = cfg.api_key       || '';
       SESSION_TOKEN = cfg.session_token || '';
     }
   } catch(e) {
     console.warn('[AetherAI] Could not fetch /ui/config:', e);
   }
+  // Connect WS and kick off all polling AFTER the API key is set.
+  // If these run before fetchServerConfig completes they fire with
+  // API_KEY='' and get 401 from the server.
   connectWS();
+  loadTasks();
+  refreshFiles();
+  refreshDevices();
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1421,7 +1427,7 @@ async function loadTasks() {
       </div>`).join('');
   } catch {}
 }
-loadTasks();
+// Initial loadTasks() moved into fetchServerConfig() to ensure API_KEY is set first
 setInterval(loadTasks, 10000);
 
 async function selectTask(taskId) {
@@ -1560,7 +1566,7 @@ async function refreshFiles() {
     }).join('');
   } catch {}
 }
-refreshFiles();
+// Initial refreshFiles() moved into fetchServerConfig()
 setInterval(refreshFiles, 8000);
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1575,7 +1581,7 @@ async function refreshDevices() {
     renderDevices(data.devices || []);
   } catch {}
 }
-refreshDevices();
+// Initial refreshDevices() moved into fetchServerConfig()
 setInterval(refreshDevices, 10000);
 
 document.addEventListener('visibilitychange', () => {
