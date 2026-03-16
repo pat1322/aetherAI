@@ -177,6 +177,7 @@ class Orchestrator:
             last_output            = command
             last_code              = None
             last_meaningful_output = command
+            last_step_streamed     = False  # True when final step was a streaming agent
 
             for step in plan:
                 step_num    = step.get("step", 0)
@@ -272,10 +273,11 @@ class Orchestrator:
                                 "stream_event": "agent_stream_end",
                                 "current_step": step_num,
                             })
-                            # Do NOT send chat_output again — it was already
-                            # streamed token-by-token to the UI bubble
+                            # Do NOT send chat_output again — already streamed
+                            last_step_streamed = True
                         else:
                             # ── Non-streaming agent — broadcast normally ────────
+                            last_step_streamed = False
                             await self.ws_manager.broadcast_task_update(task_id, {
                                 "status":       "running",
                                 "current_step": step_num,
@@ -310,10 +312,15 @@ class Orchestrator:
             display = (final_summary or last_meaningful_output)[:500]
 
             self.memory.update_task_status(task_id, "completed", result=display)
+
+            # When the last step was a streaming agent, the content is already
+            # rendered in a stream bubble — do NOT send result in the completion
+            # broadcast or the UI will render it a second time below the bubble.
+            # The full result is saved to the DB for history replay.
             await self.ws_manager.broadcast_task_update(task_id, {
                 "status":  "completed",
                 "message": "Task completed.",
-                "result":  display,
+                "result":  "" if last_step_streamed else display,
             })
 
         except asyncio.CancelledError:
