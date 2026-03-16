@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 _DASHSCOPE_BASE = settings.QWEN_BASE_URL.rstrip("/")
 # e.g. "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 
-_ASR_MODEL = "paraformer-v2"   # or "sensevoice-v1" for multi-lingual
+_ASR_MODEL = "sensevoice-v1"   # multilingual: English, Filipino, Chinese, etc.
 
 
 def _make_client() -> AsyncOpenAI:
