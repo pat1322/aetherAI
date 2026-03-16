@@ -39,7 +39,16 @@
 #include "AudioTools.h"
 #include "AudioTools/AudioLibs/I2SCodecStream.h"
 #include "AudioTools/CoreAudio/AudioI2S/I2SStream.h"
-#include "AudioCodecs/CodecMP3Helix.h"
+// MP3 Helix decoder — try paths in order of library version:
+// arduino-audio-tools >= 1.0  →  AudioTools/AudioCodecs/
+// arduino-audio-tools <  1.0  →  AudioCodecs/
+#if __has_include("AudioTools/AudioCodecs/CodecMP3Helix.h")
+  #include "AudioTools/AudioCodecs/CodecMP3Helix.h"
+#elif __has_include("AudioCodecs/CodecMP3Helix.h")
+  #include "AudioCodecs/CodecMP3Helix.h"
+#else
+  #error "Cannot find CodecMP3Helix.h — ensure arduino-audio-tools is installed via Library Manager"
+#endif
 
 // ═══════════════════════════════════════════════════════════════
 //  PIN DEFINITIONS  (identical to HW Diagnostics sketch)
