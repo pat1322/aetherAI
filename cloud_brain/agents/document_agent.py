@@ -580,12 +580,24 @@ Requirements:
         except ImportError:
             return "[DocumentAgent] python-docx not installed. Run: pip install python-docx"
 
+        def _extract_json(raw: str):
+            """Try multiple strategies to extract valid JSON from LLM output."""
+            import json as _j, re as _r
+            cleaned = _r.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
+            try: return _j.loads(cleaned)
+            except Exception: pass
+            s, e = cleaned.find("{"), cleaned.rfind("}")
+            if s != -1 and e > s:
+                try: return _j.loads(cleaned[s:e+1])
+                except Exception: pass
+            return None
+
         prompt = f"""Write a professional, detailed document about: {topic}
 
 Context:
 {context[:2000] if context else 'Use your knowledge.'}
 
-Return ONLY valid JSON:
+Return ONLY valid JSON — no markdown fences, no extra text:
 {{
   "title": "Document Title",
   "sections": [
@@ -601,18 +613,58 @@ Requirements:
 - No generic filler — be thorough and informative about the topic"""
 
         raw = await self.qwen.chat(
-            system_prompt="Professional document writer. Return ONLY valid JSON, no markdown fences.",
+            system_prompt="Professional document writer. Return ONLY valid JSON. No markdown fences. No text before or after the JSON object.",
             user_message=prompt, temperature=0.5,
         )
-        raw = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
+        data = _extract_json(raw)
 
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            data = {"title": topic,
-                    "sections": [{"heading": "Content",
-                                   "paragraphs": [context[:1000] or topic]}],
-                    "conclusion": ""}
+        # ── Retry with simplified prompt if JSON extraction failed ────────────
+        if not data or not data.get("sections"):
+            logger.warning(f"[DocumentAgent] DOCX JSON parse failed, retrying...")
+            retry_prompt = f"""Write about: {topic}
+
+Return ONLY this JSON (fill in the placeholder text with real content):
+{{"title": "{topic.title()}", "sections": [{{"heading": "Introduction", "paragraphs": ["WRITE 80+ WORD INTRODUCTION HERE"]}}, {{"heading": "Background", "paragraphs": ["WRITE 80+ WORD BACKGROUND HERE"]}}, {{"heading": "Key Analysis", "paragraphs": ["WRITE 80+ WORD ANALYSIS HERE"]}}, {{"heading": "Examples and Applications", "paragraphs": ["WRITE 80+ WORD EXAMPLES HERE"]}}, {{"heading": "Challenges and Future Outlook", "paragraphs": ["WRITE 80+ WORD CHALLENGES HERE"]}}], "conclusion": "WRITE 80+ WORD CONCLUSION HERE"}}
+
+Replace every placeholder like "WRITE 80+ WORD ... HERE" with real paragraph text about {topic}."""
+
+            raw2 = await self.qwen.chat(
+                system_prompt="Return ONLY valid JSON. Replace all placeholder text with real content. No markdown.",
+                user_message=retry_prompt, temperature=0.3,
+            )
+            data = _extract_json(raw2)
+
+        # ── Final fallback: generate prose and wrap in structure ──────────────
+        if not data or not data.get("sections"):
+            logger.warning(f"[DocumentAgent] Both JSON attempts failed, using prose fallback")
+            generated = await self.qwen.chat(
+                system_prompt="You are a professional writer. Write a detailed, well-structured document.",
+                user_message=f"Write a comprehensive document about: {topic}\n\nInclude a detailed introduction, 3-4 main sections with thorough paragraphs (at least 80 words each), and a conclusion. Cover the topic in depth.",
+                temperature=0.6,
+            )
+            # Split generated text into sections by detecting headings
+            sections = []
+            current_heading = "Overview"
+            current_paras = []
+            for line in generated.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                # Detect heading-like lines (short, ends with no period, possibly bold)
+                is_heading = (len(line) < 60 and not line.endswith(".") and
+                              (line.startswith("#") or line.isupper() or
+                               (len(line.split()) <= 6 and line[0].isupper())))
+                if is_heading and current_paras:
+                    sections.append({"heading": current_heading, "paragraphs": current_paras})
+                    current_heading = line.lstrip("#").strip()
+                    current_paras = []
+                elif not is_heading:
+                    current_paras.append(line)
+            if current_paras:
+                sections.append({"heading": current_heading, "paragraphs": current_paras})
+            if not sections:
+                sections = [{"heading": "Content", "paragraphs": [generated[:3000]]}]
+            data = {"title": topic.title(), "sections": sections, "conclusion": ""}
 
         T = pick_theme()
 
@@ -667,7 +719,8 @@ Requirements:
             f"Theme: {T['name']}  |  Sections: {len(data.get('sections', []))}\n"
             f"Title: {data.get('title', topic)}\nFull path: {fpath}"
         )
-
+    
+    
     # ── Excel Spreadsheet ─────────────────────────────────────────────────────
 
     async def _create_xlsx(self, topic: str, context: str, params: dict) -> str:
