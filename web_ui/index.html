@@ -806,9 +806,19 @@ function fmtSize(kb) {
    MARKDOWN RENDERER
 ═══════════════════════════════════════════════════════════════════════════ */
 function renderMarkdown(text) {
-  let cleaned = text
-    .replace(/<a\s[^>]*href="([^"]+)"[^>]*>([^<]*)<\/a>/gi, '$2 ($1)')
-    .replace(/<[^>]+>/g, '');
+  // ── Pre-clean: fix model HTML output before any processing ──────────────
+  // 1. Proper <a href="url">text</a> → keep as markdown [text](url)
+  let cleaned = text.replace(/<a\s[^>]*href="([^"]+)"[^>]*>([^<]*)<\/a>/gi, '[$2]($1)');
+  // 2. Strip all remaining HTML tags
+  cleaned = cleaned.replace(/<[^>]+>/g, '');
+  // 3. Fix malformed markdown links where the URL contains HTML attributes:
+  //    [text](https://url.com" target="_blank" rel="noopener">https://url.com)
+  //    → [text](https://url.com)
+  cleaned = cleaned.replace(/\[([^\]]+)\]\((https?:\/\/[^\s")>]+)[^)]*\)/g, '[$1]($2)');
+  // 4. Fix bare URLs with leaked attributes:
+  //    https://url.com" target="_blank" rel="noopener">https://url.com
+  //    → https://url.com
+  cleaned = cleaned.replace(/(https?:\/\/[^\s"'<>)\]]+)["'][^<>]*>[^\s]*/g, '$1');
   let s = escHtml(cleaned);
 
   // Math blocks rendered after markup — use placeholders to protect from
@@ -849,7 +859,9 @@ function renderMarkdown(text) {
     '<code style="background:var(--code-bg);padding:1px 6px;border-radius:4px;font-family:Consolas,Monaco,monospace">$1</code>');
   s = s.replace(/^[-*]{3,}$/gm,
     '<hr style="border:none;border-top:1px solid var(--border);margin:8px 0">');
-  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
+  // Tightened URL regex: stops at whitespace, quotes, angle brackets
+  // This prevents leaked HTML attributes from being included in the href
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s"'<>)]+)\)/g,
     '<a href="$2" target="_blank" rel="noopener">$1</a>');
   s = s.replace(/(https?:\/\/[^\s<"')\]]+)/g,
     '<a href="$1" target="_blank" rel="noopener">$1</a>');

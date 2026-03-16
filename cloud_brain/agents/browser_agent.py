@@ -192,53 +192,98 @@ class BrowserAgent(BaseAgent):
     # ── Web search ─────────────────────────────────────────────────────────────
 
     async def _web_search(self, query: str, engine: str = "google") -> str:
-        ddg_url  = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+        """
+        Multi-endpoint DDG search. Tries these in order:
+          1. Playwright headless (if installed)
+          2. DDG HTML POST endpoint (html.duckduckgo.com — blocked on some hosts)
+          3. DDG Lite GET endpoint  (duckduckgo.com/lite  — different IP, often works)
+          4. DDG JSON instant answer API (api.duckduckgo.com — lightweight, usually allowed)
+          5. Knowledge fallback via stream_llm (never leaves bubble empty)
+        """
         raw_html = ""
+        text     = ""
 
+        # ── Attempt 1: Playwright ──────────────────────────────────────────────
         if PLAYWRIGHT_AVAILABLE:
+            ddg_url  = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
             raw_html = await self._playwright_get_html(ddg_url)
-            text = _extract_text(raw_html, ddg_url)
-        else:
-            last_exc = None
-            for attempt in range(MAX_HTTP_RETRIES):
-                try:
-                    async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True,
-                                                 timeout=15.0) as client:
-                        resp = await client.post(DDG_HTML_URL, data={"q": query, "b": ""})
+            text     = _extract_text(raw_html, ddg_url)
+            logger.info(f"[BrowserAgent] Playwright search: {len(text)} chars")
+
+        # ── Attempt 2: DDG HTML POST ───────────────────────────────────────────
+        if not text.strip():
+            try:
+                async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True,
+                                             timeout=12.0) as client:
+                    resp = await client.post(DDG_HTML_URL, data={"q": query, "b": ""})
+                    if resp.status_code == 200:
                         raw_html = resp.text
                         text = _extract_text(raw_html, DDG_HTML_URL)
-                    last_exc = None
-                    break
-                except Exception as e:
-                    last_exc = e
-                    logger.warning(f"[BrowserAgent] DDG attempt {attempt+1} failed: {e}")
-                    if attempt < MAX_HTTP_RETRIES - 1:
-                        await asyncio.sleep(HTTP_BACKOFF * (attempt + 1))
-            if last_exc:
-                logger.error(f"[BrowserAgent] DDG all retries failed: {last_exc}")
-                # Stream the fallback so the bubble isn't left empty
-                answer = await self.stream_llm(
-                    "You are AetherAI. Answer thoroughly using your knowledge. "
-                    "Use markdown. Note at the end that live web search was unavailable.",
-                    query, temperature=0.7,
-                )
-                return f"🔍 **{query}** _(web search unavailable)_\n\n{answer}"
+                        logger.info(f"[BrowserAgent] DDG HTML POST: {len(text)} chars")
+            except Exception as e:
+                logger.warning(f"[BrowserAgent] DDG HTML POST failed: {e}")
 
+        # ── Attempt 3: DDG Lite GET ────────────────────────────────────────────
         if not text.strip():
-            # Stream the fallback so the bubble isn't left empty
+            try:
+                lite_url = f"https://lite.duckduckgo.com/lite/?q={quote_plus(query)}"
+                async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True,
+                                             timeout=12.0) as client:
+                    resp = await client.get(lite_url)
+                    if resp.status_code == 200:
+                        raw_html = resp.text
+                        text = _extract_text(raw_html, lite_url)
+                        logger.info(f"[BrowserAgent] DDG Lite GET: {len(text)} chars")
+            except Exception as e:
+                logger.warning(f"[BrowserAgent] DDG Lite failed: {e}")
+
+        # ── Attempt 4: DDG JSON instant answer API ─────────────────────────────
+        if not text.strip():
+            try:
+                json_url = (
+                    f"https://api.duckduckgo.com/?q={quote_plus(query)}"
+                    f"&format=json&no_html=1&skip_disambig=1"
+                )
+                async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True,
+                                             timeout=10.0) as client:
+                    resp = await client.get(json_url)
+                    if resp.status_code == 200:
+                        data   = resp.json()
+                        chunks = []
+                        if data.get("Abstract"):
+                            chunks.append(data["Abstract"])
+                        if data.get("Answer"):
+                            chunks.append(data["Answer"])
+                        for t in data.get("RelatedTopics", [])[:8]:
+                            if isinstance(t, dict) and t.get("Text"):
+                                chunks.append(t["Text"])
+                        if data.get("AbstractURL"):
+                            raw_html = f'<a href="{data["AbstractURL"]}">{data["AbstractURL"]}</a>'
+                        text = " ".join(chunks)
+                        logger.info(f"[BrowserAgent] DDG JSON API: {len(text)} chars")
+            except Exception as e:
+                logger.warning(f"[BrowserAgent] DDG JSON API failed: {e}")
+
+        # ── Attempt 5: Knowledge fallback ─────────────────────────────────────
+        if not text.strip():
+            logger.error("[BrowserAgent] All web search attempts failed — using knowledge fallback")
             answer = await self.stream_llm(
-                "You are AetherAI. Answer thoroughly using your knowledge. "
-                "Use markdown. Note at the end that live web search returned no content.",
-                query, temperature=0.7,
+                "You are AetherAI. Answer thoroughly and accurately using your knowledge. "
+                "Use clear markdown formatting with headings and bullet points. "
+                "At the very end add a single line: "
+                "> **Note:** Live web search was unavailable. This answer is based on training knowledge.",
+                query,
+                temperature=0.7,
             )
-            return f"🔍 **{query}** _(web search returned no content)_\n\n{answer}"
+            return f"🔍 **{query}**\n\n{answer}"
 
         # Extract real result URLs for citations
         result_urls = []
         if raw_html:
             try:
                 soup_ddg = BeautifulSoup(raw_html, "lxml")
-                for a in soup_ddg.select(".result__a")[:8]:
+                # DDG HTML/Lite: result links
+                for a in soup_ddg.select(".result__a, .result-link, td a")[:8]:
                     real = _decode_ddg_url(a.get("href", ""))
                     if real and real.startswith("http") and "duckduckgo" not in real:
                         if real not in result_urls:
