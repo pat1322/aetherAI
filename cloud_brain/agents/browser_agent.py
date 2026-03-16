@@ -52,15 +52,19 @@ HEADERS = {
 HN_KEYWORDS   = ("hacker news","hackernews","ycombinator","news.ycombinator","hn top")
 DDG_HTML_URL  = "https://html.duckduckgo.com/html/"
 DDG_LITE_URL  = "https://lite.duckduckgo.com/lite/"
-BRAVE_API_URL = "https://api.search.brave.com/res/v1/web/search"
 NOISE_TAGS    = ["script","style","nav","footer","header","aside",
                  "noscript","iframe","form","button","svg"]
 
-# Public SearXNG instances — tried in order if Brave key not set
+# Serper.dev — free 2500 queries/month, no credit card
+# Get key at: https://serper.dev  (Sign up → API Key tab)
+SERPER_API_URL = "https://google.serper.dev/search"
+
+# Public SearXNG instances — meta-search across Google+Bing+DDG, free, no key
 SEARXNG_INSTANCES = [
     "https://searx.be/search",
     "https://search.mdosch.de/search",
     "https://searxng.site/search",
+    "https://priv.au/search",
 ]
 
 
@@ -207,54 +211,45 @@ class BrowserAgent(BaseAgent):
     async def _web_search(self, query: str, engine: str = "google") -> str:
         """
         Search priority:
-          1. Brave Search API   — structured JSON, clean URLs, no scraping needed
-                                  Free: 2000 req/month — https://api.search.brave.com
-          2. SearXNG instances  — meta-search (Google + Bing + others), public free instances
+          1. Serper.dev         — Google results via API, free 2500/month, no credit card
+                                  Get key: https://serper.dev
+          2. SearXNG instances  — meta-search (Google+Bing+DDG), public free, no key needed
           3. Playwright + Google — headless real Google if Playwright installed
           4. DDG Lite           — last HTML scrape fallback
           5. Knowledge fallback — streams answer from model, never leaves bubble empty
         """
-        from config import settings
-
+        serper_key = os.getenv("SERPER_API_KEY", "")
         results: list[dict] = []   # list of {title, url, snippet}
         source_name = ""
 
-        # ── Attempt 1: Brave Search API ───────────────────────────────────────
-        brave_key = getattr(settings, "BRAVE_SEARCH_API_KEY", "") or os.getenv("BRAVE_SEARCH_API_KEY", "")
-        if brave_key and not results:
+        # ── Attempt 1: Serper.dev (Google Search API, free 2500/month) ─────────
+        if serper_key and not results:
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.get(
-                        BRAVE_API_URL,
+                    resp = await client.post(
+                        SERPER_API_URL,
                         headers={
-                            "Accept":              "application/json",
-                            "Accept-Encoding":     "gzip",
-                            "X-Subscription-Token": brave_key,
+                            "X-API-KEY":   serper_key,
+                            "Content-Type": "application/json",
                         },
-                        params={
-                            "q":      query,
-                            "count":  10,
-                            "safesearch": "off",
-                        },
+                        json={"q": query, "num": 10},
                     )
                     if resp.status_code == 200:
                         data = resp.json()
-                        for item in data.get("web", {}).get("results", [])[:10]:
-                            url     = item.get("url", "")
+                        for item in data.get("organic", [])[:10]:
+                            url     = item.get("link", "")
                             title   = item.get("title", "")
-                            snippet = item.get("description", "") or item.get("extra_snippets", [""])[0]
+                            snippet = item.get("snippet", "")
                             if url and url.startswith("http"):
                                 results.append({"title": title, "url": url, "snippet": snippet})
-                        source_name = "Brave Search"
-                        logger.info(f"[BrowserAgent] Brave Search: {len(results)} results")
+                        source_name = "Google (Serper)"
+                        logger.info(f"[BrowserAgent] Serper: {len(results)} results")
                     elif resp.status_code == 401:
-                        logger.warning("[BrowserAgent] Brave API key invalid")
-                    elif resp.status_code == 429:
-                        logger.warning("[BrowserAgent] Brave API rate limited")
+                        logger.warning("[BrowserAgent] Serper API key invalid")
                     else:
-                        logger.warning(f"[BrowserAgent] Brave API returned {resp.status_code}")
+                        logger.warning(f"[BrowserAgent] Serper returned {resp.status_code}")
             except Exception as e:
-                logger.warning(f"[BrowserAgent] Brave Search failed: {e}")
+                logger.warning(f"[BrowserAgent] Serper failed: {e}")
 
         # ── Attempt 2: SearXNG public instances ───────────────────────────────
         if not results:
