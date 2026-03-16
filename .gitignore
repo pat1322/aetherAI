@@ -10,3 +10,7 @@ Thumbs.db
 *.log
 dist/
 build/
+
+# ESP32 voice agent — contains WiFi credentials and API key
+# Copy voice_config.h.example → voice_config.h and fill in, never commit
+esp32_voice_agent/voice_config.h
