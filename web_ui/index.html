@@ -1706,12 +1706,50 @@ function stopMic() {
 let _synthEnabled = false;
 let _synthRate    = 1.0;
 
+// Filipino language detection — common Tagalog function words and markers
+const _FIL_WORDS = new Set([
+  'ako','ikaw','siya','kami','tayo','kayo','sila','ang','ng','sa','na','at',
+  'ay','pa','din','rin','nga','po','ho','lang','lamang','naman','yung','mga',
+  'hindi','wala','ito','iyan','iyon','sino','ano','saan','bakit','paano',
+  'kasi','dahil','pero','kung','pag','kapag','habang','kahit','nang','noon',
+  'ngayon','bukas','kahapon','oo','hindi','salamat','mabuti','maganda',
+  'kumusta','mahal','bahay','buhay','tubig','pagkain','trabaho','pamilya',
+]);
+
+function _detectLanguage(text) {
+  // Score Filipino by counting Tagalog function words in the first 200 words
+  const words  = text.toLowerCase().replace(/[^a-záéíóú\s]/g, '').split(/\s+/).slice(0, 200);
+  const total  = words.length || 1;
+  const filHit = words.filter(w => _FIL_WORDS.has(w)).length;
+  // >8% Tagalog function words = Filipino
+  return filHit / total > 0.08 ? 'fil' : 'en';
+}
+
+function _pickVoice(lang) {
+  // Try to find the preferred edge-tts / system voice for the detected language.
+  // Web Speech API voices are installed on the OS — we look for matching lang tag.
+  const voices = window.speechSynthesis.getVoices();
+  if (lang === 'fil') {
+    // Prefer Filipino voices in order
+    const filPref = ['fil-PH-BlessicaNeural', 'BlessicaNeural', 'fil-PH', 'fil'];
+    for (const pref of filPref) {
+      const v = voices.find(v => v.name.includes(pref) || v.lang.startsWith('fil'));
+      if (v) return v;
+    }
+  }
+  // English — prefer AnaNeural, fall back to Aria, then any en-US
+  const enPref = ['en-US-AnaNeural', 'AnaNeural', 'en-US-AriaNeural', 'AriaNeural'];
+  for (const pref of enPref) {
+    const v = voices.find(v => v.name.includes(pref));
+    if (v) return v;
+  }
+  // Final fallback: any en-US voice
+  return voices.find(v => v.lang === 'en-US') || null;
+}
+
 function speakText(text) {
   if (!_synthEnabled || !window.speechSynthesis) return;
-  // Stop any current utterance
   window.speechSynthesis.cancel();
-  // Strip markdown symbols. No hard char cap — let the user hear the full response.
-  // The TTS speed setting lets them speed up long answers.
   const clean = text
     .replace(/```[\s\S]*?```/g, 'code block.')
     .replace(/[#*`_\[\]()>|~]/g, '')
@@ -1720,10 +1758,17 @@ function speakText(text) {
     .trim()
     .slice(0, 4000);
   if (!clean) return;
+
+  const lang  = _detectLanguage(clean);
+  const voice = _pickVoice(lang);
+
   const utt   = new SpeechSynthesisUtterance(clean);
   utt.rate    = _synthRate;
   utt.pitch   = 1.0;
   utt.volume  = 1.0;
+  // Set lang tag so the OS picks the right phoneme rules even without an exact voice match
+  utt.lang    = lang === 'fil' ? 'fil-PH' : 'en-US';
+  if (voice) utt.voice = voice;
   window.speechSynthesis.speak(utt);
 }
 
