@@ -14,6 +14,11 @@ VOICE 1  POST /voice/chat
 VOICE 2  GET /tts/voices
          Returns the list of available edge-tts voices.
 
+VOICE 3  POST /voice/text                              ← v6.2 addition
+         Accepts a pre-transcribed text string (JSON body: {"text":"..."}).
+         ASR is done on-device by ByteDance — Railway only runs LLM + TTS.
+         Faster than /voice/chat because no WAV upload or STT round-trip.
+
 Stage 6 Layer 1 retained:
   SSE 1   POST /stream  — Server-Sent Events streaming for chat commands
 
@@ -126,6 +131,9 @@ class StatusResponse(BaseModel):
 class PrefRequest(BaseModel):
     label: str
     value: str
+
+class VoiceTextRequest(BaseModel):
+    text: str
 
 # ── Core endpoints ────────────────────────────────────────────────────────────
 
@@ -305,6 +313,111 @@ async def voice_chat(request: Request):
             "X-Transcript":     urlquote(result.transcript[:300]),
             "X-Response-Text":  urlquote(result.spoken_text[:300]),
             "Cache-Control":    "no-cache",
+        },
+    )
+
+
+@app.post("/voice/text")
+async def voice_text_chat(req: VoiceTextRequest):
+    """
+    VOICE 3 — ESP32 sends a pre-transcribed text (from ByteDance ASR on-device).
+    Skips STT entirely. Runs: text → Qwen LLM → edge-tts → MP3 bytes.
+
+    Request:
+        Content-Type:  application/json
+        X-Api-Key:     AETHER_API_KEY
+        Body:          {"text": "what is the weather in Manila"}
+
+    Response:
+        Content-Type:    audio/mpeg
+        X-Response-Text: Short spoken response (URL-encoded)
+        Body:            MP3 audio bytes
+
+    This is faster than /voice/chat because the WAV upload and STT round-trip
+    are handled on the device by ByteDance ASR. Railway only runs LLM + TTS.
+    """
+    from urllib.parse import quote as urlquote
+    from agents.voice_agent import _voice_summarize, _safe_synthesize
+
+    transcript = req.text.strip()
+    if not transcript:
+        raise HTTPException(status_code=400, detail="text field is empty")
+
+    # ── Create task so it appears in the command center ───────────────────────
+    task_id = str(uuid.uuid4())
+    memory.create_task(task_id, f"[Voice] {transcript[:80]}", "voice")
+    memory.update_task_status(task_id, "running")
+    await ws_manager.broadcast_task_update(task_id, {
+        "status":  "running",
+        "message": f"🎙️ Voice: {transcript[:60]}",
+    })
+
+    try:
+        # ── Load user preferences ─────────────────────────────────────────────
+        user_context = ""
+        try:
+            from agents.memory_agent import MemoryAgent
+            user_context = MemoryAgent.load_context(memory)
+        except Exception:
+            pass
+
+        # ── Route to LLM / data agent ─────────────────────────────────────────
+        command_type = await orchestrator.qwen.classify_command(
+            transcript, user_context=user_context
+        )
+
+        response_text = ""
+        if command_type == "task":
+            plan        = await orchestrator.qwen.plan_task(transcript, user_context=user_context)
+            first_agent = plan[0].get("agent", "") if plan else ""
+            _QUICK_AGENTS = {"weather_agent", "crypto_agent", "news_agent", "finance_agent"}
+            if first_agent in _QUICK_AGENTS:
+                from agents.voice_agent import _run_single_agent
+                response_text = await _run_single_agent(
+                    first_agent, transcript, orchestrator.qwen, memory
+                )
+        # Fall through to direct answer for chat or if agent returned nothing
+        if not response_text:
+            response_text = await orchestrator.qwen.answer(
+                transcript, user_context=user_context
+            )
+
+        if not response_text:
+            response_text = "I wasn't able to get an answer for that. Please try again."
+
+        # ── Condense for speech + synthesise ──────────────────────────────────
+        spoken_text = await _voice_summarize(orchestrator.qwen, response_text, transcript)
+        mp3_bytes   = await _safe_synthesize(spoken_text)
+
+    except Exception as e:
+        memory.update_task_status(task_id, "failed", result=str(e))
+        await ws_manager.broadcast_task_update(task_id, {
+            "status":  "failed",
+            "message": f"Voice text error: {e}",
+        })
+        raise HTTPException(status_code=500, detail=f"Voice text error: {e}")
+
+    if not mp3_bytes:
+        memory.update_task_status(task_id, "failed", result="TTS produced no audio")
+        raise HTTPException(status_code=502, detail="TTS produced no audio")
+
+    # ── Persist result + broadcast to command center ───────────────────────────
+    voice_summary = f"Heard: {transcript}\n\nResponse: {spoken_text}"
+    memory.update_task_status(task_id, "completed", result=voice_summary)
+    await ws_manager.broadcast_task_update(task_id, {
+        "status":      "completed",
+        "message":     f"🎙️ {transcript}",
+        "step_status": "completed",
+        "output":      voice_summary,
+        "result":      voice_summary,
+    })
+
+    return Response(
+        content=mp3_bytes,
+        media_type="audio/mpeg",
+        headers={
+            "X-Response-Text": urlquote(spoken_text[:300]),
+            "Cache-Control":   "no-cache",
         },
     )
 

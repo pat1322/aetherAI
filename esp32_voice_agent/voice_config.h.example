@@ -4,7 +4,7 @@
  * ╠══════════════════════════════════════════════════════════════╣
  * ║  SETUP:                                                      ║
  * ║   1. Copy this file → voice_config.h                         ║
- * ║   2. Fill in your WiFi and Railway values below              ║
+ * ║   2. Fill in your WiFi, Railway, and ByteDance values below  ║
  * ║   3. voice_config.h is in .gitignore — never committed       ║
  * ╚══════════════════════════════════════════════════════════════╝
  */
@@ -21,5 +21,20 @@
 #define AETHER_URL      "https://your-app.up.railway.app"
 
 // Must match AETHER_API_KEY set in Railway environment variables
-// Generate with: python -c "import secrets; print(secrets.token_hex(32))"
 #define AETHER_API_KEY  "your_secret_api_key_here"
+
+// ── ByteDance ASR (Volcengine Speech Recognition) ─────────────────────────────
+// Only one credential needed: your API key.
+// Authorization header sent as:  Bearer {BYTEDANCE_API_KEY}
+//
+// Cluster (language) options:
+//   "volcengine_input_en"    — English  ← recommended for Bronny
+//   "volcengine_input"       — Chinese (Mandarin)
+//   "volcengine_input_ko_kr" — Korean
+//   "volcengine_input_ja_jp" — Japanese
+//   "volcengine_input_fr_fr" — French
+//   "volcengine_input_es_mx" — Spanish
+//   "volcengine_input_id"    — Indonesian
+//   "volcengine_input_ms"    — Malay
+#define BYTEDANCE_API_KEY   "your_bytedance_api_key_here"
+#define BYTEDANCE_CLUSTER   "volcengine_input_en"

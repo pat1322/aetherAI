@@ -1,6 +1,6 @@
 /*
  * ╔══════════════════════════════════════════════════════════╗
- * ║           BRONNY AI  v6.0  AetherAI Edition              ║
+ * ║           BRONNY AI  v6.2  AetherAI Edition              ║
  * ║           Developed by Patrick Perez                     ║
  * ╠══════════════════════════════════════════════════════════╣
  * ║  Hardware (unchanged)                                    ║
@@ -9,23 +9,21 @@
  * ║    Mic     : INMP441 (I2S port 1, GPIOs 4/5/6)           ║
  * ║    Display : ST7789  320x240  (HSPI)                     ║
  * ╠══════════════════════════════════════════════════════════╣
- * ║  v6.0  AetherAI Railway integration                      ║
- * ║   • All face animation, VAD, jingles, standby kept.      ║
- * ║   • callSTT + callChat + callTTS replaced with a         ║
- * ║     single POST /voice/chat to Railway.                  ║
- * ║   • Receives MP3 bytes + X-Transcript header.            ║
- * ║   • MP3DecoderHelix pre-allocated at boot to avoid       ║
- * ║     heap fragmentation crash on first speak.             ║
- * ║   • edge-tts Microsoft neural voices via Railway.        ║
- * ║   • Wake word still energy-based (no extra API key).     ║
+ * ║  v6.2  ByteDance on-device ASR                           ║
+ * ║   • callAetherVoice() replaced with two-step pipeline:   ║
+ * ║       1. callByteDanceASR()  WAV → transcript (~600ms)   ║
+ * ║          Direct to ByteDance Volcengine — no Railway hop ║
+ * ║       2. callAetherText()    text → MP3  (~1-2s)         ║
+ * ║          Railway only runs LLM + TTS, tiny JSON payload  ║
+ * ║   • parseAsrText() / jsonEscape() helpers added          ║
+ * ║   • runConversation() updated: new status messages       ║
+ * ║     "Recognizing..." and "Thinking..." on island bar     ║
+ * ║   • All face animation, VAD, jingles, standby unchanged  ║
  * ╠══════════════════════════════════════════════════════════╣
- * ║  FIX LOG                                                 ║
- * ║   v6.1  inmp441Sample: raw>>14 → raw>>11 (8× louder,     ║
- * ║          correct INMP441 24-bit-in-32 extraction)        ║
- * ║         STT_TRAIL_MS trail capture added to recordVAD()  ║
- * ║          so final syllable is never cut off.             ║
- * ║         Credentials moved to voice_config.h (gitignore)  ║
- * ║         stt_client: sensevoice-v1 (multilingual)         ║
+ * ║  v6.1  (retained)                                        ║
+ * ║   • inmp441Sample: raw>>14 → raw>>11 (8× louder)         ║
+ * ║   • STT_TRAIL_MS trail capture in recordVAD()            ║
+ * ║   • Credentials in voice_config.h (gitignored)           ║
  * ╚══════════════════════════════════════════════════════════╝
  */
 
@@ -70,8 +68,6 @@ typedef void (*SseCB)(const String& jsonLine, void* ctx);
 
 // ============================================================
 // WATCHDOG HELPER
-// Feeds the task watchdog. Safe to call even after deinit.
-// Place before/after any call that can block > 2 seconds.
 // ============================================================
 #define WDT_FEED() do { esp_task_wdt_reset(); yield(); } while(0)
 
@@ -93,8 +89,6 @@ static int VAD_THR = 5500;
 #define STANDBY_TIMEOUT_MS    4000
 #define GLITCH_CLIP_RATIO     0.25f
 #define TTS_COOLDOWN_MS        800
-// FIX: trail capture — keep recording this many ms after silence is detected
-// so the final syllable of the last word is never cut off before upload.
 #define STT_TRAIL_MS          400
 
 static volatile bool isSpeaking = false;
@@ -162,30 +156,26 @@ Adafruit_ST7789 tft = Adafruit_ST7789(&tftSPI, PIN_CS, PIN_DC, -1);
 #define ISL_Y   (H - ISL_H - 5)
 #define ISL_R    7
 
-// ── Face geometry — lowered to center on screen ──────────────
+// ── Face geometry ────────────────────────────────────────────
 #define FCX    160
 #define FCY    108
 #define BOB      4
 
-// Eye geometry
 #define EW      112
 #define EH       64
 #define ER       22
 #define ESEP    138
 #define EYO     -22
 
-// Mouth geometry
 #define MW       72
 #define MH_CL     6
 #define MH_OP    30
 #define MR        8
 #define MYO      58
 
-// Smile
 #define SMILE_R     26
 #define SMILE_TH     8
 
-// Look-around range
 #define LOOK_X_RANGE  14
 #define LOOK_Y_RANGE   7
 
@@ -227,12 +217,6 @@ static int32_t filteredRMS(const int32_t* rawFrames, int frameCount) {
     return rms;
 }
 
-// FIX: raw >> 11 instead of raw >> 14.
-// INMP441 outputs 24-bit audio left-aligned in a 32-bit I2S slot.
-// >> 14 was shifting too far right, producing very quiet audio that
-// Paraformer/SenseVoice could barely pick up. >> 11 correctly extracts
-// the upper 16 bits of the 24-bit payload (8x louder, no clipping on
-// normal speech levels).
 static inline int16_t inmp441Sample(int32_t raw) { return (int16_t)(raw >> 11); }
 
 // ============================================================
@@ -263,8 +247,6 @@ void micInit() {
     cfg.use_apll        = false;
     micOk = mic_stream.begin(cfg);
     if (micOk) {
-        // 500 ms warm-up: lets INMP441 I2S DMA stabilise and flushes
-        // the initial DC-offset transient that confuses VAD.
         uint8_t tmp[512];
         uint32_t e = millis() + 500;
         while (millis() < e) { mic_stream.readBytes(tmp, sizeof(tmp)); yield(); }
@@ -361,7 +343,6 @@ void jingleTune() {
     i2s.setVolume(VOL_MAIN);
 }
 
-
 static const int8_t B64D[256] = {
     -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
     -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
@@ -391,7 +372,6 @@ void wavHeader(uint8_t* h, uint32_t pcmB) {
     memcpy(h+36,"data",4); le4(40,pcmB);
 }
 
-
 // HTTP HELPERS
 static void ensureWifi() {
     if (WiFi.status() != WL_CONNECTED) {
@@ -403,7 +383,7 @@ static void ensureWifi() {
 }
 
 // ============================================================
-// AETHER AI  — global MP3 state
+// AETHER AI — global MP3 state
 // ============================================================
 #if __has_include("AudioTools/AudioCodecs/CodecMP3Helix.h")
   #include "AudioTools/AudioCodecs/CodecMP3Helix.h"
@@ -416,29 +396,158 @@ static uint8_t*  mp3_buf = nullptr;
 static size_t    mp3_len = 0;
 
 // ============================================================
-// callAetherVoice — send WAV → receive transcript + MP3
-// Returns true if we got MP3 bytes to play.
-// transcript[] is filled with what the user said.
+// HELPER: extract "text" value from ByteDance JSON response
+// Navigates to the "result" array first, then pulls "text".
+// No external JSON library needed.
 // ============================================================
-bool callAetherVoice(int16_t* pcm, int samples,
-                     char* transcript, size_t tMax) {
-    if (!pcm || samples <= 0) return false;
-    if (transcript) transcript[0] = 0;
+static bool parseAsrText(const char* json, char* out, size_t outMax) {
+    if (!json || !out || outMax < 2) return false;
 
-    // Build WAV in PSRAM
-    uint32_t pcmB = (uint32_t)samples * 2;
-    uint32_t wavB = 44 + pcmB;
+    const char* search_from = strstr(json, "\"result\"");
+    if (!search_from) search_from = json;
+
+    const char* p = strstr(search_from, "\"text\"");
+    if (!p) return false;
+    p += 6;
+    while (*p == ' ') p++;
+    if (*p != ':') return false;
+    p++;
+    while (*p == ' ') p++;
+    if (*p != '"') return false;
+    p++;
+
+    size_t i = 0;
+    while (*p && *p != '"' && i < outMax - 1) {
+        if (*p == '\\' && *(p + 1)) {
+            p++;
+            switch (*p) {
+                case 'n':  out[i++] = '\n'; break;
+                case 'r':  out[i++] = '\r'; break;
+                case 't':  out[i++] = '\t'; break;
+                case '"':  out[i++] = '"';  break;
+                case '\\': out[i++] = '\\'; break;
+                default:   out[i++] = *p;   break;
+            }
+        } else {
+            out[i++] = *p;
+        }
+        p++;
+    }
+    out[i] = '\0';
+    return (i > 0);
+}
+
+// ============================================================
+// HELPER: JSON-escape a C string into an Arduino String
+// ============================================================
+static String jsonEscape(const char* s) {
+    String out;
+    out.reserve(strlen(s) + 8);
+    while (*s) {
+        char c = *s++;
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:   out += c;      break;
+        }
+    }
+    return out;
+}
+
+// ============================================================
+// callByteDanceASR()
+// Sends recorded WAV directly to ByteDance Volcengine ASR.
+// Returns true and fills transcript[] on success.
+//
+// API:  POST https://openspeech.bytedance.com/api/v1/asr
+//       Authorization: Bearer {AppID};{Token}
+//       Content-Type:  audio/wav
+//       X-Cluster:     volcengine_input_common
+//
+// Response: { "code": 1000, "payload": { "result": [{ "text": "..." }] } }
+// ============================================================
+bool callByteDanceASR(int16_t* pcm, int samples,
+                      char* transcript, size_t tMax) {
+    if (!pcm || samples <= 0 || !transcript) return false;
+    transcript[0] = '\0';
+
+    uint32_t pcmB   = (uint32_t)samples * 2;
+    uint32_t wavB   = 44 + pcmB;
     uint8_t* wavBuf = (uint8_t*)heap_caps_malloc(wavB, MALLOC_CAP_SPIRAM);
     if (!wavBuf) wavBuf = (uint8_t*)malloc(wavB);
-    if (!wavBuf) return false;
+    if (!wavBuf) { Serial.println("[ASR] malloc failed"); return false; }
     wavHeader(wavBuf, pcmB);
     memcpy(wavBuf + 44, pcm, pcmB);
 
     ensureWifi();
     if (WiFi.status() != WL_CONNECTED) { free(wavBuf); return false; }
 
-    String url = String(AETHER_URL) + "/voice/chat";
-    Serial.printf("[AETHER] POST %s  (%u bytes WAV)\n", url.c_str(), wavB);
+    String authHdr = String("Bearer ") + BYTEDANCE_API_KEY;
+    String url     = "https://openspeech.bytedance.com/api/v1/asr";
+    Serial.printf("[ASR] POST %s  (%u bytes WAV)\n", url.c_str(), wavB);
+
+    bool success = false;
+
+    for (int attempt = 1; attempt <= 2 && !success; attempt++) {
+        if (attempt > 1) { Serial.println("[ASR] Retry 2/2..."); delay(1500); }
+
+        WiFiClientSecure cli;
+        cli.setInsecure();
+        cli.setConnectionTimeout(15000);
+        cli.setHandshakeTimeout(10);
+
+        HTTPClient http;
+        http.begin(cli, url);
+        http.setTimeout(20000);
+        http.addHeader("Authorization", authHdr);
+        http.addHeader("Content-Type",  "audio/wav");
+        http.addHeader("X-Cluster",     BYTEDANCE_CLUSTER);
+
+        WDT_FEED();
+        int code = http.POST(wavBuf, wavB);
+        WDT_FEED();
+        Serial.printf("[ASR] HTTP %d\n", code);
+
+        if (code == 200) {
+            String body = http.getString();
+            Serial.printf("[ASR] Response: %s\n", body.c_str());
+            if (body.indexOf("\"code\":1000") != -1 ||
+                body.indexOf("\"code\": 1000") != -1) {
+                success = parseAsrText(body.c_str(), transcript, tMax);
+                if (success) Serial.printf("[ASR] Transcript: %s\n", transcript);
+                else         Serial.println("[ASR] parseAsrText: no text found");
+            } else {
+                Serial.printf("[ASR] Non-1000 response: %s\n", body.c_str());
+            }
+        } else {
+            Serial.printf("[ASR] Error body: %s\n", http.getString().c_str());
+        }
+        http.end();
+        WDT_FEED();
+    }
+
+    free(wavBuf);
+    return success;
+}
+
+// ============================================================
+// callAetherText()
+// Sends plain-text transcript to Railway /voice/text.
+// Railway runs LLM + TTS, returns MP3 bytes.
+// mp3_buf / mp3_len are populated on success.
+// ============================================================
+bool callAetherText(const char* text) {
+    if (!text || text[0] == '\0') return false;
+
+    ensureWifi();
+    if (WiFi.status() != WL_CONNECTED) return false;
+
+    String body = String("{\"text\":\"") + jsonEscape(text) + "\"}";
+    String url  = String(AETHER_URL) + "/voice/text";
+    Serial.printf("[AETHER] POST %s  body=%s\n", url.c_str(), body.c_str());
     Serial.printf("[AETHER] Free heap: %u  PSRAM: %u\n",
                   esp_get_free_heap_size(),
                   heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
@@ -457,34 +566,25 @@ bool callAetherVoice(int16_t* pcm, int samples,
         http.begin(cli, url);
         http.setTimeout(40000);
 
-        const char* hdrs[] = { "X-Transcript", "X-Response-Text" };
-        http.collectHeaders(hdrs, 2);
-        http.addHeader("Content-Type",   "audio/wav");
-        http.addHeader("X-Api-Key",      AETHER_API_KEY);
+        const char* respHdrs[] = { "X-Response-Text" };
+        http.collectHeaders(respHdrs, 1);
+        http.addHeader("Content-Type", "application/json");
+        http.addHeader("X-Api-Key",    AETHER_API_KEY);
 
         WDT_FEED();
-        int code = http.POST(wavBuf, wavB);
+        int code = http.POST(body);
         WDT_FEED();
         Serial.printf("[AETHER] Response: %d\n", code);
 
         if (code == 200) {
-            // Read response headers
-            String th = http.header("X-Transcript");
             String sh = http.header("X-Response-Text");
-            if (transcript && tMax > 1) {
-                strncpy(transcript, th.c_str(), tMax - 1);
-                transcript[tMax - 1] = 0;
-            }
-            Serial.printf("[AETHER] Heard:  %s\n", th.c_str());
-            Serial.printf("[AETHER] Spoken: %s\n", sh.c_str());
+            if (sh.length() > 0)
+                Serial.printf("[AETHER] Spoken: %s\n", sh.c_str());
 
-            // Allocate MP3 buffer in PSRAM
-            if (!mp3_buf) {
+            if (!mp3_buf)
                 mp3_buf = (uint8_t*)heap_caps_malloc(MP3_MAX_BYTES, MALLOC_CAP_SPIRAM);
-            }
             if (!mp3_buf) { http.end(); break; }
 
-            // Read MP3 body
             WiFiClient* stream = http.getStreamPtr();
             int    clen = http.getSize();
             size_t got  = 0;
@@ -505,10 +605,10 @@ bool callAetherVoice(int16_t* pcm, int samples,
                 while ((http.connected() || stream->available())
                        && got < (size_t)MP3_MAX_BYTES
                        && millis() < dlDeadline) {
-                    if (stream->available()) {
+                    if (stream->available())
                         got += stream->readBytes(mp3_buf + got,
                                min((size_t)512, (size_t)MP3_MAX_BYTES - got));
-                    } else delay(1);
+                    else delay(1);
                     WDT_FEED();
                 }
             }
@@ -516,14 +616,12 @@ bool callAetherVoice(int16_t* pcm, int samples,
             Serial.printf("[AETHER] MP3: %u bytes\n", mp3_len);
             success = (mp3_len > 0);
         } else {
-            String body = http.getString();
-            Serial.printf("[AETHER] Error body: %s\n", body.c_str());
+            Serial.printf("[AETHER] Error body: %s\n", http.getString().c_str());
         }
         http.end();
         WDT_FEED();
     }
 
-    free(wavBuf);
     return success;
 }
 
@@ -538,15 +636,13 @@ void playMp3() {
 
     Serial.printf("[PLAY] %u bytes  heap: %u\n", mp3_len, esp_get_free_heap_size());
 
-    // Stop mic I2S — frees DMA buffers so decoder malloc has room
     mic_stream.end();
     micOk = false;
 
     WDT_FEED();
-    audioInitTTS();   // switch codec to 24 kHz FIRST
+    audioInitTTS();
     WDT_FEED();
 
-    // Codec PLL lock: write silence before first sample
     { int16_t ks[512]; memset(ks, 0, sizeof(ks)); i2s.write((uint8_t*)ks, sizeof(ks)); }
     delay(120);
     WDT_FEED();
@@ -570,13 +666,11 @@ void playMp3() {
         decoded.end();
     }
 
-    // Trailing silence flush
     { int16_t sil[256]; memset(sil, 0, sizeof(sil)); i2s.write((uint8_t*)sil, sizeof(sil)); }
     delay(60);
 
     Serial.println("[PLAY] Done");
 
-    // Switch codec back to REC mode and restart mic
     WDT_FEED();
     audioInitRec();
     WDT_FEED();
@@ -588,7 +682,6 @@ void playMp3() {
     }
     isSpeaking = false;
 }
-
 
 // ============================================================
 // RECORDING
@@ -645,9 +738,6 @@ bool recordVAD(int maxMs, bool shortCapture = false) {
             if (rms < VAD_THR) {
                 if (silStart == 0) silStart = millis();
                 if (millis() - silStart >= silMs) {
-                    // FIX: trail capture — keep recording STT_TRAIL_MS more ms
-                    // after silence is detected so the final syllable of the
-                    // last word is fully captured before we stop and upload.
                     uint32_t trailEnd = millis() + STT_TRAIL_MS;
                     while (millis() < trailEnd && recLen < maxSamp) {
                         int trd = mic_stream.readBytes((uint8_t*)rawBuf, sizeof(rawBuf));
@@ -1337,7 +1427,7 @@ void playBootIntroAnim(int cx, int cy) {
         delay(25); yield();
     }
     tft.setTextColor(C_DCY); tft.setTextSize(1);
-    tft.setCursor(creditX+creditW+6,cy+86); tft.print("v6.1");
+    tft.setCursor(creditX+creditW+6,cy+86); tft.print("v6.2");
     delay(120); yield();
 }
 void drawBootBar(int pct) {
@@ -1370,7 +1460,7 @@ void drawWifiScreen() {
     tft.fillRect(0,0,W,36,C_CARD); tft.drawFastHLine(0,36,W,C_CY);
     tft.fillCircle(18,18,7,C_CY); tft.fillCircle(18,18,3,C_BK);
     tft.setTextSize(1); tft.setTextColor(C_WH); tft.setCursor(32,12); tft.print("BRONNY AI");
-    tft.setTextColor(C_CY); tft.setCursor(106,12); tft.print("v6.1");
+    tft.setTextColor(C_CY); tft.setCursor(106,12); tft.print("v6.2");
     tft.setTextColor(C_LG); tft.setCursor(W-78,12); tft.print("Patrick 2026");
     int wx=W/2, wy=82;
     tft.fillCircle(wx,wy+22,5,C_CY);
@@ -1382,8 +1472,8 @@ void drawWifiScreen() {
     tft.fillRect(0,H-20,W,20,C_CARD); tft.drawFastHLine(0,H-20,W,C_DG);
     tft.setTextColor(C_LG); tft.setTextSize(1); tft.setCursor(6,H-13); tft.print("ESP32-S3");
     tft.setTextColor(C_CY);
-    int fw2=(int)(strlen("Bronny AI v6.1")*6);
-    tft.setCursor(W/2-fw2/2,H-13); tft.print("Bronny AI v6.1");
+    int fw2=(int)(strlen("Bronny AI v6.2")*6);
+    tft.setCursor(W/2-fw2/2,H-13); tft.print("Bronny AI v6.2");
     tft.setTextColor(C_LG); tft.setCursor(W-60,H-13); tft.print("2026");
 }
 void drawWifiStatus(const char* line1,uint16_t c1,const char* line2="",uint16_t c2=C_CY) {
@@ -1420,7 +1510,7 @@ void drawTuneScreen() {
     tft.fillCircle(18,18,7,C_YL); tft.fillCircle(18,18,3,C_BK);
     tft.setTextSize(1); tft.setTextColor(C_WH); tft.setCursor(32,9); tft.print("BRONNY AI");
     tft.setTextColor(C_YL); tft.setCursor(110,9); tft.print("MIC CALIBRATION");
-    tft.setTextColor(C_LG); tft.setCursor(32,22); tft.print("v6.1");
+    tft.setTextColor(C_LG); tft.setCursor(32,22); tft.print("v6.2");
     tft.fillRoundRect(20,44,W-40,38,6,C_CARD); tft.drawRoundRect(20,44,W-40,38,6,C_YL);
     tft.setTextColor(C_WH); tft.setTextSize(1); tft.setCursor(28,50); tft.print("Measuring ambient noise...");
     tft.setTextColor(C_LG); tft.setCursor(28,64); tft.print("Stay quiet for 4 seconds");
@@ -1503,7 +1593,7 @@ void exitStandby() {
 }
 
 // ============================================================
-// CONVERSATION PIPELINE
+// CONVERSATION PIPELINE  v6.2
 // ============================================================
 static bool     busy             = false;
 static uint32_t vadCooldownUntil = 0;
@@ -1521,25 +1611,52 @@ void runConversation() {
     }
 
     bool got = recordVAD(MAX_RECORD_MS, false);
-    if (!got) { setFaceIdle(); setStatus("Ready", C_CY); busy = false; return; }
-
-    lastVoiceTime = millis();
-    setFaceThink();
-    setStatus("Sending...", C_YL);
-    WDT_FEED();
-
-    char transcript[180] = "";
-    bool ok = callAetherVoice(recBuf, recLen, transcript, sizeof(transcript));
-
-    if (!ok || isNoise(String(transcript), recLen)) {
+    if (!got) {
         setFaceIdle();
         setStatus("Ready", C_CY);
         busy = false;
         return;
     }
 
-    if (transcript[0]) setStatus(transcript, C_CY);
+    lastVoiceTime = millis();
 
+    // ── Step 1: ByteDance ASR (WAV → transcript, ~400–800 ms) ────
+    setFaceThink();
+    setStatus("Recognizing...", C_YL);
+    WDT_FEED();
+
+    char transcript[180] = "";
+    bool asrOk = callByteDanceASR(recBuf, recLen, transcript, sizeof(transcript));
+
+    if (!asrOk || isNoise(String(transcript), recLen)) {
+        setFaceIdle();
+        setStatus("Ready", C_CY);
+        busy = false;
+        return;
+    }
+
+    // Show truncated transcript on island bar so user sees what was heard
+    char dispBuf[22] = "";
+    strncpy(dispBuf, transcript, 20);
+    if (strlen(transcript) > 20) { dispBuf[19] = '.'; dispBuf[20] = '.'; dispBuf[21] = '\0'; }
+    setStatus(dispBuf, C_CY);
+    delay(300);
+
+    // ── Step 2: Railway LLM + TTS (text → MP3, ~1–2 s) ──────────
+    setStatus("Thinking...", C_PURP);
+    WDT_FEED();
+
+    bool ok = callAetherText(transcript);
+
+    if (!ok) {
+        jingleError();
+        setFaceIdle();
+        setStatus("Ready", C_CY);
+        busy = false;
+        return;
+    }
+
+    // ── Step 3: Play MP3 ─────────────────────────────────────────
     isSpeaking = true;
     setStatus("Speaking...", C_GR);
     startTalk();
@@ -1568,7 +1685,7 @@ void setup() {
     Serial.begin(115200);
     delay(400);
 
-    Serial.println("\n===== BRONNY AI v6.1 — AetherAI Edition =====");
+    Serial.println("\n===== BRONNY AI v6.2 — AetherAI Edition =====");
     Serial.printf("[MEM] Free heap   : %u bytes\n", esp_get_free_heap_size());
     Serial.printf("[MEM] Free PSRAM  : %u bytes\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     Serial.printf("[MEM] Min heap    : %u bytes\n", esp_get_minimum_free_heap_size());
@@ -1694,7 +1811,7 @@ void loop() {
         char c=Serial.read();
         if      (c=='+') { VAD_THR=min(8000,VAD_THR+100); Serial.printf("VAD_THR=%d\n",VAD_THR); }
         else if (c=='-') { VAD_THR=max(300, VAD_THR-100); Serial.printf("VAD_THR=%d\n",VAD_THR); }
-        else if (c=='t') { setStatus("Test...",C_YL); if(callAetherVoice(recBuf,max(recLen,1600),nullptr,0)){ startTalk(); playMp3(); stopTalk(); setFaceHappy(1600); } }
+        else if (c=='t') { setStatus("Test...",C_YL); if(callAetherText("Hello, are you there?")){ startTalk(); playMp3(); stopTalk(); setFaceHappy(1600); } }
         else if (c=='w') { enterStandby(); Serial.println("[Standby ON]"); }
         else if (c=='s') { exitStandby();  Serial.println("[Standby OFF]"); }
         else if (c=='r') {
