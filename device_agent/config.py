@@ -14,5 +14,5 @@ For production, set them in Railway / your deployment environment.
 import os
 
 CLOUD_BRAIN_URL = os.getenv("AETHER_CLOUD_URL", "wss://aetherai.up.railway.app")
-DEVICE_ID       = os.getenv("AETHER_DEVICE_ID", "my-device")
+DEVICE_ID       = os.getenv("AETHER_DEVICE_ID", "patrick-pc")
 API_KEY         = os.getenv("AETHER_API_KEY",   "")
