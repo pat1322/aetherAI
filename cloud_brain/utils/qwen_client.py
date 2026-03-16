@@ -1,26 +1,23 @@
 """
-AetherAI — Qwen API Client  (Stage 5 — patch 9)
+AetherAI — Qwen API Client  (Stage 6 — Layer 1)
 
-Fixes
-─────
-FIX 1  "open word and write a letter" was going to CHAT because
-       _is_creative_chat ("write a letter to") fired before
-       _is_open_app_command. Added open_app check FIRST in
-       classify_command so it correctly routes to task/automation.
+Stage 6 additions
+─────────────────
+STREAM 1  stream_chat() — async generator that yields text chunks using
+          the OpenAI-compatible streaming API. Used by the orchestrator's
+          chat branch so tokens appear in the UI as they arrive instead
+          of waiting for the full response.
 
-FIX 2  Notepad loop: _build_open_app_write_plan now hard-routes
-       "open [app] and write/type X" commands, producing a clean
-       sequence that never generates both open_app + new_file.
+STREAM 2  stream_answer() — same as answer() but yields chunks instead
+          of returning a complete string. Injects the live datetime and
+          user context exactly like the blocking version does.
 
-FIX 3  Chrome navigation wait reduced from 2500ms → 1000ms.
-
-FIX 4  Calculator keywords broadened so "calculate X" works without
-       needing "open calculator and" prefix.
-
-FIX 5  (patch 9) Replaced pytz with stdlib zoneinfo — pytz was not in
-       requirements.txt and crashed all chat/answer() calls on Railway.
-       Also cleaned up the double-alias resolution pattern in coding_agent
-       cross-reference (see coding_agent.py FIX 13).
+Previous fixes retained (FIX 1–5):
+  FIX 1   open-app-and-write routes to task not chat
+  FIX 2   Notepad loop: _build_open_app_write_plan hard-routes app+write
+  FIX 3   Chrome navigation wait 2500ms → 1000ms
+  FIX 4   Calculator keywords broadened
+  FIX 5   pytz replaced with stdlib zoneinfo
 """
 
 import json
@@ -46,7 +43,7 @@ class QwenClient:
         self.model        = settings.QWEN_MODEL
         self.vision_model = settings.QWEN_VISION_MODEL
 
-    # ── Core LLM calls ────────────────────────────────────────────────────────
+    # ── Core LLM calls (blocking) ─────────────────────────────────────────────
 
     async def chat(self, system_prompt: str, user_message: str,
                    temperature: float = 0.7) -> str:
@@ -83,7 +80,6 @@ class QwenClient:
 
     async def answer(self, question: str, context: str = "",
                      user_context: str = "") -> str:
-        # FIX 5: use stdlib zoneinfo — no pytz dependency needed
         from datetime import datetime
         try:
             ph_tz   = ZoneInfo("Asia/Manila")
@@ -134,8 +130,83 @@ class QwenClient:
         user = f"{context}\n\nContent:\n{content}" if context else content
         return await self.chat(system, user, temperature=0.4)
 
+    # ── Streaming LLM calls (Stage 6) ─────────────────────────────────────────
+
+    async def stream_chat(self, system_prompt: str, user_message: str,
+                          temperature: float = 0.7):
+        """
+        STREAM 1 — Async generator that yields string chunks from the
+        streaming API. Drop-in counterpart to chat() for hot paths that
+        need progressive output.
+
+        Usage:
+            async for chunk in qwen.stream_chat(system, user):
+                do_something(chunk)
+        """
+        try:
+            stream = await self._client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_message},
+                ],
+                temperature=temperature,
+                stream=True,
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta
+                if delta and delta.content:
+                    yield delta.content
+        except Exception as e:
+            logger.error(f"[QwenClient] stream_chat failed: {e}")
+            # Yield the error token so the UI shows something rather than freezing
+            yield f"\n\n⚠️ Stream error: {e}"
+
+    async def stream_answer(self, question: str, context: str = "",
+                            user_context: str = ""):
+        """
+        STREAM 2 — Streaming counterpart to answer(). Builds the same
+        system prompt (datetime + quality rules + user context) and yields
+        chunks as they arrive from the model.
+
+        Usage:
+            full = ""
+            async for chunk in qwen.stream_answer(question, user_context=ctx):
+                full += chunk
+                await ws.send(chunk)
+        """
+        from datetime import datetime
+        try:
+            ph_tz   = ZoneInfo("Asia/Manila")
+            now     = datetime.now(ph_tz)
+            now_str = now.strftime("%A, %B %d, %Y %I:%M %p (Asia/Manila)")
+        except Exception:
+            now_str = datetime.utcnow().strftime("%A, %B %d, %Y %H:%M UTC")
+
+        system = (
+            f"You are AetherAI, a highly capable personal AI assistant built by "
+            f"Patrick Perez, a 26-year-old software engineer from the Philippines.\n"
+            f"CURRENT DATE AND TIME: {now_str}\n\n"
+            "RESPONSE QUALITY RULES:\n"
+            "- Give thorough, detailed answers. Do not truncate or oversimplify.\n"
+            "- For creative writing: produce the full piece immediately.\n"
+            "- For math: solve it directly and show the working. Do NOT open any app.\n"
+            "- For date/time questions: use the CURRENT DATE AND TIME provided above.\n"
+            "- For translations: give translation and pronunciation.\n"
+            "- For health/science: give comprehensive detail.\n"
+            "- Use markdown for structured topics.\n"
+            "- Never say 'I cannot access real-time data'."
+        )
+        parts = []
+        if user_context: parts.append(f"Facts about this user:\n{user_context}")
+        if context:      parts.append(f"Context:\n{context}")
+        parts.append(f"Request: {question}")
+
+        async for chunk in self.stream_chat(system, "\n\n".join(parts), temperature=0.7):
+            yield chunk
+
     # =========================================================================
-    # KEYWORD SETS
+    # KEYWORD SETS  (unchanged from Stage 5)
     # =========================================================================
 
     MEMORY_KEYWORDS = [
@@ -498,7 +569,7 @@ class QwenClient:
                      "parameters":{"query":command}}]
 
     # =========================================================================
-    # PLAN BUILDERS
+    # PLAN BUILDERS  (unchanged from Stage 5)
     # =========================================================================
 
     def _build_document_plan(self, command: str, c: str) -> list[dict]:
@@ -722,7 +793,7 @@ class QwenClient:
                  "parameters":{"action":"search","query":command,"engine":"google"}}]
 
     # =========================================================================
-    # HELPERS
+    # HELPERS  (unchanged from Stage 5)
     # =========================================================================
 
     def _dedup_open_steps(self, plan: list) -> list:

@@ -1,26 +1,19 @@
 """
-AetherAI — WebSocket Manager  (Stage 5 — fully patched)
+AetherAI — WebSocket Manager  (Stage 6 — Layer 1)
 
-All fixes applied
-─────────────────
-FIX A  asyncio.get_event_loop() replaced with asyncio.get_running_loop()
-       throughout. get_event_loop() is deprecated in Python 3.10+ and
-       raises DeprecationWarning / RuntimeError in 3.12.
+Stage 6 addition
+────────────────
+STREAM 1  stream_chunk_to_ui() — lightweight helper that broadcasts a
+          single streaming token to all connected UI sessions without
+          going through the broadcast_task_update() deduplication cache.
+          The dedup cache is designed for full status updates (same status
+          message repeated twice); it must not suppress stream chunks
+          which are all unique but often very short (1-3 chars).
 
-FIX B  Background prune task is no longer created in __init__ (which runs
-       before the event loop exists). Call ws_manager.start() from the
-       FastAPI lifespan handler instead.
-
-FIX C  disconnect_device() now schedules the UI broadcast via
-       asyncio.get_running_loop().call_soon_threadsafe() so it works
-       whether called from sync or async context.
-
-Original Stage 4 features retained:
-  • Per-session UI message queues (back-pressure, dead session pruning)
-  • Pending future TTL / stale-future purge
-  • Vision handler cleanup
-  • broadcast_task_update() deduplication guard
-  • SendResult enum
+All Stage 5 fixes retained:
+  FIX A  asyncio.get_running_loop() throughout (no get_event_loop())
+  FIX B  start() called from FastAPI lifespan, not __init__
+  FIX C  disconnect_device() schedules UI broadcast via call_soon_threadsafe
 """
 
 import asyncio
@@ -59,10 +52,7 @@ class WebSocketManager:
         self._prune_task:      asyncio.Task | None       = None
 
     async def start(self):
-        """
-        FIX B: Call this from the FastAPI lifespan handler after the event
-        loop is running, not from __init__.
-        """
+        """FIX B: call from FastAPI lifespan after the event loop is running."""
         loop = asyncio.get_running_loop()
         self._prune_task = loop.create_task(self._background_prune())
         logger.info("[WSManager] Background prune task started")
@@ -78,14 +68,13 @@ class WebSocketManager:
     def disconnect_device(self, device_id: str):
         self._devices.pop(device_id, None)
         logger.info(f"[WSManager] Device disconnected: {device_id}")
-        # FIX A/C: schedule the coroutine safely from any context
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(
                 self.broadcast_ui_event({"type": "device_disconnected", "device_id": device_id})
             )
         except RuntimeError:
-            pass  # no event loop — broadcast skipped (shouldn't happen in production)
+            pass
 
     def list_devices(self) -> list[str]:
         return list(self._devices.keys())
@@ -113,7 +102,6 @@ class WebSocketManager:
         self._ui_sessions[session_id] = ws
         q = asyncio.Queue(maxsize=UI_QUEUE_MAX)
         self._ui_queues[session_id]  = q
-        # FIX A: use get_running_loop() — we're inside an async function here
         self._ui_writers[session_id] = asyncio.get_running_loop().create_task(
             self._session_writer(session_id, ws, q)
         )
@@ -166,6 +154,28 @@ class WebSocketManager:
 
     def clear_broadcast_cache(self, task_id: str):
         self._last_broadcast.pop(task_id, None)
+
+    # ── Streaming helper (Stage 6) ─────────────────────────────────────────────
+
+    async def stream_chunk_to_ui(self, task_id: str, chunk: str):
+        """
+        STREAM 1 — Broadcast a single streaming token to all UI sessions.
+
+        Bypasses the broadcast_task_update() deduplication cache intentionally:
+        the dedup cache is keyed on the full payload JSON and is designed to
+        suppress repeated identical status messages, not individual token chunks.
+        Calling broadcast_task_update() for every token would (a) pollute the
+        dedup cache with thousands of entries, and (b) incorrectly suppress any
+        two consecutive identical tokens (e.g. "  " whitespace pairs).
+
+        This method calls broadcast_ui_event() directly — same delivery path,
+        no dedup, no cache mutation.
+        """
+        await self.broadcast_ui_event({
+            "type":    "stream_chunk",
+            "task_id": task_id,
+            "chunk":   chunk,
+        })
 
     # ── Pending futures ────────────────────────────────────────────────────────
 

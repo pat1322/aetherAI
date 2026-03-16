@@ -1,13 +1,21 @@
 """
-AetherAI — Orchestrator  (Stage 5 — patch 3)
+AetherAI — Orchestrator  (Stage 6 — Layer 1)
 
-FIX 7  _last_broadcast memory leak: ws_manager.clear_broadcast_cache() is
-       now called in the finally block so completed task entries don't
-       accumulate indefinitely.
+Stage 6 change
+──────────────
+STREAM 1  The chat branch now streams tokens to the UI instead of waiting
+          for the full answer. Sequence:
+            1. Broadcast  type=stream_start  (UI creates the message bubble)
+            2. For every chunk: ws_manager.stream_chunk_to_ui()
+            3. Broadcast  type=stream_end    (UI finalises + runs markdown)
 
-FIX 9  STEP_OUTPUT_PREVIEW raised from 300 → 800 chars. The old value was
-       too short for weather / crypto / research step outputs, causing the
-       task detail panel in the UI to show truncated garbage.
+          The agent (task) branch is completely unchanged — multi-step tasks
+          already show step-by-step progress and don't benefit from streaming
+          in the same way.
+
+All Stage 5 fixes retained:
+  FIX 7   _last_broadcast memory leak cleared in finally block
+  FIX 9   STEP_OUTPUT_PREVIEW raised to 800 chars
 """
 
 import asyncio
@@ -21,7 +29,6 @@ from agent_router import AgentRouter
 
 logger = logging.getLogger(__name__)
 
-# FIX 9: 300 was too aggressive — weather/crypto outputs were getting mangled
 STEP_OUTPUT_PREVIEW = 800
 
 
@@ -78,17 +85,44 @@ class Orchestrator:
             command_type = await self.qwen.classify_command(command, user_context=user_context)
             logger.info(f"[{task_id}] Classified: {command_type}")
 
-            # ── CHAT MODE ─────────────────────────────────────────────────────
+            # ── CHAT MODE — streamed (Stage 6) ────────────────────────────────
             if command_type == "chat":
-                answer = await self.qwen.answer(command, user_context=user_context)
-                self.memory.update_task_status(task_id, "completed", result=answer)
+                # Signal UI to open a streaming bubble
                 await self.ws_manager.broadcast_task_update(task_id, {
-                    "status": "completed", "message": "Done.",
-                    "result": answer, "is_chat": True,
+                    "status":  "streaming",
+                    "message": "Thinking...",
+                    "type":    "stream_start",
+                    "is_chat": True,
+                })
+                self.memory.update_task_status(task_id, "running")
+
+                full_text = ""
+                try:
+                    async for chunk in self.qwen.stream_answer(
+                        command, user_context=user_context
+                    ):
+                        full_text += chunk
+                        await self.ws_manager.stream_chunk_to_ui(task_id, chunk)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.error(f"[{task_id}] Stream error: {e}", exc_info=True)
+                    # Append error inline so the UI bubble shows it, not a blank entry
+                    error_chunk = f"\n\n⚠️ Error: {e}"
+                    full_text += error_chunk
+                    await self.ws_manager.stream_chunk_to_ui(task_id, error_chunk)
+
+                # Finalise
+                self.memory.update_task_status(task_id, "completed", result=full_text)
+                await self.ws_manager.broadcast_task_update(task_id, {
+                    "status":  "completed",
+                    "message": "Done.",
+                    "type":    "stream_end",
+                    "is_chat": True,
                 })
                 return
 
-            # ── TASK MODE ─────────────────────────────────────────────────────
+            # ── TASK MODE — unchanged from Stage 5 ───────────────────────────
             plan = await self.qwen.plan_task(command, user_context=user_context)
 
             doc_idx = [i for i, s in enumerate(plan) if s.get("agent") == "document_agent"]
@@ -183,7 +217,6 @@ class Orchestrator:
                             db_output   = chat_output
                         else:
                             db_output = summary if summary else output
-                            # FIX 9: 800 chars preserves enough context for the UI panel
                             if len(db_output) > STEP_OUTPUT_PREVIEW:
                                 db_output = db_output[:STEP_OUTPUT_PREVIEW] + "…"
                             chat_output            = output
@@ -252,8 +285,6 @@ class Orchestrator:
             })
         finally:
             self._task_handles.pop(task_id, None)
-            # FIX 7: clear the broadcast dedup cache so completed tasks don't
-            # accumulate entries in _last_broadcast indefinitely
             self.ws_manager.clear_broadcast_cache(task_id)
 
     def cancel_task(self, task_id: str) -> bool:

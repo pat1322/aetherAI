@@ -1,19 +1,24 @@
 """
-AetherAI Cloud Brain — Stage 5 (patch 3)
+AetherAI Cloud Brain — Stage 6 (Layer 1 + Layer 2)
 
-FIX 12 Route order: DELETE /files/all/clear now registered BEFORE
-       DELETE /files/{filename} so FastAPI's first-match routing can
-       never shadow the specific path. Previously the registration order
-       was safe only because {filename} lacks :path, but this makes it
-       explicit and future-proof.
+Stage 6 Layer 2 additions
+──────────────────────────
+VOICE 1  POST /voice/chat
+         Accepts raw WAV audio bytes (Content-Type: audio/wav).
+         Pipeline: Paraformer STT → Qwen LLM → edge-tts → MP3 bytes.
+         Response headers carry X-Transcript and X-Response-Text so the
+         ESP32 can display what was heard / said on the TFT screen.
 
-FIX 15 Basic in-flight task cap: POST /command now rejects new tasks
-       when MAX_CONCURRENT_TASKS running tasks are already in progress.
-       Prevents a single user / browser tab from flooding the queue.
-       Default cap is 5 — raise via MAX_CONCURRENT_TASKS env var if needed.
+VOICE 2  GET /tts/voices
+         Returns the list of available edge-tts voices — useful for a
+         future settings UI or to verify the voice name is valid.
 
-FIX P1 (retained) StatusResponse includes `command` field.
-FIX P2 (retained) /files/download/* is public.
+Stage 6 Layer 1 retained:
+  SSE 1   POST /stream  — Server-Sent Events streaming for chat commands
+
+All Stage 5 fixes retained:
+  FIX 12  DELETE /files/all/clear before DELETE /files/{filename}
+  FIX 15  MAX_CONCURRENT_TASKS cap
 """
 
 from contextlib import asynccontextmanager
@@ -27,11 +32,11 @@ import os
 import secrets
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Optional, AsyncGenerator
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -48,8 +53,6 @@ memory       = MemoryManager()
 orchestrator = Orchestrator(memory=memory, ws_manager=ws_manager)
 
 _UI_SESSION_TOKEN = secrets.token_urlsafe(24)
-
-# FIX 15: cap concurrent running tasks to prevent queue flooding
 MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "5"))
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -63,8 +66,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AetherAI Cloud Brain",
-    description="Personal AI Agent System — Stage 5",
-    version="5.3.0",
+    description="Personal AI Agent System — Stage 6",
+    version="6.0.0",
     lifespan=lifespan,
 )
 
@@ -74,53 +77,41 @@ app.add_middleware(
     allow_methods=["*"], allow_headers=["*"],
 )
 
-# ── API key enforcement middleware ────────────────────────────────────────────
+# ── API key middleware ────────────────────────────────────────────────────────
 
-_PUBLIC_PREFIXES = (
-    "/ui",
-    "/health",
-    "/docs",
-    "/openapi",
-    "/redoc",
-    "/files/download",
-)
-_PUBLIC_EXACT = frozenset(["/", "/health", "/ui/config"])
+_PUBLIC_PREFIXES = ("/ui", "/health", "/docs", "/openapi", "/redoc", "/files/download")
+_PUBLIC_EXACT    = frozenset(["/", "/health", "/ui/config"])
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if not settings.API_KEY:
             return await call_next(request)
-
         path = request.url.path
         if path in _PUBLIC_EXACT or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
             return await call_next(request)
-
         if request.headers.get("upgrade", "").lower() == "websocket":
             return await call_next(request)
-
-        provided = request.headers.get("X-Api-Key", "")
-        if provided != settings.API_KEY:
+        if request.headers.get("X-Api-Key", "") != settings.API_KEY:
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Invalid or missing API key. Set X-Api-Key header."},
             )
-
         return await call_next(request)
 
 app.add_middleware(ApiKeyMiddleware)
 
-# ── Request / Response models ─────────────────────────────────────────────────
+# ── Models ────────────────────────────────────────────────────────────────────
 
 class CommandRequest(BaseModel):
-    command: str
-    source: str = "web"
+    command:    str
+    source:     str = "web"
     session_id: Optional[str] = None
 
 class CommandResponse(BaseModel):
     task_id: str
-    status: str
+    status:  str
     message: str
-    plan: Optional[list] = None
+    plan:    Optional[list] = None
 
 class StatusResponse(BaseModel):
     task_id:    str
@@ -135,50 +126,156 @@ class PrefRequest(BaseModel):
     label: str
     value: str
 
-# ── Core REST endpoints ───────────────────────────────────────────────────────
+# ── Core endpoints ────────────────────────────────────────────────────────────
 
 @app.get("/")
 async def root():
-    return {"system": "AetherAI Cloud Brain", "status": "online", "version": "5.3.0"}
+    return {"system": "AetherAI Cloud Brain", "status": "online", "version": "6.0.0"}
 
 @app.get("/health")
 async def health():
     return {
-        "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
+        "status":           "healthy",
+        "timestamp":        datetime.utcnow().isoformat(),
         "devices_connected": ws_manager.device_count(),
-        "task_stats": memory.get_task_stats(),
+        "task_stats":       memory.get_task_stats(),
     }
 
 @app.get("/ui/config")
 async def ui_config():
-    return {
-        "api_key":       settings.API_KEY,
-        "session_token": _UI_SESSION_TOKEN,
-    }
+    return {"api_key": settings.API_KEY, "session_token": _UI_SESSION_TOKEN}
 
 @app.post("/command", response_model=CommandResponse)
 async def receive_command(req: CommandRequest):
-    # FIX 15: reject if too many tasks are already in flight
     stats = memory.get_task_stats()
-    running_count = stats.get("running", 0) + stats.get("planning", 0)
-    if running_count >= MAX_CONCURRENT_TASKS:
+    if (stats.get("running", 0) + stats.get("planning", 0)) >= MAX_CONCURRENT_TASKS:
         raise HTTPException(
             status_code=429,
-            detail=(
-                f"Too many tasks in progress ({running_count}/{MAX_CONCURRENT_TASKS}). "
-                "Wait for a task to finish before sending another."
-            ),
+            detail=f"Too many tasks in progress. Wait for one to finish.",
         )
-
     task_id = str(uuid.uuid4())
     memory.create_task(task_id, req.command, req.source)
     asyncio.create_task(orchestrator.run_task(task_id, req.command))
     return CommandResponse(
-        task_id=task_id,
-        status="started",
-        message=f"Task received. AetherAI is working on: '{req.command}'",
+        task_id=task_id, status="started",
+        message=f"Task received: '{req.command}'",
     )
+
+# ── SSE streaming endpoint (Layer 1) ─────────────────────────────────────────
+
+def _load_user_ctx() -> str:
+    try:
+        from agents.memory_agent import MemoryAgent
+        return MemoryAgent.load_context(memory)
+    except Exception:
+        return ""
+
+@app.post("/stream")
+async def stream_command(req: CommandRequest):
+    """
+    SSE endpoint — streams chat tokens directly, or returns task_id for
+    task-classified commands.
+    """
+    async def generate() -> AsyncGenerator[str, None]:
+        user_ctx     = _load_user_ctx()
+        command_type = await orchestrator.qwen.classify_command(
+            req.command, user_context=user_ctx
+        )
+        if command_type == "chat":
+            yield f"data: {json.dumps({'type': 'stream_start'})}\n\n"
+            full = ""
+            try:
+                async for chunk in orchestrator.qwen.stream_answer(
+                    req.command, user_context=user_ctx
+                ):
+                    full += chunk
+                    yield f"data: {json.dumps({'type': 'chunk', 'text': chunk})}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'stream_end', 'full_text': full})}\n\n"
+        else:
+            task_id = str(uuid.uuid4())
+            memory.create_task(task_id, req.command, req.source)
+            asyncio.create_task(orchestrator.run_task(task_id, req.command))
+            yield f"data: {json.dumps({'type': 'task_created', 'task_id': task_id})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+# ── Voice endpoints (Layer 2) ─────────────────────────────────────────────────
+
+@app.post("/voice/chat")
+async def voice_chat(request: Request):
+    """
+    VOICE 1 — ESP32 voice pipeline endpoint.
+
+    Request:
+        Content-Type: audio/wav
+        Body:         Raw WAV audio bytes (16kHz mono 16-bit from INMP441)
+        X-Api-Key:    AETHER_API_KEY
+
+    Response:
+        Content-Type:    audio/mpeg
+        X-Transcript:    What the user said (UTF-8, URL-encoded)
+        X-Response-Text: Short spoken response text (UTF-8, URL-encoded)
+        Body:            MP3 audio bytes ready to feed to the ES8311
+
+    On error: returns JSON {"detail": "..."} with appropriate HTTP status.
+    """
+    from urllib.parse import quote as urlquote
+
+    audio_bytes = await request.body()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio body")
+
+    if len(audio_bytes) < 100:
+        raise HTTPException(status_code=400, detail="Audio too short")
+
+    try:
+        from agents.voice_agent import process_voice
+        result = await process_voice(
+            audio_bytes=audio_bytes,
+            qwen=orchestrator.qwen,
+            memory=memory,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Voice pipeline error: {e}")
+
+    if not result.mp3_bytes:
+        raise HTTPException(
+            status_code=502,
+            detail="TTS produced no audio. Check TTS_VOICE env var and edge-tts installation.",
+        )
+
+    # URL-encode headers so non-ASCII (Filipino, etc.) survives HTTP transport
+    return Response(
+        content=result.mp3_bytes,
+        media_type="audio/mpeg",
+        headers={
+            "X-Transcript":     urlquote(result.transcript[:300]),
+            "X-Response-Text":  urlquote(result.spoken_text[:300]),
+            "Cache-Control":    "no-cache",
+        },
+    )
+
+
+@app.get("/tts/voices")
+async def tts_voices():
+    """
+    VOICE 2 — List all available edge-tts voices.
+    Useful for choosing a voice in settings or verifying TTS_VOICE is valid.
+    """
+    from utils.tts_client import list_voices
+    voices = await list_voices()
+    return {
+        "current_voice": settings.TTS_VOICE,
+        "voices":        voices,
+    }
+
+# ── Task endpoints ────────────────────────────────────────────────────────────
 
 @app.get("/task/{task_id}", response_model=StatusResponse)
 async def get_task_status(task_id: str):
@@ -193,23 +290,20 @@ async def list_tasks(limit: int = 20):
 
 @app.post("/task/{task_id}/cancel")
 async def cancel_task(task_id: str):
-    success = orchestrator.cancel_task(task_id)
-    if not success:
+    if not orchestrator.cancel_task(task_id):
         raise HTTPException(status_code=404, detail="Task not found or already finished")
     memory.update_task_status(task_id, "cancelled")
     return {"task_id": task_id, "status": "cancelled"}
 
 @app.delete("/task/{task_id}")
 async def delete_task(task_id: str):
-    success = memory.delete_task(task_id)
-    if not success:
+    if not memory.delete_task(task_id):
         raise HTTPException(status_code=404, detail="Task not found")
     return {"task_id": task_id, "deleted": True}
 
 @app.delete("/tasks/all")
 async def delete_all_tasks():
-    count = memory.delete_all_tasks()
-    return {"deleted_count": count}
+    return {"deleted_count": memory.delete_all_tasks()}
 
 # ── File endpoints ────────────────────────────────────────────────────────────
 
@@ -238,18 +332,10 @@ async def download_file(filename: str):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(path=str(fpath), filename=filename)
 
-# FIX 12: specific route registered BEFORE the wildcard to avoid shadow risk
 @app.delete("/files/all/clear")
 async def delete_all_files():
     output_dir = Path(__file__).parent.parent / "output"
-    count = 0
-    for f in output_dir.iterdir():
-        if f.is_file():
-            try:
-                f.unlink()
-                count += 1
-            except Exception:
-                pass
+    count = sum(1 for f in output_dir.iterdir() if f.is_file() and not f.unlink())
     return {"deleted_count": count}
 
 @app.delete("/files/{filename}")
@@ -285,8 +371,7 @@ async def set_preference_api(req: PrefRequest):
     entry = {"label": req.label, "value": req.value, "raw": f"{req.label}: {req.value}"}
     memory.set_preference(key, entry)
     index = memory.get_preference(_INDEX_KEY, default=[])
-    if not isinstance(index, list):
-        index = []
+    if not isinstance(index, list): index = []
     if key not in index:
         index.append(key)
         memory.set_preference(_INDEX_KEY, index)
@@ -297,8 +382,7 @@ async def clear_preferences():
     from agents.memory_agent import _INDEX_KEY
     index = memory.get_preference(_INDEX_KEY, default=[])
     if isinstance(index, list):
-        for key in index:
-            memory.delete_preference(key)
+        for key in index: memory.delete_preference(key)
     memory.set_preference(_INDEX_KEY, [])
     return {"cleared": True}
 
@@ -323,15 +407,13 @@ async def list_devices():
 @app.websocket("/ws/device/{device_id}")
 async def device_websocket(websocket: WebSocket, device_id: str):
     if settings.API_KEY:
-        provided = websocket.query_params.get("api_key", "")
-        if provided != settings.API_KEY:
+        if websocket.query_params.get("api_key", "") != settings.API_KEY:
             await websocket.close(code=4401, reason="Invalid API key")
             return
     await ws_manager.connect_device(device_id, websocket)
     try:
         while True:
-            raw  = await websocket.receive_text()
-            data = json.loads(raw)
+            data = json.loads(await websocket.receive_text())
             await ws_manager.handle_device_message(device_id, data)
     except WebSocketDisconnect:
         ws_manager.disconnect_device(device_id)
@@ -340,11 +422,9 @@ async def device_websocket(websocket: WebSocket, device_id: str):
 
 @app.websocket("/ws/ui/{session_id}")
 async def ui_websocket(websocket: WebSocket, session_id: str):
-    provided_token = websocket.query_params.get("token", "")
-    if provided_token != _UI_SESSION_TOKEN:
+    if websocket.query_params.get("token", "") != _UI_SESSION_TOKEN:
         await websocket.close(code=4401, reason="Invalid session token")
         return
-
     await ws_manager.connect_ui(session_id, websocket)
     try:
         while True:
@@ -353,7 +433,7 @@ async def ui_websocket(websocket: WebSocket, session_id: str):
     except (WebSocketDisconnect, RuntimeError):
         ws_manager.disconnect_ui(session_id)
 
-# ── Static files (Web UI) ─────────────────────────────────────────────────────
+# ── Static files ──────────────────────────────────────────────────────────────
 
 try:
     app.mount("/ui", StaticFiles(directory="../web_ui", html=True), name="ui")
