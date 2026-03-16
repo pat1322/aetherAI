@@ -987,6 +987,11 @@ function handleStreamEnd(task_id) {
   delete _streamBuffers[task_id];
   delete _streamEntries[task_id];
 
+  // FIX: hide Cancel Task button — streaming tasks complete here, not in handleTaskUpdate
+  if (activeTaskId === task_id) {
+    document.getElementById('panelActions').style.display = 'none';
+  }
+
   unlockInput();
   loadTasks();
 }
@@ -1572,14 +1577,15 @@ function speakText(text) {
   if (!_synthEnabled || !window.speechSynthesis) return;
   // Stop any current utterance
   window.speechSynthesis.cancel();
-  // Strip markdown symbols and cap length (TTS doesn't need to read 2000 words)
+  // Strip markdown symbols. No hard char cap — let the user hear the full response.
+  // The TTS speed setting lets them speed up long answers.
   const clean = text
     .replace(/```[\s\S]*?```/g, 'code block.')
     .replace(/[#*`_\[\]()>|~]/g, '')
     .replace(/https?:\/\/\S+/g, 'link.')
     .replace(/\n+/g, ' ')
     .trim()
-    .slice(0, 800);
+    .slice(0, 4000);
   if (!clean) return;
   const utt   = new SpeechSynthesisUtterance(clean);
   utt.rate    = _synthRate;
