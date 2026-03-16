@@ -8,10 +8,11 @@ VOICE 1  POST /voice/chat
          Pipeline: Paraformer STT → Qwen LLM → edge-tts → MP3 bytes.
          Response headers carry X-Transcript and X-Response-Text so the
          ESP32 can display what was heard / said on the TFT screen.
+         NOW BROADCASTS to the command center WebSocket so every voice
+         conversation appears in the task list in real time.
 
 VOICE 2  GET /tts/voices
-         Returns the list of available edge-tts voices — useful for a
-         future settings UI or to verify the voice name is valid.
+         Returns the list of available edge-tts voices.
 
 Stage 6 Layer 1 retained:
   SSE 1   POST /stream  — Server-Sent Events streaming for chat commands
@@ -225,16 +226,27 @@ async def voice_chat(request: Request):
         X-Response-Text: Short spoken response text (UTF-8, URL-encoded)
         Body:            MP3 audio bytes ready to feed to the ES8311
 
-    On error: returns JSON {"detail": "..."} with appropriate HTTP status.
+    Now creates a task in the database and broadcasts WebSocket updates so
+    every voice conversation appears in the command center task list.
     """
     from urllib.parse import quote as urlquote
 
     audio_bytes = await request.body()
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Empty audio body")
-
     if len(audio_bytes) < 100:
         raise HTTPException(status_code=400, detail="Audio too short")
+
+    # ── Create a task so it shows in the command center sidebar ───────────────
+    task_id = str(uuid.uuid4())
+    memory.create_task(task_id, "[Voice] Transcribing...", "voice")
+    memory.update_task_status(task_id, "running")
+
+    # Broadcast to all connected UI sessions (voice has no dedicated session_id)
+    await ws_manager.broadcast_task_update(task_id, {
+        "status":  "running",
+        "message": "🎙️ Voice: transcribing audio...",
+    })
 
     try:
         from agents.voice_agent import process_voice
@@ -244,13 +256,46 @@ async def voice_chat(request: Request):
             memory=memory,
         )
     except Exception as e:
+        memory.update_task_status(task_id, "failed", result=str(e))
+        await ws_manager.broadcast_task_update(task_id, {
+            "status":  "failed",
+            "message": f"Voice pipeline error: {e}",
+        })
         raise HTTPException(status_code=500, detail=f"Voice pipeline error: {e}")
 
     if not result.mp3_bytes:
+        memory.update_task_status(task_id, "failed", result="TTS produced no audio")
+        await ws_manager.broadcast_task_update(task_id, {
+            "status":  "failed",
+            "message": "TTS produced no audio. Check TTS_VOICE env var.",
+        })
         raise HTTPException(
             status_code=502,
             detail="TTS produced no audio. Check TTS_VOICE env var and edge-tts installation.",
         )
+
+    # ── Update the task command to the real transcript ────────────────────────
+    # SQLite INSERT is already done — we store transcript + response in result.
+    # The command field shows the transcript by re-creating the task row.
+    # Since create_task uses INSERT (not REPLACE), we update via status+result.
+    transcript_display = result.transcript or "(no transcript)"
+    spoken_display     = result.spoken_text or result.response_text or ""
+
+    # Store transcript as the task "result" so it's visible when you click the task
+    voice_summary = (
+        f"Heard: {transcript_display}\n\n"
+        f"Response: {spoken_display}"
+    )
+    memory.update_task_status(task_id, "completed", result=voice_summary)
+
+    # Broadcast completion — shows transcript as output in the command center
+    await ws_manager.broadcast_task_update(task_id, {
+        "status":       "completed",
+        "message":      f"🎙️ {transcript_display}",
+        "step_status":  "completed",
+        "output":       voice_summary,
+        "result":       voice_summary,
+    })
 
     # URL-encode headers so non-ASCII (Filipino, etc.) survives HTTP transport
     return Response(
