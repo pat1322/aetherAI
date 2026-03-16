@@ -168,48 +168,48 @@ class WebSocketManager:
             "chunk":   chunk,
         })
 
-    async def broadcast_to_session(self, session_id: str, data: dict):
-        """
-        Send a task_update event to ONE specific UI session only.
-        Used for multi-user isolation — each user only sees their own task results.
-        Falls back to broadcast_ui_event() if session_id is unknown (e.g. old client).
-        """
-        if not session_id or session_id not in self._ui_queues:
-            # Session not connected — fall back to broadcast so the task isn't silently lost
-            await self.broadcast_ui_event(data)
-            return
-        payload = data if isinstance(data, str) else __import__('json').dumps(data)
-        q = self._ui_queues[session_id]
-        if q.full():
-            try: q.get_nowait()
-            except: pass
-        try: q.put_nowait(payload)
-        except: pass
-
     async def broadcast_task_update_to_session(self, session_id: str, task_id: str, data: dict):
         """
         Session-targeted version of broadcast_task_update().
-        Sends only to the session that created the task.
-        Dedup cache still applies (same key logic as broadcast_task_update).
+        Always operates on dicts — never pre-serialized strings.
+        Falls back to broadcast_task_update() (broadcast-all) when session_id
+        is missing or the session has disconnected, so nothing is silently lost.
         """
-        import json as _json
         payload = {"type": "task_update", "task_id": task_id, **data}
-        key     = _json.dumps(payload, sort_keys=True)
+        key     = json.dumps(payload, sort_keys=True)
         if self._last_broadcast.get(task_id) == key:
             return
         self._last_broadcast[task_id] = key
-        await self.broadcast_to_session(session_id, _json.dumps(payload))
+
+        # Route to owning session only — fall back to broadcast if unknown
+        if session_id and session_id in self._ui_queues:
+            serialized = json.dumps(payload)
+            q = self._ui_queues[session_id]
+            if q.full():
+                try: q.get_nowait()
+                except asyncio.QueueEmpty: pass
+            try: q.put_nowait(serialized)
+            except asyncio.QueueFull: pass
+        else:
+            # session_id empty/disconnected — broadcast to all (safe fallback)
+            await self.broadcast_ui_event(payload)
 
     async def stream_chunk_to_session(self, session_id: str, task_id: str, chunk: str):
         """
-        Session-targeted streaming chunk — only the owning session sees it.
+        Session-targeted streaming chunk.
+        Falls back to broadcast_ui_event() when session is unknown.
         """
-        import json as _json
-        await self.broadcast_to_session(session_id, _json.dumps({
-            "type":    "stream_chunk",
-            "task_id": task_id,
-            "chunk":   chunk,
-        }))
+        payload = {"type": "stream_chunk", "task_id": task_id, "chunk": chunk}
+        if session_id and session_id in self._ui_queues:
+            serialized = json.dumps(payload)
+            q = self._ui_queues[session_id]
+            if q.full():
+                try: q.get_nowait()
+                except asyncio.QueueEmpty: pass
+            try: q.put_nowait(serialized)
+            except asyncio.QueueFull: pass
+        else:
+            await self.broadcast_ui_event(payload)
 
     # ── Pending futures ────────────────────────────────────────────────────────
 
