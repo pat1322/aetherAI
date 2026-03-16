@@ -15,6 +15,9 @@ VOICE 2  GET /tts/voices
          Returns the list of available edge-tts voices.
 
 VOICE 3  POST /voice/text                              ← v6.2 addition
+
+BRONNY 1  POST /bronny/heartbeat  — ESP32 registers / keeps-alive (public)
+BRONNY 2  GET  /bronny/status     — UI polls for online/offline badge (public)
          Accepts a pre-transcribed text string (JSON body: {"text":"..."}).
          ASR is done on-device by ByteDance — Railway only runs LLM + TTS.
          Faster than /voice/chat because no WAV upload or STT round-trip.
@@ -61,6 +64,9 @@ orchestrator = Orchestrator(memory=memory, ws_manager=ws_manager)
 _UI_SESSION_TOKEN = secrets.token_urlsafe(24)
 MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "5"))
 
+# ── Bronny device status (updated by /bronny/heartbeat) ──────────────────────
+_bronny_status: dict = {"online": False, "last_seen": None, "version": None}
+
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -85,7 +91,7 @@ app.add_middleware(
 
 # ── API key middleware ────────────────────────────────────────────────────────
 
-_PUBLIC_PREFIXES = ("/ui", "/health", "/docs", "/openapi", "/redoc", "/files/download")
+_PUBLIC_PREFIXES = ("/ui", "/health", "/docs", "/openapi", "/redoc", "/files/download", "/bronny")
 _PUBLIC_EXACT    = frozenset(["/", "/health", "/ui/config"])
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):
@@ -134,6 +140,10 @@ class PrefRequest(BaseModel):
 
 class VoiceTextRequest(BaseModel):
     text: str
+
+class BronnyHeartbeatRequest(BaseModel):
+    device: str = "bronny"
+    version: str = "6.2"
 
 # ── Core endpoints ────────────────────────────────────────────────────────────
 
@@ -421,6 +431,43 @@ async def voice_text_chat(req: VoiceTextRequest):
         },
     )
 
+
+
+# ── Bronny device endpoints ───────────────────────────────────────────────────
+
+@app.post("/bronny/heartbeat")
+async def bronny_heartbeat(req: BronnyHeartbeatRequest):
+    """
+    Called by the ESP32 every 30 s and on boot.
+    Updates the in-memory status so the web UI can show "Bronny: Online".
+    """
+    _bronny_status["online"]    = True
+    _bronny_status["last_seen"] = datetime.utcnow().isoformat()
+    _bronny_status["version"]   = req.version
+    _bronny_status["device"]    = req.device
+    # Broadcast to all UI sessions so the badge updates instantly
+    await ws_manager.broadcast_ui_event({
+        "type":    "bronny_status",
+        "online":  True,
+        "version": req.version,
+    })
+    return {"ok": True, "device": req.device}
+
+
+@app.get("/bronny/status")
+async def bronny_status():
+    """
+    Returns Bronny online/offline status.
+    UI polls this; also receives live updates via WebSocket bronny_status event.
+    Bronny is considered offline if last heartbeat > 60 s ago.
+    """
+    if _bronny_status["last_seen"]:
+        from datetime import timezone
+        last = datetime.fromisoformat(_bronny_status["last_seen"])
+        age  = (datetime.utcnow() - last).total_seconds()
+        if age > 60:
+            _bronny_status["online"] = False
+    return _bronny_status
 
 @app.get("/tts/voices")
 async def tts_voices():

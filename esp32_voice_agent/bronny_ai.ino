@@ -46,6 +46,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <math.h>
+#include <stdarg.h>   // for tftLogf va_list
 
 // ============================================================
 // CREDENTIALS — loaded from voice_config.h (gitignored)
@@ -725,6 +726,8 @@ bool recordVAD(int maxMs, bool shortCapture = false) {
             }
             if (rms > VAD_THR) {
                 speaking = true; silStart = 0;
+                Serial.printf("[VAD] Speech detected! RMS=%d  THR=%d\n", (int)rms, VAD_THR);
+                tftLogf("VAD hit RMS=%d THR=%d", (int)rms, VAD_THR);
                 if (preRoll) {
                     int prCount = prFull ? preRollSamp : (prHead % preRollSamp);
                     int prStart = prFull ? (prHead % preRollSamp) : 0;
@@ -753,7 +756,11 @@ bool recordVAD(int maxMs, bool shortCapture = false) {
         yield();
     }
     if (preRoll) free(preRoll);
-    return (recLen > 16000 / 4) && (recPeak > (int32_t)eGate);
+    bool vadResult = (recLen > 16000 / 4) && (recPeak > (int32_t)eGate);
+    Serial.printf("[VAD] Done — samples=%d  peak=%d  eGate=%.0f  result=%s\n",
+                  recLen, (int)recPeak, eGate, vadResult ? "PASS" : "FAIL");
+    tftLogf("VAD %s samp=%d pk=%d", vadResult?"PASS":"FAIL", recLen, (int)recPeak);
+    return vadResult;
 }
 
 // WAKE WORD — energy-based
@@ -808,6 +815,60 @@ void drawIslandBar() {
 void setStatus(const char* s, uint16_t c) {
     islandText = String(s); islandColor = c; drawIslandBar();
 }
+// ============================================================
+// TFT DEBUG LOG  (3-line scrolling area between face & island)
+// Area: y=187 to y=217, safe below mouth (185) above island (220)
+// Call tftLog("msg") anywhere — shows last 3 lines on screen.
+// tftLogClear() wipes the area.
+// ============================================================
+#define TFTLOG_Y      188   // top of log area
+#define TFTLOG_LH      10   // line height (textSize 1 = 8px + 2px gap)
+#define TFTLOG_LINES    3   // max visible lines
+#define TFTLOG_MAX_CH  52   // max chars per line at textSize 1 (320px / 6px)
+
+static char _tftLogBuf[TFTLOG_LINES][TFTLOG_MAX_CH + 1];
+static int  _tftLogCount = 0;  // total lines ever added (mod for ring)
+
+void tftLogClear() {
+    tft.fillRect(0, TFTLOG_Y - 1, W, TFTLOG_LINES * TFTLOG_LH + 2, C_BK);
+    _tftLogCount = 0;
+    memset(_tftLogBuf, 0, sizeof(_tftLogBuf));
+}
+
+void tftLog(const char* msg) {
+    // Shift up: move line 1→0, 2→1, put new at [TFTLOG_LINES-1]
+    for (int i = 0; i < TFTLOG_LINES - 1; i++)
+        strncpy(_tftLogBuf[i], _tftLogBuf[i + 1], TFTLOG_MAX_CH);
+    strncpy(_tftLogBuf[TFTLOG_LINES - 1], msg, TFTLOG_MAX_CH);
+    _tftLogBuf[TFTLOG_LINES - 1][TFTLOG_MAX_CH] = '\0';
+    _tftLogCount++;
+
+    // Redraw the whole log area
+    tft.fillRect(0, TFTLOG_Y - 1, W, TFTLOG_LINES * TFTLOG_LH + 2, C_BK);
+    tft.setTextSize(1);
+    for (int i = 0; i < TFTLOG_LINES; i++) {
+        if (_tftLogBuf[i][0] == '\0') continue;
+        // Colour: newest line = white, older = dimmer grey
+        uint16_t col = (i == TFTLOG_LINES - 1) ? C_WH
+                     : (i == TFTLOG_LINES - 2) ? C_LG
+                     :                           C_DG;
+        tft.setTextColor(col);
+        tft.setCursor(2, TFTLOG_Y + i * TFTLOG_LH);
+        tft.print(_tftLogBuf[i]);
+    }
+}
+
+// Convenience: tftLogf(format, ...) — like printf but to TFT
+void tftLogf(const char* fmt, ...) {
+    char buf[TFTLOG_MAX_CH + 1];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    tftLog(buf);
+}
+
+
 
 // ============================================================
 // ══ ROBOT FACE v5 ══════════════════════════════════════════
@@ -1602,6 +1663,7 @@ void runConversation() {
     if (busy) return;
     busy = true;
     lastVoiceTime = millis();
+    tftLogClear();
     setFaceListen();
     setStatus("Listening...", C_GR);
 
@@ -1612,11 +1674,18 @@ void runConversation() {
 
     bool got = recordVAD(MAX_RECORD_MS, false);
     if (!got) {
+        Serial.printf("[CONV] recordVAD FAILED — samples=%d  peak=%d  THR=%d\n",
+                      recLen, (int)recPeak, VAD_THR);
+        tftLogf("VAD FAIL pk=%d thr=%d", (int)recPeak, VAD_THR);
+        tftLog("Speak louder or press - key");
         setFaceIdle();
         setStatus("Ready", C_CY);
         busy = false;
         return;
     }
+    Serial.printf("[CONV] recordVAD OK — %d samples (~%.1f s)  peak=%d\n",
+                  recLen, recLen / 16000.0f, (int)recPeak);
+    tftLogf("Recorded %.1fs pk=%d", recLen/16000.0f, (int)recPeak);
 
     lastVoiceTime = millis();
 
@@ -1626,14 +1695,34 @@ void runConversation() {
     WDT_FEED();
 
     char transcript[180] = "";
+    uint32_t wavSize = 44 + (uint32_t)recLen * 2;
+    Serial.printf("[CONV] Sending %u bytes WAV to ByteDance ASR...\n", wavSize);
+    tftLogf("ASR upload %u bytes...", wavSize);
     bool asrOk = callByteDanceASR(recBuf, recLen, transcript, sizeof(transcript));
 
-    if (!asrOk || isNoise(String(transcript), recLen)) {
+    if (!asrOk) {
+        Serial.println("[CONV] ASR FAILED — callByteDanceASR returned false");
+        tftLog("ASR FAILED! Check API key");
+        tftLog("& cluster name");
+        setFaceIdle();
+        setStatus("ASR fail", C_RD);
+        delay(1500);
+        setStatus("Ready", C_CY);
+        busy = false;
+        return;
+    }
+    Serial.printf("[CONV] ASR raw transcript: \"%s\"\n", transcript);
+    tftLogf("Heard: %s", transcript);
+    if (isNoise(String(transcript), recLen)) {
+        Serial.printf("[CONV] Filtered as noise — skipping (samples=%d)\n", recLen);
+        tftLog("Noise filtered - ignored");
         setFaceIdle();
         setStatus("Ready", C_CY);
         busy = false;
         return;
     }
+    Serial.printf("[CONV] Transcript accepted: \"%s\"\n", transcript);
+    tftLogf(">%s", transcript);
 
     // Show truncated transcript on island bar so user sees what was heard
     char dispBuf[22] = "";
@@ -1644,17 +1733,26 @@ void runConversation() {
 
     // ── Step 2: Railway LLM + TTS (text → MP3, ~1–2 s) ──────────
     setStatus("Thinking...", C_PURP);
+    Serial.printf("[CONV] Sending to Railway: \"%s\"\n", transcript);
+    tftLog("Sending to Railway...");
     WDT_FEED();
 
     bool ok = callAetherText(transcript);
 
     if (!ok) {
+        Serial.println("[CONV] Railway callAetherText FAILED — no MP3 received");
+        tftLog("Railway FAILED!");
+        tftLog("Check URL & API key");
         jingleError();
         setFaceIdle();
+        setStatus("Rail fail", C_RD);
+        delay(1500);
         setStatus("Ready", C_CY);
         busy = false;
         return;
     }
+    Serial.printf("[CONV] Railway OK — %u bytes MP3 ready\n", mp3_len);
+    tftLogf("Railway OK %u bytes", mp3_len);
 
     // ── Step 3: Play MP3 ─────────────────────────────────────────
     isSpeaking = true;
@@ -1772,13 +1870,24 @@ void loop() {
     if (faceRedraw) { drawFace(false); faceRedraw=false; }
     tickZzz(now);
 
-    if (!busy && !isSpeaking && micOk && now>vadCooldownUntil) {
+    // Live mic level on TFT every 2 s while idle
+    static uint32_t _livePrintMs = 0;
+    static int32_t  _livePeak    = 0;
+    if (!busy && !isSpeaking && micOk && now > vadCooldownUntil) {
         int32_t sb[32];
         int rd=mic_stream.readBytes((uint8_t*)sb,sizeof(sb));
         int frames=rd/8;
         bool peak=false;
         for (int f=0;f<frames;f++) {
-            if (abs(inmp441Sample(sb[f*2]))>VAD_THR) { peak=true; break; }
+            int16_t sv = inmp441Sample(sb[f*2]);
+            if (abs(sv) > _livePeak) _livePeak = abs(sv);
+            if (abs(sv) > VAD_THR)   peak = true;
+        }
+        if (now - _livePrintMs > 2000) {
+            tftLogf("mic=%d thr=%d %s", (int)_livePeak, VAD_THR,
+                    _livePeak > VAD_THR ? "FIRE!" : "quiet");
+            _livePrintMs = now;
+            _livePeak    = 0;
         }
 
         if (bronnyMode==MODE_ACTIVE) {

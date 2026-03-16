@@ -102,6 +102,20 @@
     .device-dot      { width: 6px; height: 6px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
     .device-dot.none { background: var(--muted); }
 
+    /* Bronny AI device badge */
+    .bronny-pill {
+      display: flex; align-items: center; gap: 5px;
+      background: rgba(252,24,168,0.12); border: 1px solid rgba(252,24,168,0.30);
+      border-radius: 20px; padding: 3px 11px; font-size: 11px;
+      color: #fc18a8; font-weight: 600; cursor: default; transition: all 0.3s;
+    }
+    .bronny-pill.offline {
+      background: var(--bg3); border-color: var(--border);
+      color: var(--muted); font-weight: 400;
+    }
+    .bronny-dot         { width: 6px; height: 6px; border-radius: 50%; background: #fc18a8; flex-shrink: 0; animation: pulse 2s infinite; }
+    .bronny-dot.offline { background: var(--muted); animation: none; }
+
     #clockDisplay { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
     .icon-btn {
@@ -564,6 +578,10 @@
       <span class="device-dot none" id="deviceTopbarDot"></span>
       <span id="deviceTopbarText">No device</span>
     </div>
+    <div class="bronny-pill offline" id="bronnyPill" title="Bronny AI ESP32">
+      <span class="bronny-dot offline" id="bronnyDot"></span>
+      <span id="bronnyText">Bronny offline</span>
+    </div>
     <span id="clockDisplay" class="desktop-only"></span>
     <button class="icon-btn" onclick="toggleTheme()" id="themeBtn" title="Toggle theme">🌙</button>
     <button class="icon-btn" onclick="openSettings()" title="Settings">⚙</button>
@@ -748,6 +766,7 @@ async function fetchServerConfig() {
   loadTasks();
   refreshFiles();
   refreshDevices();
+  refreshBronnyStatus();
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1212,6 +1231,7 @@ function connectWS() {
     if (data.type === 'task_update')         handleTaskUpdate(data);
     if (data.type === 'device_connected')    refreshDevices();
     if (data.type === 'device_disconnected') refreshDevices();
+    if (data.type === 'bronny_status')       updateBronnyBadge(data.online, data.version);
     if (data.type === 'ping')                ws.send(JSON.stringify({type:'pong'}));
     // Streaming events arrive as task_update wrappers
     if (data.type === 'stream_chunk')        handleStreamChunk(data.task_id, data.chunk);
@@ -1608,8 +1628,39 @@ async function refreshDevices() {
 // Initial refreshDevices() moved into fetchServerConfig()
 setInterval(refreshDevices, 10000);
 
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   BRONNY AI STATUS BADGE
+═══════════════════════════════════════════════════════════════════════════ */
+function updateBronnyBadge(online, version) {
+  const pill = document.getElementById('bronnyPill');
+  const dot  = document.getElementById('bronnyDot');
+  const txt  = document.getElementById('bronnyText');
+  if (!pill) return;
+  if (online) {
+    pill.className = 'bronny-pill';
+    dot.className  = 'bronny-dot';
+    txt.textContent = version ? `Bronny v${version}` : 'Bronny online';
+  } else {
+    pill.className = 'bronny-pill offline';
+    dot.className  = 'bronny-dot offline';
+    txt.textContent = 'Bronny offline';
+  }
+}
+
+async function refreshBronnyStatus() {
+  if (document.hidden) return;
+  try {
+    const res = await fetch(`${BASE_URL}/bronny/status`);
+    if (!res.ok) return;
+    const d = await res.json();
+    updateBronnyBadge(d.online, d.version);
+  } catch(_) {}
+}
+setInterval(refreshBronnyStatus, 35000);
+
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) { loadTasks(); refreshFiles(); refreshDevices(); }
+  if (!document.hidden) { loadTasks(); refreshFiles(); refreshDevices(); refreshBronnyStatus(); }
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════
