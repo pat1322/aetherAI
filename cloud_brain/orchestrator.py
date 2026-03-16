@@ -40,11 +40,19 @@ STEP_OUTPUT_PREVIEW = 800
 # Agents that stream their final LLM write step via stream_llm() /
 # stream_summarize(). The orchestrator sends agent_stream_start/end
 # around these so the UI can open and close the streaming bubble.
+#
+# coding_agent is excluded: it returns a [CODE_BLOCK:...] tagged string
+# that the orchestrator extracts and renders as a syntax-highlighted block.
+# Streaming the raw generation causes the code to appear twice — once in
+# the stream bubble and once in the code block renderer.
+#
+# news_agent is excluded: its output is a formatted markdown string built
+# from multiple pieces (headline list + streamed synthesis). Streaming only
+# the synthesis fragment while the headline list is prepended afterwards
+# produces a broken/doubled result in the UI.
 STREAMING_AGENTS = frozenset({
     "research_agent",
     "browser_agent",
-    "coding_agent",
-    "news_agent",
 })
 
 

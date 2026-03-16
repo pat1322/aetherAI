@@ -1,17 +1,17 @@
 """
-AetherAI — Coding Agent  (Stage 6 — streaming patch)
+AetherAI — Coding Agent  (Stage 4 — patch 2)
 
-Streaming change
-────────────────
-The primary code generation call now uses self.stream_llm() so code
-appears character-by-character in the stream bubble before being
-extracted into the final syntax-highlighted code block.
+FIX 13 Cleaned up the double-alias resolution pattern. The old code did:
+         primary_lang = _ALIASES.get(expr, expr)
+       twice by passing the same expression as both key and default, which
+       was functionally correct but confusing. Now uses a clear two-step:
+         raw_lang     = lang_hint or hint or detect_language(...)
+         primary_lang = _ALIASES.get(raw_lang, raw_lang)
 
-The retry call (on syntax error) also uses stream_llm() so the
-corrected code streams too.
-
-All Stage 4 fixes retained:
-  FIX 13  Clean two-step alias resolution (no double dict.get(x,x))
+NOTE: Streaming was removed from this agent. The code generation returns
+a [CODE_BLOCK:...] tagged string that the orchestrator extracts and renders
+as a syntax-highlighted block. Streaming the raw generation caused the code
+to appear twice — once in the stream bubble and once in the code block.
 """
 
 import ast
@@ -133,15 +133,14 @@ class CodingAgent(BaseAgent):
         lang_instr = f"Write the code in {lang_hint}." if lang_hint else ""
         user_msg   = f"Write code for: {task}\n{lang_instr}"
 
-        # STREAMING — code generation streams token-by-token
-        raw    = await self.stream_llm(sys_prompt, user_msg)
+        raw    = await self.qwen.chat(system_prompt=sys_prompt, user_message=user_msg)
         blocks = _extract_blocks(raw)
 
         if not blocks:
             logger.warning("[CodingAgent] Empty response — retrying")
-            raw    = await self.stream_llm(
-                sys_prompt,
-                user_msg + "\n\nIMPORTANT: Return ONLY source code.",
+            raw    = await self.qwen.chat(
+                system_prompt=sys_prompt,
+                user_message=user_msg + "\n\nIMPORTANT: Return ONLY source code.",
             )
             blocks = _extract_blocks(raw)
 
@@ -154,17 +153,16 @@ class CodingAgent(BaseAgent):
         err = _validate(primary_lang, blocks[0][1])
         if err:
             logger.warning(f"[CodingAgent] Validation: {err} — retrying")
-            # STREAMING — retry also streams
-            raw2    = await self.stream_llm(
-                sys_prompt,
-                f"{user_msg}\n\nPrevious attempt error: {err}\nFix it. Return ONLY code.",
+            raw2    = await self.qwen.chat(
+                system_prompt=sys_prompt,
+                user_message=f"{user_msg}\n\nPrevious attempt error: {err}\nFix it. Return ONLY code.",
             )
             blocks2 = _extract_blocks(raw2)
             if blocks2 and blocks2[0][1]:
                 blocks = blocks2
 
-        ts   = datetime.now().strftime("%H%M%S")
-        slug = _slug(task or "code")
+        ts    = datetime.now().strftime("%H%M%S")
+        slug  = _slug(task or "code")
         saved: list[tuple[str, str, str]] = []
 
         for idx, (blk_lang, blk_code) in enumerate(blocks):
