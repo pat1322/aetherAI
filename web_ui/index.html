@@ -4,6 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
   <title>AetherAI — Command Center</title>
+  <!-- KaTeX — free math rendering, no API key, self-contained -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"
+    onload="window._katexReady = true"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -497,6 +502,13 @@
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
+    /* KaTeX math display */
+    .katex-display-wrap {
+      overflow-x: auto; padding: 6px 0; margin: 6px 0;
+      text-align: center;
+    }
+    .katex { font-size: 1.1em; }
+
     /* ── Drawer overlay ── */
     .drawer-overlay {
       position: fixed; inset: 0; background: var(--overlay);
@@ -799,9 +811,31 @@ function renderMarkdown(text) {
     .replace(/<[^>]+>/g, '');
   let s = escHtml(cleaned);
 
-  s = s.replace(/\$\$([\s\S]*?)\$\$/g,
-    '<code style="background:var(--code-bg);padding:2px 8px;border-radius:4px;font-family:Consolas,monospace;display:block;margin:4px 0">$1</code>');
-  s = s.replace(/\$([^$\n]{1,80})\$/g, '<em>$1</em>');
+  // Math blocks rendered after markup — use placeholders to protect from
+  // markdown processing, then swap back with KaTeX-rendered HTML at the end.
+  // This runs synchronously using katex.renderToString() so no async needed.
+  const _mathBlocks   = [];
+  const _mathInlines  = [];
+  // Extract display math $$...$$
+  s = s.replace(/\$\$([\s\S]*?)\$\$/g, (_, expr) => {
+    const idx = _mathBlocks.length;
+    try {
+      _mathBlocks.push(katex.renderToString(expr.trim(), {displayMode:true, throwOnError:false}));
+    } catch(_) {
+      _mathBlocks.push('<code>' + expr + '</code>');
+    }
+    return `%%MATHBLOCK${idx}%%`;
+  });
+  // Extract inline math $...$  (not inside code spans)
+  s = s.replace(/\$([^$\n]{1,120})\$/g, (_, expr) => {
+    const idx = _mathInlines.length;
+    try {
+      _mathInlines.push(katex.renderToString(expr.trim(), {displayMode:false, throwOnError:false}));
+    } catch(_) {
+      _mathInlines.push('<em>' + expr + '</em>');
+    }
+    return `%%MATHINLINE${idx}%%`;
+  });
   s = s.replace(/```[\w]*\n?([\s\S]*?)```/g,
     '<pre style="background:var(--code-bg);padding:8px 12px;border-radius:6px;overflow-x:auto;font-family:Consolas,Monaco,monospace;font-size:13px;line-height:1.5;margin:6px 0"><code>$1</code></pre>');
   s = s.replace(/^#### (.+)$/gm, '<h4 style="color:var(--accent);margin:8px 0 3px;font-size:0.9em;font-weight:600">$1</h4>');
@@ -844,6 +878,19 @@ function renderMarkdown(text) {
     s = s.replace(new RegExp('<\/' + tag + '><\/p>', 'g'), '</' + tag + '>');
   });
   s = s.replace(/<p>(<hr[^>]*>)<\/p>/g, '$1');
+  // Restore math — swap placeholders back with KaTeX-rendered HTML
+  if (typeof katex !== 'undefined') {
+    _mathBlocks.forEach((rendered, i) => {
+      s = s.replace(`%%MATHBLOCK${i}%%`, `<div class="katex-display-wrap">${rendered}</div>`);
+    });
+    _mathInlines.forEach((rendered, i) => {
+      s = s.replace(`%%MATHINLINE${i}%%`, rendered);
+    });
+  } else {
+    // KaTeX not loaded yet — show as code
+    _mathBlocks.forEach((_, i)  => { s = s.replace(`%%MATHBLOCK${i}%%`,  `<code>${_mathBlocks[i]}</code>`); });
+    _mathInlines.forEach((_, i) => { s = s.replace(`%%MATHINLINE${i}%%`, `<em>${_mathInlines[i]}</em>`); });
+  }
   return s;
 }
 

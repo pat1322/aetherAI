@@ -216,10 +216,22 @@ class BrowserAgent(BaseAgent):
                         await asyncio.sleep(HTTP_BACKOFF * (attempt + 1))
             if last_exc:
                 logger.error(f"[BrowserAgent] DDG all retries failed: {last_exc}")
-                return f"🔍 **{query}**\n\n{await self.qwen.answer(query)}"
+                # Stream the fallback so the bubble isn't left empty
+                answer = await self.stream_llm(
+                    "You are AetherAI. Answer thoroughly using your knowledge. "
+                    "Use markdown. Note at the end that live web search was unavailable.",
+                    query, temperature=0.7,
+                )
+                return f"🔍 **{query}** _(web search unavailable)_\n\n{answer}"
 
         if not text.strip():
-            return f"🔍 **{query}**\n\n{await self.qwen.answer(query)}"
+            # Stream the fallback so the bubble isn't left empty
+            answer = await self.stream_llm(
+                "You are AetherAI. Answer thoroughly using your knowledge. "
+                "Use markdown. Note at the end that live web search returned no content.",
+                query, temperature=0.7,
+            )
+            return f"🔍 **{query}** _(web search returned no content)_\n\n{answer}"
 
         # Extract real result URLs for citations
         result_urls = []
