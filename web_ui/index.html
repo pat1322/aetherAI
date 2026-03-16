@@ -917,13 +917,21 @@ function copyResult(btnId, raw) {
 /* ═══════════════════════════════════════════════════════════════════════════
    STREAMING RENDERER  (Stage 6)
 ═══════════════════════════════════════════════════════════════════════════ */
-const _streamBuffers = {};   // task_id → accumulated text
-const _streamEntries = {};   // task_id → DOM element id
+const _streamBuffers    = {};  // streamKey → accumulated text
+const _streamEntries    = {};  // streamKey → DOM element id
+const _activeStreamStep = {};  // task_id   → current active step_num
+// streamKey = task_id + ':' + step_num  (e.g. "abc123:1")
+// This ensures step 1 and step 2 of the same task never share
+// the same buffer/entry even if agent_stream_end arrives late.
 
-function handleStreamStart(task_id) {
-  _streamBuffers[task_id] = '';
-  const entryId = 'stream_' + task_id.replace(/-/g,'');
-  _streamEntries[task_id] = entryId;
+function handleStreamStart(task_id, step_num) {
+  step_num = step_num || 0;
+  _activeStreamStep[task_id] = step_num;
+  const streamKey = task_id + ':' + step_num;
+  _streamBuffers[streamKey] = '';
+  // entryId is deterministic per step so agent_stream_end can find it
+  const entryId = 'stream_' + task_id.replace(/-/g,'') + '_s' + step_num;
+  _streamEntries[streamKey] = entryId;
 
   const area = document.getElementById('outputArea');
   const el   = document.createElement('div');
@@ -937,14 +945,20 @@ function handleStreamStart(task_id) {
 }
 
 function handleStreamChunk(task_id, chunk) {
-  _streamBuffers[task_id] = (_streamBuffers[task_id] || '') + chunk;
-  const bodyId = (_streamEntries[task_id] || '') + '_body';
+  // Route chunk to whichever step is currently active for this task.
+  // _activeStreamStep[task_id] is set by handleStreamStart and cleared
+  // by handleStreamEnd / handleAgentStreamEnd. If it's missing we do
+  // nothing (chunk arrived before stream_start — safe to drop).
+  const step_num  = _activeStreamStep[task_id];
+  if (step_num === undefined) return;
+  const streamKey = task_id + ':' + step_num;
+
+  _streamBuffers[streamKey] = (_streamBuffers[streamKey] || '') + chunk;
+  const bodyId = (_streamEntries[streamKey] || '') + '_body';
   const body   = document.getElementById(bodyId);
   if (!body) return;
 
-  // Re-render markdown on every chunk. For short responses this is instant;
-  // for long ones the browser handles it fine at ~30-60 chunk/s.
-  body.innerHTML = renderMarkdown(_streamBuffers[task_id])
+  body.innerHTML = renderMarkdown(_streamBuffers[streamKey])
                  + '<span class="stream-cursor"></span>';
 
   const area = document.getElementById('outputArea');
@@ -952,9 +966,11 @@ function handleStreamChunk(task_id, chunk) {
 }
 
 function handleStreamEnd(task_id) {
-  const fullText = _streamBuffers[task_id] || '';
-  const bodyId   = (_streamEntries[task_id] || '') + '_body';
-  const body     = document.getElementById(bodyId);
+  const step_num  = _activeStreamStep[task_id] || 0;
+  const streamKey = task_id + ':' + step_num;
+  const fullText  = _streamBuffers[streamKey] || '';
+  const bodyId    = (_streamEntries[streamKey] || '') + '_body';
+  const body      = document.getElementById(bodyId);
 
   if (body) {
     // Final render without cursor, plus copy button
@@ -962,7 +978,7 @@ function handleStreamEnd(task_id) {
     body.innerHTML = renderMarkdown(fullText);
 
     // Append copy button to the parent log-entry
-    const entry = document.getElementById(_streamEntries[task_id]);
+    const entry = document.getElementById(_streamEntries[streamKey]);
     if (entry) {
       const btn = document.createElement('button');
       btn.className   = 'copy-result-btn';
@@ -984,8 +1000,9 @@ function handleStreamEnd(task_id) {
   // Trigger TTS readback if enabled
   if (fullText) speakText(fullText);
 
-  delete _streamBuffers[task_id];
-  delete _streamEntries[task_id];
+  delete _streamBuffers[streamKey];
+  delete _streamEntries[streamKey];
+  delete _activeStreamStep[task_id];
 
   // FIX: hide Cancel Task button — streaming tasks complete here, not in handleTaskUpdate
   if (activeTaskId === task_id) {
@@ -999,20 +1016,22 @@ function handleStreamEnd(task_id) {
 /* ═══════════════════════════════════════════════════════════════════════════
    AGENT STREAM END  (Stage 6 — for research/browser/coding/news agents)
 ═══════════════════════════════════════════════════════════════════════════ */
-function handleAgentStreamEnd(task_id) {
+function handleAgentStreamEnd(task_id, step_num) {
   // Finalise the streaming bubble exactly like handleStreamEnd but:
   //   - Do NOT call unlockInput() — task may have more steps remaining
   //   - Do NOT hide panelActions — Cancel Task should stay visible
   //   - Do NOT call loadTasks() — task is still running
-  const fullText = _streamBuffers[task_id] || '';
-  const bodyId   = (_streamEntries[task_id] || '') + '_body';
-  const body     = document.getElementById(bodyId);
+  step_num = (step_num !== undefined) ? step_num : (_activeStreamStep[task_id] || 0);
+  const streamKey = task_id + ':' + step_num;
+  const fullText  = _streamBuffers[streamKey] || '';
+  const bodyId    = (_streamEntries[streamKey] || '') + '_body';
+  const body      = document.getElementById(bodyId);
 
   if (body) {
     const rid = 'cr_' + Math.random().toString(36).slice(2);
     body.innerHTML = renderMarkdown(fullText);
 
-    const entry = document.getElementById(_streamEntries[task_id]);
+    const entry = document.getElementById(_streamEntries[streamKey]);
     if (entry) {
       const btn = document.createElement('button');
       btn.className   = 'copy-result-btn';
@@ -1032,8 +1051,11 @@ function handleAgentStreamEnd(task_id) {
   lastShownOutput = fullText;
   // No TTS for intermediate agent steps — only final chat answers are read aloud
 
-  delete _streamBuffers[task_id];
-  delete _streamEntries[task_id];
+  delete _streamBuffers[streamKey];
+  delete _streamEntries[streamKey];
+  if (_activeStreamStep[task_id] === step_num) {
+    delete _activeStreamStep[task_id];
+  }
   // Intentionally NOT calling unlockInput() or loadTasks()
 }
 
@@ -1128,21 +1150,23 @@ function handleTaskUpdate(data) {
   // Chat streaming (full task is just this stream):
   if (data.stream_event === 'stream_start' || data.status === 'streaming') {
     setBusy(true);
-    handleStreamStart(task_id);
+    handleStreamStart(task_id, 0);  // step 0 = chat (no agent steps)
     return;
   }
-  if (data.stream_event === 'stream_end' || (data.status === 'completed' && data.is_chat && _streamEntries[task_id])) {
+  if (data.stream_event === 'stream_end' || (data.status === 'completed' && data.is_chat && _activeStreamStep[task_id] !== undefined)) {
     setBusy(false);
     handleStreamEnd(task_id);
     return;
   }
   // Agent streaming (one step inside a multi-step task):
   if (data.stream_event === 'agent_stream_start') {
-    handleStreamStart(task_id);   // open bubble, keep busy bar on
+    // Pass current_step so each agent step gets its own isolated stream key
+    handleStreamStart(task_id, data.current_step || 1);
     return;
   }
   if (data.stream_event === 'agent_stream_end') {
-    handleAgentStreamEnd(task_id); // finalise bubble, DON'T unlock input
+    // Pass current_step to finalise the correct step's bubble
+    handleAgentStreamEnd(task_id, data.current_step || 1);
     return;
   }
 
@@ -1156,7 +1180,7 @@ function handleTaskUpdate(data) {
   }
 
   // Legacy non-streaming chat (fallback for completed tasks loaded from history)
-  if (data.is_chat && result && !_streamEntries[task_id]) {
+  if (data.is_chat && result && _activeStreamStep[task_id] === undefined) {
     const area  = document.getElementById('outputArea');
     const id    = 'cr_' + Math.random().toString(36).slice(2);
     const el    = document.createElement('div');
