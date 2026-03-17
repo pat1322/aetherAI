@@ -37,11 +37,22 @@
 //   (note the semicolon — this is BytePlus-specific, not standard OAuth2)
 // All three values also go in the JSON request body.
 //
-#define BYTEPLUS_APP_ID   "your_numeric_app_id_here"      // numeric, e.g. "1234567890"
-#define BYTEPLUS_TOKEN    "your_access_token_here"        // long string from console
-#define BYTEPLUS_CLUSTER  "volcengine_streaming_en"       // check your console — common values:
-                                                          //   volcengine_streaming_en    (English)
-                                                          //   volcengine_streaming_common (multilingual)
+#define BYTEPLUS_APP_ID   "your_numeric_app_id_here"      // APP ID from console
+#define BYTEPLUS_TOKEN    "your_access_token_here"        // ACCESS TOKEN from console
+#define BYTEPLUS_API_KEY  "your_uuid_api_key_here"        // API KEY (UUID) from console
+                                                          // e.g. "597a6e93-df07-43d7-be40-e728500db3b9"
+                                                          // This is the NEW single-key auth method.
+                                                          // From console → API Reference → API Key
+
+// ── CLUSTER (= API Resource ID) ─────────────────────────────────────────────
+//
+// This is the "API Resource ID" shown in your BytePlus console.
+// It goes BOTH in X-Api-Resource-Id HTTP header AND in app.cluster JSON field.
+//
+//   Seed ASR 1.0 (standard):  "volc.bigasr.sauc.duration"   ← start here
+//   Seed ASR 2.0 (newer):     "volc.seedasr.sauc.duration"
+//
+#define BYTEPLUS_CLUSTER  "volc.bigasr.sauc.duration"
 
 // ── ASR Language ─────────────────────────────────────────────────────────────
 // English (recommended even for Filipino-English code-switching):

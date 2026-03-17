@@ -45,17 +45,20 @@
  * ║    └────────────────────────────┘ y=240                      ║
  * ╠══════════════════════════════════════════════════════════════╣
  * ║  BytePlus credential mapping (voice_config.h)                ║
- * ║    BYTEPLUS_APP_ID   = APP ID         → JSON app.appid       ║
- * ║    BYTEPLUS_TOKEN    = ACCESS TOKEN   → Auth header +        ║
+ * ║    BYTEPLUS_APP_ID   = APP ID         → X-Api-App-Key hdr    ║
+ * ║    BYTEPLUS_TOKEN    = ACCESS TOKEN   → X-Api-Access-Key hdr ║
+ * ║    BYTEPLUS_API_KEY  = UUID API KEY   → X-Api-Key hdr +      ║
  * ║                                         JSON app.token       ║
- * ║    BYTEPLUS_CLUSTER  = API Resource ID→ JSON app.cluster     ║
- * ║    Auth header format: Bearer; {ACCESS_TOKEN}                ║
- * ║    (semicolon required — BytePlus specific)                  ║
+ * ║    BYTEPLUS_CLUSTER  = API Resource ID→ X-Api-Resource-Id hdr║
+ * ║                                         + JSON app.cluster   ║
+ * ║    Auth: X-Api-App-Key + X-Api-Access-Key + X-Api-Key +      ║
+ * ║          X-Api-Resource-Id + X-Api-Connect-Id headers        ║
+ * ║    (Seed Speech byteplusvoice/asrstreaming — NOT Bearer;)    ║
  * ╠══════════════════════════════════════════════════════════════╣
  * ║  v7.1 changes vs v7.0                                        ║
  * ║    • ALL output goes to TFT scrolling log (no Serial)        ║
  * ║    • Face compacted to FCY=68 to fit 4-line log below        ║
- * ║    • Auth header corrected: Bearer; {TOKEN}                  ║
+ * ║    • Auth: X-Api-* headers (Seed Speech API, NOT Bearer;)    ║
  * ║    • Cluster uses API Resource ID from BytePlus console      ║
  * ║    • Error codes 1001/1002 show actionable hint on screen    ║
  * ╚══════════════════════════════════════════════════════════════╝
@@ -164,6 +167,14 @@
 #define ISL_R    8
 
 // ============================================================
+// ENUMS — declared here so Arduino prototype generation finds
+// them before any function signature that uses these types.
+// ============================================================
+enum FaceState { FS_IDLE, FS_LISTENING, FS_THINKING, FS_SPEAKING, FS_ERROR };
+enum AsrState  { ASR_IDLE, ASR_CONNECTING, ASR_STREAMING,
+                 ASR_WAITING_FINAL, ASR_DONE, ASR_ERROR };
+
+// ============================================================
 // BEHAVIOUR
 // ============================================================
 #define VAD_THR         BRONNY_VAD_THR
@@ -255,7 +266,6 @@ void tftLogf(uint16_t col, const char* fmt, ...) {
 // ============================================================
 // FACE STATE MACHINE
 // ============================================================
-enum FaceState { FS_IDLE, FS_LISTENING, FS_THINKING, FS_SPEAKING, FS_ERROR };
 static FaceState gFaceState = FS_IDLE;
 static bool      faceRedraw = false;
 
@@ -288,10 +298,6 @@ static uint16_t islandColor = C_DCY;
 // ============================================================
 WebSocketsClient wsClient;
 
-enum AsrState {
-    ASR_IDLE, ASR_CONNECTING, ASR_STREAMING,
-    ASR_WAITING_FINAL, ASR_DONE, ASR_ERROR
-};
 static AsrState asrState     = ASR_IDLE;
 static bool     asrConnected = false;
 static String   asrPartial   = "";
@@ -584,13 +590,21 @@ void wifiConnect() {
 // HEARTBEAT  → Railway /bronny/heartbeat
 // ============================================================
 
+// Strip any trailing slash from AETHER_URL so paths never double-slash.
+// Handles both "https://x.railway.app" and "https://x.railway.app/"
+static String _baseUrl() {
+    String u = String(AETHER_URL);
+    while (u.endsWith("/")) u.remove(u.length() - 1);
+    return u;
+}
+
 void sendHeartbeat() {
     if (WiFi.status() != WL_CONNECTED) return;
     WiFiClientSecure cli;
     cli.setInsecure();
     cli.setConnectionTimeout(8000);
     HTTPClient http;
-    http.begin(cli, String(AETHER_URL) + "/bronny/heartbeat");
+    http.begin(cli, _baseUrl() + "/bronny/heartbeat");
     http.setTimeout(8000);
     http.addHeader("Content-Type", "application/json");
     int code = http.POST("{\"device\":\"bronny\",\"version\":\"7.1\"}");
@@ -791,19 +805,21 @@ void onAsrEvent(WStype_t type, uint8_t* payload, size_t length) {
 
 // ── Build the full_client_request JSON ────────────────────────────────────────
 //
-// BytePlus credential mapping:
-//   app.appid   = BYTEPLUS_APP_ID      (APP ID from console, e.g. "6834823881")
-//   app.token   = BYTEPLUS_TOKEN       (ACCESS TOKEN from console)
-//   app.cluster = BYTEPLUS_CLUSTER     (API Resource ID, e.g. "volc.bigasr.sauc.duration")
+// Seed Speech ASR (byteplusvoice/asrstreaming) credential mapping:
+//   app.appid   = BYTEPLUS_APP_ID      (APP ID from console)
+//   app.token   = BYTEPLUS_API_KEY     (UUID API Key — recommended for new integrations)
+//                                      Falls back to BYTEPLUS_TOKEN if not defined.
+//   app.cluster = BYTEPLUS_CLUSTER     (API Resource ID — volc.bigasr.sauc.duration etc.)
 //
-// This MUST match what's in your voice_config.h.
+// Unlike the old Speech API, the resource/cluster goes BOTH in the JSON body AND
+// in the X-Api-Resource-Id HTTP header. Both are required.
 //
 static String _buildConfigJson() {
     String reqid = "bronny_" + String(++reqCounter);
     return String("{\"app\":{"
         "\"appid\":\""   + String(BYTEPLUS_APP_ID)  + "\","
-        "\"token\":\""   + String(BYTEPLUS_TOKEN)   + "\","
-        "\"cluster\":\"" + String(BYTEPLUS_CLUSTER) + "\""
+        "\"token\":\""   + String(BYTEPLUS_API_KEY) + "\","   // UUID API Key
+        "\"cluster\":\"" + String(BYTEPLUS_CLUSTER) + "\""    // API Resource ID
     "},"
     "\"user\":{\"uid\":\"bronny\"},"
     "\"audio\":{"
@@ -848,15 +864,50 @@ bool recordAndStream() {
     asrFinal     = "";
     asrPartial   = "";
 
-    // ── Authentication header ───────────────────────────────────────────
-    // BytePlus Token method (from official docs):
-    //   Authorization: Bearer; {access_token}
-    //                         ^ semicolon + space — BytePlus specific
-    String authHdr = "Authorization: Bearer; " + String(BYTEPLUS_TOKEN);
+    // ── Authentication headers — Seed Speech API (byteplusvoice/asrstreaming) ──
+    //
+    // This is the NEW Seed Speech API. Auth uses custom HTTP headers on the
+    // WebSocket upgrade request — NOT the old "Authorization: Bearer;" method.
+    //
+    // From docs.byteplus.com/en/docs/byteplusvoice/asrstreaming:
+    //   X-Api-App-Key    = APP ID from console
+    //   X-Api-Access-Key = Access Token from console
+    //   X-Api-Resource-Id= API Resource ID (volc.bigasr.sauc.duration etc.)
+    //   X-Api-Connect-Id = UUID for connection tracking (any unique string)
+    //   X-Api-Key        = UUID API Key — NEW method, replaces above 2 fields
+    //
+    // Note from docs: "For new integrations, X-Api-Key is recommended."
+    //
+    // We send all headers for maximum compatibility:
+    //   - Legacy pair  (X-Api-App-Key + X-Api-Access-Key) for backward compat
+    //   - New key      (X-Api-Key) for new Seed Speech integrations
+    //   - Resource ID  (X-Api-Resource-Id) required in both methods
+    //   - Connect ID   (X-Api-Connect-Id) for server-side connection tracking
+    //
+    // Multiple headers in arduinoWebSockets setExtraHeaders: separate with \r\n,
+    // no trailing \r\n on the last header.
+
+    // Simple UUID-like connect ID from hardware RNG
+    char connId[37];
+    snprintf(connId, sizeof(connId), "%08lx-%04lx-%04lx-%04lx-%08lx%04lx",
+             (unsigned long)esp_random(),
+             (unsigned long)(esp_random() & 0xFFFF),
+             (unsigned long)(esp_random() & 0xFFFF),
+             (unsigned long)(esp_random() & 0xFFFF),
+             (unsigned long)esp_random(),
+             (unsigned long)(esp_random() & 0xFFFF));
+
+    String hdrs = "";
+    hdrs += "X-Api-App-Key: ";    hdrs += BYTEPLUS_APP_ID;    hdrs += "\r\n";
+    hdrs += "X-Api-Access-Key: "; hdrs += BYTEPLUS_TOKEN;     hdrs += "\r\n";
+    hdrs += "X-Api-Key: ";        hdrs += BYTEPLUS_API_KEY;   hdrs += "\r\n";
+    hdrs += "X-Api-Resource-Id: "; hdrs += BYTEPLUS_CLUSTER;  hdrs += "\r\n";
+    hdrs += "X-Api-Connect-Id: "; hdrs += connId;
+    // No trailing \r\n — arduinoWebSockets adds it
 
     // ── Connect WSS ─────────────────────────────────────────────────────
     wsClient.onEvent(onAsrEvent);
-    wsClient.setExtraHeaders(authHdr.c_str());
+    wsClient.setExtraHeaders(hdrs.c_str());
     wsClient.beginSSL(BYTEPLUS_ASR_HOST, 443, BYTEPLUS_ASR_PATH);
 
     tftLogf(LC_STAT, "ASR→%s", BYTEPLUS_ASR_HOST);
@@ -988,7 +1039,7 @@ bool callRailway(const char* text) {
     }
     body += "\"}";
 
-    String url = String(AETHER_URL) + "/voice/text";
+    String url = _baseUrl() + "/voice/text";
     tftLog(LC_STAT, "AetherAI thinking...");
 
     if (!mp3Buf)
