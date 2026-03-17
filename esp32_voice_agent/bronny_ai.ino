@@ -82,14 +82,14 @@
 #elif __has_include("AudioCodecs/CodecMP3Helix.h")
   #include "AudioCodecs/CodecMP3Helix.h"
 #else
-  #error "CodecMP3Helix not found — install arduino-audio-tools"
+  #error "CodecMP3Helix not found - install arduino-audio-tools"
 #endif
 
 #include "voice_config.h"
 
 // ── Compatibility: ensure QWEN_API_KEY is defined ────────────────────────────
 #ifndef QWEN_API_KEY
-  #error "QWEN_API_KEY not defined in voice_config.h — add: #define QWEN_API_KEY \"sk-...\""
+  #error "QWEN_API_KEY not defined in voice_config.h - add: #define QWEN_API_KEY \"sk-...\""
 #endif
 
 // ============================================================
@@ -152,11 +152,11 @@
 // FACE + LOG LAYOUT
 // ============================================================
 #define FCX  160    // face centre X
-#define FCY   68    // face centre Y  (compact — leaves room for log)
+#define FCY   68    // face centre Y  (compact - leaves room for log)
 
 // TFT scrolling log zone (between face and island bar)
 #define LOG_Y        163   // top of log area
-#define LOG_LINE_H    12   // px per line (font=1 → 8px + 4 leading)
+#define LOG_LINE_H    12   // px per line (font=1 -> 8px + 4 leading)
 #define LOG_LINES      4   // visible lines
 
 // Island status bar (bottom of screen)
@@ -876,7 +876,8 @@ bool recordAndStream() {
     return asrFinal.length() > 0;
 }
 
-  POST /voice/text → returns MP3
+// ============================================================
+// RAILWAY  POST /voice/text -> returns MP3
 // ============================================================
 bool callRailway(const char* text) {
     if (!text || text[0] == '\0') return false;
