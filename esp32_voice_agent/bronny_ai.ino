@@ -1,51 +1,51 @@
 /*
  * ╔══════════════════════════════════════════════════════════════╗
- * ║         BRONNY AI  v7.1  —  AetherAI Edition                ║
+ * ║         BRONNY AI  v7.1  —  AetherAI Edition                 ║
  * ║         by Patrick Perez                                     ║
  * ╠══════════════════════════════════════════════════════════════╣
  * ║  Hardware                                                    ║
- * ║    Board   : ESP32-S3 Dev Module  (OPI PSRAM 8MB)           ║
- * ║    Codec   : ES8311  (I2C addr 0x18) — speaker output       ║
- * ║    Mic     : INMP441  (I2S port 1)                          ║
- * ║    Display : ST7789  320×240  (HSPI)                        ║
+ * ║    Board   : ESP32-S3 Dev Module  (OPI PSRAM 8MB)            ║
+ * ║    Codec   : ES8311  (I2C addr 0x18) — speaker output        ║
+ * ║    Mic     : INMP441  (I2S port 1)                           ║
+ * ║    Display : ST7789  320×240  (HSPI)                         ║
  * ╠══════════════════════════════════════════════════════════════╣
  * ║  Wiring                                                      ║
  * ║    ES8311 codec                                              ║
- * ║      PA_EN→48  DOUT→45  DIN→12  WS→13  BCLK→14             ║
- * ║      MCLK→38   SCL→2    SDA→1                               ║
+ * ║      PA_EN→48  DOUT→45  DIN→12  WS→13  BCLK→14               ║
+ * ║      MCLK→38   SCL→2    SDA→1                                ║
  * ║    INMP441 mic                                               ║
- * ║      VDD→3.3V  GND→GND  L/R→GND                            ║
- * ║      WS→4  SCK→5  SD→6                                      ║
+ * ║      VDD→3.3V  GND→GND  L/R→GND                              ║
+ * ║      WS→4  SCK→5  SD→6                                       ║
  * ║    ST7789 TFT  (HSPI)                                        ║
- * ║      DC→39  CS→47  CLK→41  MOSI→40  BLK→42                 ║
+ * ║      DC→39  CS→47  CLK→41  MOSI→40  BLK→42                   ║
  * ╠══════════════════════════════════════════════════════════════╣
- * ║  Required Libraries (Arduino Library Manager)               ║
- * ║    • arduino-audio-tools   by pschatzmann                   ║
- * ║    • arduino-audio-driver  by pschatzmann                   ║
- * ║    • Adafruit ST7789  + Adafruit GFX Library                ║
- * ║    • WebSockets  by Markus Sattler                          ║
- * ║    • ArduinoJson by Benoit Blanchon                         ║
+ * ║  Required Libraries (Arduino Library Manager)                ║
+ * ║    • arduino-audio-tools   by pschatzmann                    ║
+ * ║    • arduino-audio-driver  by pschatzmann                    ║
+ * ║    • Adafruit ST7789  + Adafruit GFX Library                 ║
+ * ║    • WebSockets  by Markus Sattler                           ║
+ * ║    • ArduinoJson by Benoit Blanchon                          ║
  * ╠══════════════════════════════════════════════════════════════╣
  * ║  Arduino IDE Board Settings                                  ║
- * ║    Board  : ESP32S3 Dev Module                              ║
- * ║    PSRAM  : OPI PSRAM  (8MB)  ← REQUIRED                   ║
- * ║    USB CDC on Boot : Enabled                                ║
+ * ║    Board  : ESP32S3 Dev Module                               ║
+ * ║    PSRAM  : OPI PSRAM  (8MB)  ← REQUIRED                     ║
+ * ║    USB CDC on Boot : Enabled                                 ║
  * ╠══════════════════════════════════════════════════════════════╣
- * ║  Screen layout (320×240 landscape)                          ║
- * ║    ┌────────────────────────────┐ y=0                       ║
- * ║    │  [LEFT EYE]  [RIGHT EYE]  │ y=42-94  (FCY=68)         ║
- * ║    │         [MOUTH]           │ y=106-160                  ║
- * ║    ├─────────── separator ──────┤ y=161                     ║
- * ║    │  TFT log line 1 (oldest)  │ y=163                     ║
- * ║    │  TFT log line 2           │                            ║
- * ║    │  TFT log line 3           │                            ║
- * ║    │  TFT log line 4 (newest)  │ y=211                     ║
+ * ║  Screen layout (320×240 landscape)                           ║
+ * ║    ┌────────────────────────────┐ y=0                        ║
+ * ║    │  [LEFT EYE]  [RIGHT EYE]   │ y=42-94  (FCY=68)          ║
+ * ║    │         [MOUTH]            │ y=106-160                  ║
+ * ║    ├─────────── separator ──────┤ y=161                      ║
+ * ║    │  TFT log line 1 (oldest)   │ y=163                      ║
+ * ║    │  TFT log line 2            │                            ║
+ * ║    │  TFT log line 3            │                            ║
+ * ║    │  TFT log line 4 (newest)   │ y=211                      ║
  * ║    ├────────────────────────────┤                            ║
- * ║    │   ···· island bar ····    │ y=220-236                  ║
- * ║    └────────────────────────────┘ y=240                     ║
+ * ║    │   ···· island bar ····     │ y=220-236                  ║
+ * ║    └────────────────────────────┘ y=240                      ║
  * ╠══════════════════════════════════════════════════════════════╣
- * ║  BytePlus credential mapping (voice_config.h)               ║
- * ║    BYTEPLUS_APP_ID   = APP ID         → X-Api-App-Key hdr   ║
+ * ║  BytePlus credential mapping (voice_config.h)                ║
+ * ║    BYTEPLUS_APP_ID   = APP ID         → X-Api-App-Key hdr    ║
  * ║    BYTEPLUS_TOKEN    = ACCESS TOKEN   → X-Api-Access-Key hdr ║
  * ║    BYTEPLUS_API_KEY  = UUID API KEY   → X-Api-Key hdr +      ║
  * ║                                         JSON app.token       ║
@@ -55,12 +55,12 @@
  * ║          X-Api-Resource-Id + X-Api-Connect-Id headers        ║
  * ║    (Seed Speech byteplusvoice/asrstreaming — NOT Bearer;)    ║
  * ╠══════════════════════════════════════════════════════════════╣
- * ║  v7.1 changes vs v7.0                                       ║
- * ║    • ALL output goes to TFT scrolling log (no Serial)       ║
- * ║    • Face compacted to FCY=68 to fit 4-line log below       ║
- * ║    • Auth: X-Api-* headers (Seed Speech API, NOT Bearer;)  ║
- * ║    • Cluster uses API Resource ID from BytePlus console     ║
- * ║    • Error codes 1001/1002 show actionable hint on screen   ║
+ * ║  v7.1 changes vs v7.0                                        ║
+ * ║    • ALL output goes to TFT scrolling log (no Serial)        ║
+ * ║    • Face compacted to FCY=68 to fit 4-line log below        ║
+ * ║    • Auth: X-Api-* headers (Seed Speech API, NOT Bearer;)    ║
+ * ║    • Cluster uses API Resource ID from BytePlus console      ║
+ * ║    • Error codes 1001/1002 show actionable hint on screen    ║
  * ╚══════════════════════════════════════════════════════════════╝
  */
 
