@@ -1,36 +1,23 @@
 /*
- * ╔══════════════════════════════════════════════════════════════╗
- * ║      AetherAI / Bronny AI v7.3 — Config Template            ║
- * ╠══════════════════════════════════════════════════════════════╣
- * ║  SETUP:                                                      ║
- * ║   1. Copy this file → voice_config.h                         ║
- * ║   2. Fill in all values below                                ║
- * ║   3. voice_config.h is in .gitignore — NEVER committed       ║
- * ╚══════════════════════════════════════════════════════════════╝
+ * AetherAI / Bronny AI v5.0 - Config Template
+ *
+ * SETUP:
+ *   1. Copy this file -> voice_config.h
+ *   2. Fill in all values below
+ *   3. voice_config.h is in .gitignore - NEVER committed
  */
 
 #pragma once
 
-// ── WiFi ─────────────────────────────────────────────────────────────────────
-#define WIFI_SSID       "your_wifi_ssid"
-#define WIFI_PASSWORD   "your_wifi_password"
+// WiFi
+#define WIFI_SSID_CFG   "your_wifi_ssid"
+#define WIFI_PASS_CFG   "your_wifi_password"
 
-// ── AetherAI Cloud Brain (Railway) ───────────────────────────────────────────
-// NO trailing slash
+// AetherAI Cloud Brain (Railway) - no trailing slash
 #define AETHER_URL      "https://your-app.up.railway.app"
 #define AETHER_API_KEY  "your_railway_api_key"
 
-// ── Qwen / DashScope API Key ─────────────────────────────────────────────────
-// Same key used for:
-//   • Qwen LLM (on Railway)
-//   • Paraformer Real-time ASR (on ESP32 — this firmware)
-// Get it from: console.aliyun.com → DashScope → API Keys
-// It starts with "sk-"
+// Qwen / DashScope API Key - used for STT (speech-to-text)
+// Same key in your Railway environment as QWEN_API_KEY
+// Starts with "sk-"
 #define QWEN_API_KEY    "sk-your_dashscope_api_key_here"
-
-// ── VAD Threshold ─────────────────────────────────────────────────────────────
-// TFT shows "mic peak=XXX thr=2000" every 8s to help tune this.
-// Raise if Bronny triggers on background noise.
-// Lower if Bronny doesn't trigger when you speak.
-// Range: 1500 (quiet room) → 4000 (noisy room)
-#define BRONNY_VAD_THR  2000
