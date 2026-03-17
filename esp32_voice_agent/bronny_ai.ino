@@ -45,15 +45,10 @@
  * ║    └────────────────────────────┘ y=240                      ║
  * ╠══════════════════════════════════════════════════════════════╣
  * ║  BytePlus credential mapping (voice_config.h)                ║
- * ║    BYTEPLUS_APP_ID   = APP ID         → X-Api-App-Key hdr    ║
- * ║    BYTEPLUS_TOKEN    = ACCESS TOKEN   → X-Api-Access-Key hdr ║
- * ║    BYTEPLUS_API_KEY  = UUID API KEY   → X-Api-Key hdr +      ║
- * ║                                         JSON app.token       ║
- * ║    BYTEPLUS_CLUSTER  = API Resource ID→ X-Api-Resource-Id hdr║
- * ║                                         + JSON app.cluster   ║
- * ║    Auth: X-Api-App-Key + X-Api-Access-Key + X-Api-Key +      ║
- * ║          X-Api-Resource-Id + X-Api-Connect-Id headers        ║
- * ║    (Seed Speech byteplusvoice/asrstreaming — NOT Bearer;)    ║
+ * ║    QWEN_API_KEY  = DashScope API key (sk-...)                ║
+ * ║      → Authorization: Bearer {QWEN_API_KEY}                  ║
+ * ║      → Same key used by Railway for Qwen LLM                 ║
+ * ║    ASR: Paraformer-realtime-v2 via DashScope WebSocket       ║
  * ╠══════════════════════════════════════════════════════════════╣
  * ║  v7.1 changes vs v7.0                                        ║
  * ║    • ALL output goes to TFT scrolling log (no Serial)        ║
@@ -92,24 +87,10 @@
 
 #include "voice_config.h"
 
-// ── Compatibility fallbacks ───────────────────────────────────────────────────
-// BYTEPLUS_API_KEY: UUID API Key (v7.1+). Falls back to ACCESS TOKEN.
-#ifndef BYTEPLUS_API_KEY
-  #define BYTEPLUS_API_KEY  BYTEPLUS_TOKEN
+// ── Compatibility: ensure QWEN_API_KEY is defined ────────────────────────────
+#ifndef QWEN_API_KEY
+  #error "QWEN_API_KEY not defined in voice_config.h — add: #define QWEN_API_KEY \"sk-...\""
 #endif
-// BYTEPLUS_RESOURCE_ID: replaces old BYTEPLUS_CLUSTER (v7.2+).
-// Falls back to BYTEPLUS_CLUSTER if you haven't updated voice_config.h yet.
-#ifndef BYTEPLUS_RESOURCE_ID
-  #ifdef BYTEPLUS_CLUSTER
-    #define BYTEPLUS_RESOURCE_ID  BYTEPLUS_CLUSTER
-  #else
-    #define BYTEPLUS_RESOURCE_ID  "volc.bigasr.sauc.duration"
-  #endif
-#endif
-// BYTEPLUS_ASR_PATH: correct Seed Speech v3 path (v7.2+).
-// Override if your voice_config.h still has the old v2 path.
-#undef  BYTEPLUS_ASR_PATH
-#define BYTEPLUS_ASR_PATH  "/api/v3/sauc/bigmodel_nostream"
 
 // ============================================================
 // PIN DEFINITIONS
@@ -327,10 +308,9 @@ static bool     asrGotFinal  = false;
 // ============================================================
 // GLOBAL AUDIO BUFFERS  (static — keep off stack)
 // ============================================================
-static int32_t s_rawBuf[CHUNK_FRAMES * 2];
-static int16_t s_pcmBuf[CHUNK_FRAMES];
-static uint8_t s_audioPkt[8 + CHUNK_BYTES + 4];
-static uint8_t s_configPkt[8 + 700];
+// ── Audio sample buffers ─────────────────────────────────────────────────────
+static int32_t s_rawBuf[CHUNK_FRAMES * 2];   // 32-bit stereo from INMP441
+static int16_t s_pcmBuf[CHUNK_FRAMES];       // 16-bit mono for ASR (sent as raw binary)
 
 // ============================================================
 // MISC GLOBALS
@@ -635,240 +615,143 @@ void sendHeartbeat() {
 }
 
 // ============================================================
-// BYTEPLUS STREAMING ASR — BINARY WEBSOCKET PROTOCOL
+// QWEN DASHSCOPE PARAFORMER — REAL-TIME STREAMING ASR
 // ============================================================
 //
-// Full protocol reference:
-//   https://docs.byteplus.com/en/docs/speech/docs-real-time-speech-recog
+// Replacing BytePlus entirely. DashScope Paraformer uses:
+//   • The SAME QWEN_API_KEY already in your project — zero new creds
+//   • Pure JSON WebSocket — no binary frame encoding headaches
+//   • Excellent multilingual: English + Filipino + 25 other languages
+//   • Proven working: already used by Railway /voice/chat endpoint
 //
-// Binary frame structure:
-//   [Byte 0] 0x11 = protocol version 1, header size 4 bytes
-//   [Byte 1] message type + flags:
-//       0x10 = full_client_request  (first frame — sends config JSON)
-//       0x20 = audio_only (non-last chunk)
-//       0x22 = audio_only (LAST chunk — signals end of audio)
-//       0x90 = full_server_response (incoming from BytePlus)
-//       0xF0 = server error frame
-//   [Byte 2] serialization (0x10=JSON, 0x00=raw) + compression (0x00=none)
-//   [Byte 3] 0x00 reserved
-//   [Bytes 4-7] payload length big-endian uint32
-//   [Bytes 8+]  payload
+// Endpoint:  wss://dashscope.aliyuncs.com/api-ws/v1/inference/
+// Auth:      Authorization: Bearer {QWEN_API_KEY}
+// Model:     paraformer-realtime-v2
 //
-// Authentication (Token method — simplest, recommended by BytePlus docs):
-//   Authorization: Bearer; {ACCESS_TOKEN}
-//   Note the semicolon after "Bearer" — required by BytePlus
+// Protocol:
+//   1. Connect WSS (Authorization header)
+//   2. → Send TEXT: run-task JSON (model config)
+//   3. ← Recv TEXT: task-started
+//   4. → Send BINARY: raw PCM chunks (no header framing needed)
+//   5. ← Recv TEXT: result-generated (partial words live on TFT)
+//   6. → Send TEXT: finish-task JSON (end of audio)
+//   7. ← Recv TEXT: task-finished (final transcript)
 
-static size_t _buildConfigPkt(uint8_t* buf, size_t bufSz, const String& json) {
-    size_t jLen  = json.length();
-    size_t total = 8 + jLen;
-    if (total > bufSz) return 0;
-    buf[0] = 0x11;
-    buf[1] = 0x10;   // full_client_request, no flags
-    buf[2] = 0x10;   // JSON serialization, no compression
-    buf[3] = 0x00;
-    buf[4] = (jLen >> 24) & 0xFF;
-    buf[5] = (jLen >> 16) & 0xFF;
-    buf[6] = (jLen >>  8) & 0xFF;
-    buf[7] =  jLen        & 0xFF;
-    memcpy(buf + 8, json.c_str(), jLen);
-    return total;
+#define QWEN_ASR_HOST  "dashscope.aliyuncs.com"
+#define QWEN_ASR_PATH  "/api-ws/v1/inference/"
+#define QWEN_ASR_MODEL "paraformer-realtime-v2"
+
+static bool   asrTaskStarted = false;
+static String asrTaskId      = "";
+
+static String _makeTaskId() {
+    char buf[33];
+    snprintf(buf, sizeof(buf), "%08lx%08lx%08lx%08lx",
+             (unsigned long)esp_random(), (unsigned long)esp_random(),
+             (unsigned long)esp_random(), (unsigned long)esp_random());
+    return String(buf);
 }
 
-static size_t _buildAudioPkt(uint8_t* buf, size_t bufSz,
-                              const uint8_t* pcm, size_t pcmLen, bool isLast) {
-    size_t total = 8 + pcmLen;
-    if (total > bufSz) return 0;
-    buf[0] = 0x11;
-    buf[1] = isLast ? 0x22 : 0x20;   // last vs non-last
-    buf[2] = 0x00;                    // raw bytes, no compression
-    buf[3] = 0x00;
-    buf[4] = (pcmLen >> 24) & 0xFF;
-    buf[5] = (pcmLen >> 16) & 0xFF;
-    buf[6] = (pcmLen >>  8) & 0xFF;
-    buf[7] =  pcmLen        & 0xFF;
-    memcpy(buf + 8, pcm, pcmLen);
-    return total;
+static String _buildRunTask(const String& tid) {
+    return String("{\"header\":{"
+        "\"action\":\"run-task\","
+        "\"task_id\":\"") + tid + "\","
+        "\"streaming\":\"duplex\""
+        "},\"payload\":{"
+        "\"task_group\":\"audio\","
+        "\"task\":\"asr\","
+        "\"function\":\"recognition\","
+        "\"model\":\"" QWEN_ASR_MODEL "\","
+        "\"parameters\":{"
+            "\"format\":\"pcm\","
+            "\"sample_rate\":16000,"
+            "\"language_hints\":[\"en\",\"fil\"]"
+        "},"
+        "\"input\":{}"
+        "}}";
 }
 
-static void _parseAsrResponse(const uint8_t* data, size_t len) {
-    if (len < 8) return;
+static String _buildFinishTask(const String& tid) {
+    return String("{\"header\":{"
+        "\"action\":\"finish-task\","
+        "\"task_id\":\"") + tid + "\","
+        "\"streaming\":\"duplex\""
+        "},\"payload\":{\"input\":{}}}";
+}
 
-    uint8_t msgType = (data[1] >> 4) & 0x0F;
-    uint8_t flags   =  data[1]       & 0x0F;
-    uint8_t serial  = (data[2] >> 4) & 0x0F;
+static void _parseQwenAsrText(const char* json, size_t len) {
+    StaticJsonDocument<2048> doc;
+    DeserializationError err = deserializeJson(doc, json, len);
+    if (err) { tftLogf(LC_ERR, "ASR JSON: %s", err.c_str()); return; }
 
-    // Server error frame
-    if (msgType == 0x0F) {
-        tftLog(LC_ERR, "ASR: protocol error");
-        asrState = ASR_ERROR;
-        return;
-    }
+    const char* event = doc["header"]["event"] | "";
 
-    // Determine payload offset
-    size_t offset = 4;
-    if (flags & 0x02) offset += 4;
-    if (offset + 4 > len) return;
+    if (strcmp(event, "task-started") == 0) {
+        asrTaskStarted = true;
+        tftLog(LC_OK, "ASR ready  speak now...");
 
-    uint32_t payloadSize = ((uint32_t)data[offset]     << 24)
-                         | ((uint32_t)data[offset + 1] << 16)
-                         | ((uint32_t)data[offset + 2] <<  8)
-                         |  (uint32_t)data[offset + 3];
-    offset += 4;
-
-    if (payloadSize == 0 || offset + payloadSize > len) return;
-    if (serial != 0x01) return;   // only handle JSON payloads
-
-    // ── Seed Speech v3 response JSON ─────────────────────────────────────
-    // {
-    //   "code": 0,                        ← 0 = success (NOT 1000)
-    //   "event": 0,
-    //   "is_last_package": true/false,
-    //   "payload_msg": {
-    //     "result": {
-    //       "text": "recognised text",
-    //       "utterances": [ { "definite": true, "text": "...", ... } ]
-    //     }
-    //   }
-    // }
-
-    StaticJsonDocument<3072> doc;
-    DeserializationError err = deserializeJson(doc, data + offset, payloadSize);
-    if (err) {
-        tftLogf(LC_ERR, "ASR JSON: %s", err.c_str());
-        return;
-    }
-
-    int  code       = doc["code"]            | -1;
-    bool isLast     = doc["is_last_package"] | false;
-
-    if (code == 0) {
-        // Extract text from payload_msg.result.text
-        const char* topText = nullptr;
-        JsonObject payloadMsg = doc["payload_msg"].as<JsonObject>();
-        if (!payloadMsg.isNull()) {
-            JsonObject result = payloadMsg["result"].as<JsonObject>();
-            if (!result.isNull()) {
-                topText = result["text"] | nullptr;
-            }
-        }
-
-        if (topText && strlen(topText) > 0) {
-            if (isLast) {
-                // Final transcript
-                asrFinal    = String(topText);
-                asrGotFinal = true;
-                char disp[54];
-                snprintf(disp, sizeof(disp), "> %s", topText);
+    } else if (strcmp(event, "result-generated") == 0) {
+        const char* txt    = doc["payload"]["output"]["sentence"]["text"] | nullptr;
+        bool       sentEnd = doc["payload"]["output"]["sentence"]["sentence_end"] | false;
+        if (txt && strlen(txt) > 0) {
+            char disp[54];
+            if (sentEnd) {
+                asrFinal = String(txt); asrGotFinal = true;
+                snprintf(disp, sizeof(disp), "> %s", txt);
                 tftLog(LC_TX, disp);
             } else {
-                // Partial — incremental result
-                asrPartial = String(topText);
-                char disp[54];
-                snprintf(disp, sizeof(disp), "~ %s", topText);
+                asrPartial = String(txt);
+                snprintf(disp, sizeof(disp), "~ %s", txt);
                 tftLog(LC_ASR, disp);
             }
         }
 
-        // is_last_package marks end of recognition session
-        if (isLast) {
-            if (asrFinal.length() == 0 && asrPartial.length() > 0) {
-                asrFinal    = asrPartial;
-                asrGotFinal = true;
-                char disp[54];
-                snprintf(disp, sizeof(disp), "> %s", asrFinal.c_str());
-                tftLog(LC_TX, disp);
-            }
-            asrState = ASR_DONE;
+    } else if (strcmp(event, "task-finished") == 0) {
+        if (asrFinal.length() == 0 && asrPartial.length() > 0) {
+            asrFinal = asrPartial; asrGotFinal = true;
+            char disp[54];
+            snprintf(disp, sizeof(disp), "> %s", asrFinal.c_str());
+            tftLog(LC_TX, disp);
         }
+        asrState = ASR_DONE;
 
-    } else if (code == -1) {
-        // Ignore empty frames
-    } else {
-        // Non-zero code = error
-        tftLogf(LC_ERR, "ASR err code=%d", code);
-        // Common Seed Speech error codes:
-        // 1001 = invalid param   1002 = auth fail   1013 = silent
-        if (code == 1002) tftLog(LC_WARN, "Check API Key/Token");
-        if (code == 1001) tftLog(LC_WARN, "Check Resource ID");
+    } else if (strcmp(event, "task-failed") == 0) {
+        const char* msg  = doc["header"]["error_message"] | "unknown";
+        int         code = doc["header"]["error_code"]    | 0;
+        tftLogf(LC_ERR, "ASR fail: %s", msg);
+        if (code == 401) tftLog(LC_WARN, "Check QWEN_API_KEY");
         asrState = ASR_ERROR;
     }
 }
 
-// WebSocket event handler (called by wsClient.loop())
 void onAsrEvent(WStype_t type, uint8_t* payload, size_t length) {
     switch (type) {
         case WStype_CONNECTED:
-            asrConnected = true;
-            asrState     = ASR_STREAMING;
+            asrConnected   = true;
+            asrTaskStarted = false;
+            asrState       = ASR_STREAMING;
             tftLog(LC_OK, "ASR connected");
+            {
+                asrTaskId  = _makeTaskId();
+                String rt  = _buildRunTask(asrTaskId);
+                wsClient.sendTXT(rt.c_str(), rt.length());
+            }
             break;
-
-        case WStype_BIN:
-            _parseAsrResponse(payload, length);
+        case WStype_TEXT:
+            _parseQwenAsrText((const char*)payload, length);
             break;
-
         case WStype_DISCONNECTED:
-            asrConnected = false;
+            asrConnected   = false;
+            asrTaskStarted = false;
             if (asrState != ASR_DONE) asrState = ASR_DONE;
             tftLog(LC_STAT, "ASR disconnected");
             break;
-
         case WStype_ERROR:
             tftLog(LC_ERR, "ASR WS error");
             asrState = ASR_ERROR;
             break;
-
         default: break;
     }
-}
-
-// ── Build the full_client_request JSON for Seed Speech v3 ────────────────────
-//
-// Seed Speech ASR (byteplusvoice/asrstreaming) — v3 JSON body structure:
-//
-//   NO app{} block. Credentials go in HTTP headers only.
-//
-//   user{}                       (optional)
-//     uid: string
-//   audio{}                      (REQUIRED)
-//     format: "pcm_s16le"        raw 16-bit PCM little-endian
-//     language: "en-US"          (empty = auto-detect multilingual)
-//     codec: "raw"               default
-//     rate: 16000                only 16000 supported
-//     bits: 16                   default
-//     channel: 1                 mono
-//   request{}                    (REQUIRED)
-//     model_name: "bigmodel"     REQUIRED — only valid value
-//     enable_itn: true           inverse text normalisation (numbers etc.)
-//     enable_punc: true          auto-punctuation
-//     show_utterances: true      word-level timestamps
-//     result_type: "single"      return current clause only (incremental)
-//
-// Response success code: 0  (NOT 1000 — completely different from old API)
-// Response text path: payload_msg.result.text
-//
-static String _buildConfigJson() {
-    String lang = String(BYTEPLUS_LANGUAGE);
-    String langField = lang.length() > 0
-        ? (String(",\"language\":\"") + lang + "\"")
-        : "";          // empty = auto-detect
-
-    return String("{"
-        "\"user\":{\"uid\":\"bronny\"},"
-        "\"audio\":{"
-            "\"format\":\"pcm_s16le\","
-            "\"codec\":\"raw\","
-            "\"rate\":16000,"
-            "\"bits\":16,"
-            "\"channel\":1"
-            ) + langField + String("},"
-        "\"request\":{"
-            "\"model_name\":\"bigmodel\","
-            "\"enable_itn\":true,"
-            "\"enable_punc\":true,"
-            "\"show_utterances\":true,"
-            "\"result_type\":\"single\""
-        "}}");
 }
 
 static bool _isNoise(const String& t) {
@@ -884,104 +767,54 @@ static bool _isNoise(const String& t) {
 }
 
 // ============================================================
-// RECORD + STREAM
-// Opens WSS to BytePlus, streams 20 ms PCM chunks, receives
-// partial transcripts live on TFT.
-// Returns true if asrFinal has a usable transcript.
+// RECORD + STREAM  (DashScope Paraformer)
 // ============================================================
 bool recordAndStream() {
-    asrState     = ASR_CONNECTING;
-    asrConnected = false;
-    asrGotFinal  = false;
-    asrFinal     = "";
-    asrPartial   = "";
+    asrState       = ASR_CONNECTING;
+    asrConnected   = false;
+    asrTaskStarted = false;
+    asrGotFinal    = false;
+    asrFinal       = "";
+    asrPartial     = "";
+    asrTaskId      = "";
 
-    // ── Authentication headers — Seed Speech API (byteplusvoice/asrstreaming) ──
-    //
-    // This is the NEW Seed Speech API. Auth uses custom HTTP headers on the
-    // WebSocket upgrade request — NOT the old "Authorization: Bearer;" method.
-    //
-    // From docs.byteplus.com/en/docs/byteplusvoice/asrstreaming:
-    //   X-Api-App-Key    = APP ID from console
-    //   X-Api-Access-Key = Access Token from console
-    //   X-Api-Resource-Id= API Resource ID (volc.bigasr.sauc.duration etc.)
-    //   X-Api-Connect-Id = UUID for connection tracking (any unique string)
-    //   X-Api-Key        = UUID API Key — NEW method, replaces above 2 fields
-    //
-    // Note from docs: "For new integrations, X-Api-Key is recommended."
-    //
-    // We send all headers for maximum compatibility:
-    //   - Legacy pair  (X-Api-App-Key + X-Api-Access-Key) for backward compat
-    //   - New key      (X-Api-Key) for new Seed Speech integrations
-    //   - Resource ID  (X-Api-Resource-Id) required in both methods
-    //   - Connect ID   (X-Api-Connect-Id) for server-side connection tracking
-    //
-    // Multiple headers in arduinoWebSockets setExtraHeaders: separate with \r\n,
-    // no trailing \r\n on the last header.
+    // Standard Bearer token — same as Qwen LLM
+    String authHdr = "Authorization: Bearer " + String(QWEN_API_KEY);
 
-    // Simple UUID-like connect ID from hardware RNG
-    char connId[37];
-    snprintf(connId, sizeof(connId), "%08lx-%04lx-%04lx-%04lx-%08lx%04lx",
-             (unsigned long)esp_random(),
-             (unsigned long)(esp_random() & 0xFFFF),
-             (unsigned long)(esp_random() & 0xFFFF),
-             (unsigned long)(esp_random() & 0xFFFF),
-             (unsigned long)esp_random(),
-             (unsigned long)(esp_random() & 0xFFFF));
-
-    String hdrs = "";
-    hdrs += "X-Api-App-Key: ";    hdrs += BYTEPLUS_APP_ID;       hdrs += "\r\n";
-    hdrs += "X-Api-Access-Key: "; hdrs += BYTEPLUS_TOKEN;        hdrs += "\r\n";
-    hdrs += "X-Api-Key: ";        hdrs += BYTEPLUS_API_KEY;      hdrs += "\r\n";
-    hdrs += "X-Api-Resource-Id: "; hdrs += BYTEPLUS_RESOURCE_ID; hdrs += "\r\n";
-    hdrs += "X-Api-Connect-Id: "; hdrs += connId;
-    // No trailing \r\n — arduinoWebSockets adds it
-
-    // ── Connect WSS ─────────────────────────────────────────────────────
     wsClient.onEvent(onAsrEvent);
-    wsClient.setExtraHeaders(hdrs.c_str());
-    wsClient.beginSSL(BYTEPLUS_ASR_HOST, 443, BYTEPLUS_ASR_PATH);
+    wsClient.setExtraHeaders(authHdr.c_str());
+    wsClient.beginSSL(QWEN_ASR_HOST, 443, QWEN_ASR_PATH);
 
-    tftLogf(LC_STAT, "ASR→%s", BYTEPLUS_ASR_HOST);
+    tftLog(LC_STAT, "ASR connecting...");
 
+    // Wait for task-started (run-task sent automatically in onAsrEvent)
     uint32_t deadline = millis() + ASR_CONNECT_MS;
-    while (asrState == ASR_CONNECTING && millis() < deadline) {
+    while (millis() < deadline) {
         wsClient.loop();
         animFace();
         if (faceRedraw) { drawFace(false); faceRedraw = false; }
+        if (asrTaskStarted) break;
+        if (asrState == ASR_ERROR) { wsClient.disconnect(); return false; }
         delay(8);
     }
 
-    if (!asrConnected || asrState != ASR_STREAMING) {
+    if (!asrTaskStarted) {
         tftLog(LC_ERR, "ASR timeout  no connect");
         wsClient.disconnect();
         asrState = ASR_DONE;
         return false;
     }
 
-    // ── Send config frame (full_client_request) ─────────────────────────
-    String configJson = _buildConfigJson();
-    size_t cfgLen = _buildConfigPkt(s_configPkt, sizeof(s_configPkt), configJson);
-    if (cfgLen == 0) {
-        tftLog(LC_ERR, "ASR config too large");
-        wsClient.disconnect();
-        return false;
-    }
-    wsClient.sendBIN(s_configPkt, cfgLen);
-    tftLog(LC_OK, "Listening  speak now...");
-
-    // ── Stream audio chunks ──────────────────────────────────────────────
+    // ── Stream raw PCM — plain binary WS frames, no header framing ──────
     bool     voiceStarted = false;
     uint32_t silenceStart = 0;
     uint32_t recDeadline  = millis() + MAX_RECORD_MS;
 
     while (millis() < recDeadline && !asrGotFinal && asrState == ASR_STREAMING) {
         int bytesRead = mic_stream.readBytes((uint8_t*)s_rawBuf, sizeof(s_rawBuf));
-        int frames    = bytesRead / 8;   // 32-bit stereo → 8 bytes per frame
+        int frames    = bytesRead / 8;
         if (frames <= 0) { wsClient.loop(); yield(); continue; }
 
-        // Convert 32-bit stereo → 16-bit mono
-        // INMP441 on left channel, >>11 scales to audible 16-bit range
         int32_t peak = 0;
         for (int i = 0; i < frames; i++) {
             s_pcmBuf[i] = (int16_t)(s_rawBuf[i * 2] >> 11);
@@ -989,34 +822,21 @@ bool recordAndStream() {
             if (a > peak) peak = a;
         }
 
-        // VAD
-        if (peak > VAD_THR) {
-            voiceStarted = true;
-            silenceStart = 0;
-        } else if (voiceStarted && silenceStart == 0) {
-            silenceStart = millis();
-        }
+        if (peak > VAD_THR) { voiceStarted = true; silenceStart = 0; }
+        else if (voiceStarted && silenceStart == 0) { silenceStart = millis(); }
 
-        bool isLast = false;
-        if (voiceStarted && silenceStart > 0 &&
-            (millis() - silenceStart) >= VAD_SILENCE_MS) {
-            isLast = true;
-        }
-        if (millis() >= recDeadline) isLast = true;
+        bool silenced = voiceStarted && silenceStart > 0
+                     && (millis() - silenceStart) >= VAD_SILENCE_MS;
 
-        // Build binary audio frame and send
-        size_t pktLen = _buildAudioPkt(s_audioPkt, sizeof(s_audioPkt),
-                                       (uint8_t*)s_pcmBuf, frames * 2, isLast);
-        if (pktLen > 0) wsClient.sendBIN(s_audioPkt, pktLen);
-
-        // Process incoming WS events (partials arrive here)
+        // DashScope: raw PCM binary frames, no extra framing
+        wsClient.sendBIN((uint8_t*)s_pcmBuf, frames * 2);
         wsClient.loop();
-
-        // Keep face animated
         animFace();
         if (faceRedraw) { drawFace(false); faceRedraw = false; }
 
-        if (isLast) {
+        if (silenced || millis() >= recDeadline) {
+            String ft = _buildFinishTask(asrTaskId);
+            wsClient.sendTXT(ft.c_str(), ft.length());
             tftLog(LC_STAT, "Processing...");
             asrState = ASR_WAITING_FINAL;
             break;
@@ -1024,15 +844,21 @@ bool recordAndStream() {
     }
 
     if (!voiceStarted) {
+        if (asrTaskId.length() > 0) {
+            String ft = _buildFinishTask(asrTaskId);
+            wsClient.sendTXT(ft.c_str(), ft.length());
+        }
         tftLog(LC_STAT, "No voice detected");
+        delay(200);
         wsClient.disconnect();
         asrState = ASR_DONE;
         return false;
     }
 
-    // ── Wait for final transcript ────────────────────────────────────────
+    // Wait for task-finished / final result
     uint32_t finalDL = millis() + ASR_FINAL_MS;
-    while (!asrGotFinal && asrState != ASR_ERROR && millis() < finalDL) {
+    while (!asrGotFinal && asrState != ASR_ERROR && asrState != ASR_DONE
+           && millis() < finalDL) {
         wsClient.loop();
         animFace();
         if (faceRedraw) { drawFace(false); faceRedraw = false; }
@@ -1040,19 +866,17 @@ bool recordAndStream() {
     }
 
     wsClient.disconnect();
-    asrConnected = false;
-    asrState     = ASR_DONE;
+    asrConnected   = false;
+    asrTaskStarted = false;
+    asrState       = ASR_DONE;
 
-    // Use partial as fallback if final never arrived
-    if (asrFinal.length() == 0 && asrPartial.length() > 0) {
+    if (asrFinal.length() == 0 && asrPartial.length() > 0)
         asrFinal = asrPartial;
-    }
 
     return asrFinal.length() > 0;
 }
 
-// ============================================================
-// RAILWAY  POST /voice/text → returns MP3
+  POST /voice/text → returns MP3
 // ============================================================
 bool callRailway(const char* text) {
     if (!text || text[0] == '\0') return false;
