@@ -480,25 +480,13 @@ void playMp3(){
 
     // Feed MP3 data in chunks and decode
     const size_t IN_CHUNK  = 2048;     // bytes to feed MP3 decoder per iteration
-    const uint8_t* p       = mp3Buf;
-    size_t         rem     = mp3Len;
-
-    // Allocate a PCM output buffer (decoder writes 16-bit mono PCM)
-    // We convert mono->stereo in playback
-    static int16_t pcmOut[4608];   // enough for one MP3 frame
+    const uint8_t* p = mp3Buf;
+    size_t         rem = mp3Len;
 
     while(rem>0){
         size_t feed=min(rem,(size_t)IN_CHUNK);
-
-        // Feed bytes to decoder; it outputs PCM frames when a full MP3 frame is decoded
         mp3Decoder.write(p,feed);
         p+=feed; rem-=feed;
-
-        // Drain decoded PCM from the decoder's output stream
-        // The decoder writes to i2s directly via the EncodedAudioStream if wired,
-        // but here we poll manually for better timing control.
-        // Since we can't easily poll CodecMP3Helix output buffer directly,
-        // we use the StreamCopy approach but with a yield after each copy.
         animFace();
         if(faceRedraw){drawFace(false);faceRedraw=false;}
         yield();
@@ -556,23 +544,6 @@ void playMp3Smooth(){
         return;
     }
 
-    // Decode MP3->PCM using a temporary SingleChannelSoundStream / MemoryStream
-    size_t pcmLen=0;
-    {
-        // Use EncodedAudioStream to decode into a memory buffer
-        VectorOutput pcmOut;
-        pcmOut.begin();
-        EncodedAudioStream decoded(&pcmOut,&mp3Decoder);
-        decoded.begin();
-        MemoryStream mp3Mem(mp3Buf,mp3Len);
-        StreamCopy copier(decoded,mp3Mem);
-        while(copier.copy())yield();
-        decoded.end();
-        // pcmOut now holds decoded PCM - but VectorOutput may not be available
-        // Fallback: just use direct streaming with animFace interleaved
-    }
-
-    // If VectorOutput not available, fall back to direct with animation
     free(pcmBuf);
 
     // Direct play with animation interleaved at 20ms boundaries
