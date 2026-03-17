@@ -1,11 +1,11 @@
 /*
  * ╔══════════════════════════════════════════════════════════════╗
- * ║        AetherAI ESP32 Voice Agent — Config Template          ║
+ * ║      AetherAI / Bronny AI v7.0 — Config Template            ║
  * ╠══════════════════════════════════════════════════════════════╣
  * ║  SETUP:                                                      ║
  * ║   1. Copy this file → voice_config.h                         ║
- * ║   2. Fill in your WiFi, Railway, and ByteDance values below  ║
- * ║   3. voice_config.h is in .gitignore — never committed       ║
+ * ║   2. Fill in all values below                                ║
+ * ║   3. voice_config.h is in .gitignore — NEVER committed       ║
  * ╚══════════════════════════════════════════════════════════════╝
  */
 
@@ -15,26 +15,46 @@
 #define WIFI_SSID       "your_wifi_ssid_here"
 #define WIFI_PASSWORD   "your_wifi_password_here"
 
-// ── AetherAI Cloud Brain ──────────────────────────────────────────────────────
+// ── AetherAI Cloud Brain (Railway) ───────────────────────────────────────────
 // Your Railway deployment URL — NO trailing slash
 // Example: "https://aetherai.up.railway.app"
 #define AETHER_URL      "https://your-app.up.railway.app"
 
-// Must match AETHER_API_KEY set in Railway environment variables
+// Must match AETHER_API_KEY in Railway environment variables
 #define AETHER_API_KEY  "your_secret_api_key_here"
 
-// ── ByteDance ASR (Volcengine Speech Recognition) ─────────────────────────────
-// Only one credential needed: your API key.
-// Authorization header sent as:  Bearer {BYTEDANCE_API_KEY}
+// ── BytePlus Speech ASR (International — accessible from Philippines) ─────────
 //
-// Cluster (language) options:
-//   "volcengine_input_en"    — English  ← recommended for Bronny
-//   "volcengine_input"       — Chinese (Mandarin)
-//   "volcengine_input_ko_kr" — Korean
-//   "volcengine_input_ja_jp" — Japanese
-//   "volcengine_input_fr_fr" — French
-//   "volcengine_input_es_mx" — Spanish
-//   "volcengine_input_id"    — Indonesian
-//   "volcengine_input_ms"    — Malay
-#define BYTEDANCE_API_KEY   "your_bytedance_api_key_here"
-#define BYTEDANCE_CLUSTER   "volcengine_input_en"
+// Registration: https://console.byteplus.com  (not Volcengine — that's China-only)
+// Steps:
+//   1. Sign up at console.byteplus.com
+//   2. Products → Speech → Speech-to-Text → Create Application
+//   3. Copy your App ID, Access Token, and Cluster name from the console
+//
+// CRITICAL: Three separate values are required.
+//
+// Auth header sent as:  Authorization: Bearer; {BYTEPLUS_TOKEN}
+//   (note the semicolon — this is BytePlus-specific, not standard OAuth2)
+// All three values also go in the JSON request body.
+//
+#define BYTEPLUS_APP_ID   "your_numeric_app_id_here"      // numeric, e.g. "1234567890"
+#define BYTEPLUS_TOKEN    "your_access_token_here"        // long string from console
+#define BYTEPLUS_CLUSTER  "volcengine_streaming_en"       // check your console — common values:
+                                                          //   volcengine_streaming_en    (English)
+                                                          //   volcengine_streaming_common (multilingual)
+
+// ── ASR Language ─────────────────────────────────────────────────────────────
+// English (recommended even for Filipino-English code-switching):
+//   "en-US"
+// Check https://docs.byteplus.com/en/docs/speech/docs-language-support for full list
+#define BYTEPLUS_LANGUAGE "en-US"
+
+// ── ASR Endpoint (do not change unless BytePlus updates their API) ────────────
+#define BYTEPLUS_ASR_HOST "openspeech.byteoversea.com"
+#define BYTEPLUS_ASR_PATH "/api/v2/asr"
+
+// ── VAD Threshold ─────────────────────────────────────────────────────────────
+// Adjust if Bronny is too sensitive (raise) or not triggering (lower).
+// Typical range: 1500 (quiet room) to 4000 (noisy environment).
+// Serial monitor shows "[VAD] peak=XXX thr=XXXX" every 3s to help calibrate.
+#define BRONNY_VAD_THR  2000

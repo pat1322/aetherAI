@@ -1,33 +1,21 @@
 """
-AetherAI Cloud Brain — Stage 6 (Layer 1 + Layer 2)
+AetherAI Cloud Brain — Stage 7 (Bronny v7.0 streaming ASR)
 
-Stage 6 Layer 2 additions
-──────────────────────────
-VOICE 1  POST /voice/chat
-         Accepts raw WAV audio bytes (Content-Type: audio/wav).
-         Pipeline: Paraformer STT → Qwen LLM → edge-tts → MP3 bytes.
-         Response headers carry X-Transcript and X-Response-Text so the
-         ESP32 can display what was heard / said on the TFT screen.
-         NOW BROADCASTS to the command center WebSocket so every voice
-         conversation appears in the task list in real time.
+Stage 7 additions
+──────────────────
+BRONNY 1  POST /bronny/heartbeat
+          v7.0: on offline→online transition, also creates a [Bronny] task
+          entry in the task list so the connection appears in the command
+          center recent tasks (not just the badge).
+          Default version bumped to "7.0".
 
-VOICE 2  GET /tts/voices
-         Returns the list of available edge-tts voices.
-
-VOICE 3  POST /voice/text                              ← v6.2 addition
-
-BRONNY 1  POST /bronny/heartbeat  — ESP32 registers / keeps-alive (public)
-BRONNY 2  GET  /bronny/status     — UI polls for online/offline badge (public)
-         Accepts a pre-transcribed text string (JSON body: {"text":"..."}).
-         ASR is done on-device by ByteDance — Railway only runs LLM + TTS.
-         Faster than /voice/chat because no WAV upload or STT round-trip.
-
-Stage 6 Layer 1 retained:
-  SSE 1   POST /stream  — Server-Sent Events streaming for chat commands
-
-All Stage 5 fixes retained:
-  FIX 12  DELETE /files/all/clear before DELETE /files/{filename}
-  FIX 15  MAX_CONCURRENT_TASKS cap
+All Stage 6 retained:
+  VOICE 1  POST /voice/chat     — WAV → STT → LLM → TTS → MP3
+  VOICE 2  GET  /tts/voices     — list edge-tts voices
+  VOICE 3  POST /voice/text     — pre-transcribed text → LLM → TTS → MP3
+  BRONNY 2 GET  /bronny/status  — online/offline badge poll
+  SSE 1    POST /stream         — SSE streaming for chat commands
+  All Stage 5 fixes retained.
 """
 
 from contextlib import asynccontextmanager
@@ -78,8 +66,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AetherAI Cloud Brain",
-    description="Personal AI Agent System — Stage 6",
-    version="6.0.0",
+    description="Personal AI Agent System — Stage 7",
+    version="7.0.0",
     lifespan=lifespan,
 )
 
@@ -142,22 +130,22 @@ class VoiceTextRequest(BaseModel):
     text: str
 
 class BronnyHeartbeatRequest(BaseModel):
-    device: str = "bronny"
-    version: str = "6.2"
+    device:  str = "bronny"
+    version: str = "7.0"    # updated: v7.0 streaming ASR firmware
 
 # ── Core endpoints ────────────────────────────────────────────────────────────
 
 @app.get("/")
 async def root():
-    return {"system": "AetherAI Cloud Brain", "status": "online", "version": "6.0.0"}
+    return {"system": "AetherAI Cloud Brain", "status": "online", "version": "7.0.0"}
 
 @app.get("/health")
 async def health():
     return {
-        "status":           "healthy",
-        "timestamp":        datetime.utcnow().isoformat(),
+        "status":            "healthy",
+        "timestamp":         datetime.utcnow().isoformat(),
         "devices_connected": ws_manager.device_count(),
-        "task_stats":       memory.get_task_stats(),
+        "task_stats":        memory.get_task_stats(),
     }
 
 @app.get("/ui/config")
@@ -170,7 +158,7 @@ async def receive_command(req: CommandRequest):
     if (stats.get("running", 0) + stats.get("planning", 0)) >= MAX_CONCURRENT_TASKS:
         raise HTTPException(
             status_code=429,
-            detail=f"Too many tasks in progress. Wait for one to finish.",
+            detail="Too many tasks in progress. Wait for one to finish.",
         )
     task_id    = str(uuid.uuid4())
     session_id = req.session_id or ""
@@ -231,7 +219,7 @@ async def stream_command(req: CommandRequest):
 @app.post("/voice/chat")
 async def voice_chat(request: Request):
     """
-    VOICE 1 — ESP32 voice pipeline endpoint.
+    VOICE 1 — ESP32 voice pipeline endpoint (full WAV upload path).
 
     Request:
         Content-Type: audio/wav
@@ -244,7 +232,7 @@ async def voice_chat(request: Request):
         X-Response-Text: Short spoken response text (UTF-8, URL-encoded)
         Body:            MP3 audio bytes ready to feed to the ES8311
 
-    Now creates a task in the database and broadcasts WebSocket updates so
+    Creates a task in the database and broadcasts WebSocket updates so
     every voice conversation appears in the command center task list.
     """
     from urllib.parse import quote as urlquote
@@ -255,12 +243,9 @@ async def voice_chat(request: Request):
     if len(audio_bytes) < 100:
         raise HTTPException(status_code=400, detail="Audio too short")
 
-    # ── Create a task so it shows in the command center sidebar ───────────────
     task_id = str(uuid.uuid4())
     memory.create_task(task_id, "[Voice] Transcribing...", "voice")
     memory.update_task_status(task_id, "running")
-
-    # Broadcast to all connected UI sessions (voice has no dedicated session_id)
     await ws_manager.broadcast_task_update(task_id, {
         "status":  "running",
         "message": "🎙️ Voice: transcribing audio...",
@@ -292,37 +277,26 @@ async def voice_chat(request: Request):
             detail="TTS produced no audio. Check TTS_VOICE env var and edge-tts installation.",
         )
 
-    # ── Update the task command to the real transcript ────────────────────────
-    # SQLite INSERT is already done — we store transcript + response in result.
-    # The command field shows the transcript by re-creating the task row.
-    # Since create_task uses INSERT (not REPLACE), we update via status+result.
     transcript_display = result.transcript or "(no transcript)"
     spoken_display     = result.spoken_text or result.response_text or ""
+    voice_summary      = f"Heard: {transcript_display}\n\nResponse: {spoken_display}"
 
-    # Store transcript as the task "result" so it's visible when you click the task
-    voice_summary = (
-        f"Heard: {transcript_display}\n\n"
-        f"Response: {spoken_display}"
-    )
     memory.update_task_status(task_id, "completed", result=voice_summary)
-
-    # Broadcast completion — shows transcript as output in the command center
     await ws_manager.broadcast_task_update(task_id, {
-        "status":       "completed",
-        "message":      f"🎙️ {transcript_display}",
-        "step_status":  "completed",
-        "output":       voice_summary,
-        "result":       voice_summary,
+        "status":      "completed",
+        "message":     f"🎙️ {transcript_display}",
+        "step_status": "completed",
+        "output":      voice_summary,
+        "result":      voice_summary,
     })
 
-    # URL-encode headers so non-ASCII (Filipino, etc.) survives HTTP transport
     return Response(
         content=result.mp3_bytes,
         media_type="audio/mpeg",
         headers={
-            "X-Transcript":     urlquote(result.transcript[:300]),
-            "X-Response-Text":  urlquote(result.spoken_text[:300]),
-            "Cache-Control":    "no-cache",
+            "X-Transcript":    urlquote(result.transcript[:300]),
+            "X-Response-Text": urlquote(result.spoken_text[:300]),
+            "Cache-Control":   "no-cache",
         },
     )
 
@@ -330,8 +304,10 @@ async def voice_chat(request: Request):
 @app.post("/voice/text")
 async def voice_text_chat(req: VoiceTextRequest):
     """
-    VOICE 3 — ESP32 sends a pre-transcribed text (from ByteDance ASR on-device).
+    VOICE 3 — ESP32 sends a pre-transcribed text (from BytePlus streaming ASR on-device).
     Skips STT entirely. Runs: text → Qwen LLM → edge-tts → MP3 bytes.
+
+    Used by Bronny v7.0 streaming ASR firmware.
 
     Request:
         Content-Type:  application/json
@@ -343,8 +319,7 @@ async def voice_text_chat(req: VoiceTextRequest):
         X-Response-Text: Short spoken response (URL-encoded)
         Body:            MP3 audio bytes
 
-    This is faster than /voice/chat because the WAV upload and STT round-trip
-    are handled on the device by ByteDance ASR. Railway only runs LLM + TTS.
+    Faster than /voice/chat because WAV upload + STT are handled on-device.
     """
     from urllib.parse import quote as urlquote
     from agents.voice_agent import _voice_summarize, _safe_synthesize
@@ -353,7 +328,7 @@ async def voice_text_chat(req: VoiceTextRequest):
     if not transcript:
         raise HTTPException(status_code=400, detail="text field is empty")
 
-    # ── Create task so it appears in the command center ───────────────────────
+    # Create task — appears in command center recent tasks with the transcript
     task_id = str(uuid.uuid4())
     memory.create_task(task_id, f"[Voice] {transcript[:80]}", "voice")
     memory.update_task_status(task_id, "running")
@@ -363,7 +338,6 @@ async def voice_text_chat(req: VoiceTextRequest):
     })
 
     try:
-        # ── Load user preferences ─────────────────────────────────────────────
         user_context = ""
         try:
             from agents.memory_agent import MemoryAgent
@@ -371,7 +345,6 @@ async def voice_text_chat(req: VoiceTextRequest):
         except Exception:
             pass
 
-        # ── Route to LLM / data agent ─────────────────────────────────────────
         command_type = await orchestrator.qwen.classify_command(
             transcript, user_context=user_context
         )
@@ -386,7 +359,7 @@ async def voice_text_chat(req: VoiceTextRequest):
                 response_text = await _run_single_agent(
                     first_agent, transcript, orchestrator.qwen, memory
                 )
-        # Fall through to direct answer for chat or if agent returned nothing
+
         if not response_text:
             response_text = await orchestrator.qwen.answer(
                 transcript, user_context=user_context
@@ -395,7 +368,6 @@ async def voice_text_chat(req: VoiceTextRequest):
         if not response_text:
             response_text = "I wasn't able to get an answer for that. Please try again."
 
-        # ── Condense for speech + synthesise ──────────────────────────────────
         spoken_text = await _voice_summarize(orchestrator.qwen, response_text, transcript)
         mp3_bytes   = await _safe_synthesize(spoken_text)
 
@@ -411,7 +383,6 @@ async def voice_text_chat(req: VoiceTextRequest):
         memory.update_task_status(task_id, "failed", result="TTS produced no audio")
         raise HTTPException(status_code=502, detail="TTS produced no audio")
 
-    # ── Persist result + broadcast to command center ───────────────────────────
     voice_summary = f"Heard: {transcript}\n\nResponse: {spoken_text}"
     memory.update_task_status(task_id, "completed", result=voice_summary)
     await ws_manager.broadcast_task_update(task_id, {
@@ -432,25 +403,48 @@ async def voice_text_chat(req: VoiceTextRequest):
     )
 
 
-
 # ── Bronny device endpoints ───────────────────────────────────────────────────
 
 @app.post("/bronny/heartbeat")
 async def bronny_heartbeat(req: BronnyHeartbeatRequest):
     """
-    Called by the ESP32 every 30 s and on boot.
-    Updates the in-memory status so the web UI can show "Bronny: Online".
+    Called by the ESP32 on boot and every 30 s to keep alive.
+
+    v7.0 change: on offline → online transition, creates a task entry in the
+    command center task list so the connection is visible in recent tasks
+    (not just the badge).  Subsequent heartbeats only update the badge.
     """
+    was_offline = not _bronny_status["online"]
+
     _bronny_status["online"]    = True
     _bronny_status["last_seen"] = datetime.utcnow().isoformat()
     _bronny_status["version"]   = req.version
     _bronny_status["device"]    = req.device
-    # Broadcast to all UI sessions so the badge updates instantly
+
+    # Badge update — received by ws.onmessage → updateBronnyBadge()
     await ws_manager.broadcast_ui_event({
         "type":    "bronny_status",
         "online":  True,
         "version": req.version,
     })
+
+    # On first connection (or reconnection after offline), also add a task row
+    # so it shows up in the recent tasks list in the command center.
+    if was_offline:
+        conn_task_id = str(uuid.uuid4())
+        label = f"[Bronny] Device connected — v{req.version}"
+        memory.create_task(conn_task_id, label, "device")
+        memory.update_task_status(conn_task_id, "completed",
+                                  result=f"Bronny v{req.version} came online at "
+                                         f"{_bronny_status['last_seen']}")
+        await ws_manager.broadcast_task_update(conn_task_id, {
+            "status":      "completed",
+            "message":     f"🤖 {label}",
+            "step_status": "completed",
+            "output":      f"Bronny v{req.version} is now online.",
+            "result":      f"Bronny v{req.version} is now online.",
+        })
+
     return {"ok": True, "device": req.device}
 
 
@@ -458,16 +452,16 @@ async def bronny_heartbeat(req: BronnyHeartbeatRequest):
 async def bronny_status():
     """
     Returns Bronny online/offline status.
-    UI polls this; also receives live updates via WebSocket bronny_status event.
-    Bronny is considered offline if last heartbeat > 60 s ago.
+    UI polls this on load; also receives live updates via WebSocket bronny_status event.
+    Bronny is considered offline if last heartbeat is > 60 s ago.
     """
     if _bronny_status["last_seen"]:
-        from datetime import timezone
         last = datetime.fromisoformat(_bronny_status["last_seen"])
         age  = (datetime.utcnow() - last).total_seconds()
         if age > 60:
             _bronny_status["online"] = False
     return _bronny_status
+
 
 @app.get("/tts/voices")
 async def tts_voices():
@@ -534,51 +528,58 @@ async def download_file(filename: str):
     import re as _re
     if not _re.match(r'^[\w\-. ]+$', filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
-    fpath = Path(__file__).parent.parent / "output" / filename
-    if not fpath.exists():
+    path = Path(__file__).parent.parent / "output" / filename
+    if not path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(path=str(fpath), filename=filename)
-
-@app.delete("/files/all/clear")
-async def delete_all_files():
-    output_dir = Path(__file__).parent.parent / "output"
-    count = sum(1 for f in output_dir.iterdir() if f.is_file() and not f.unlink())
-    return {"deleted_count": count}
+    return FileResponse(path, filename=filename)
 
 @app.delete("/files/{filename}")
 async def delete_file(filename: str):
     import re as _re
     if not _re.match(r'^[\w\-. ]+$', filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
-    fpath = Path(__file__).parent.parent / "output" / filename
-    if not fpath.exists():
+    path = Path(__file__).parent.parent / "output" / filename
+    if not path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    fpath.unlink()
+    path.unlink()
     return {"filename": filename, "deleted": True}
 
-# ── Preference endpoints ──────────────────────────────────────────────────────
+@app.delete("/files/all/clear")
+async def delete_all_files():
+    output_dir = Path(__file__).parent.parent / "output"
+    output_dir.mkdir(exist_ok=True)
+    count = 0
+    for f in output_dir.iterdir():
+        if f.is_file():
+            f.unlink()
+            count += 1
+    return {"deleted_count": count}
+
+# ── Preferences ───────────────────────────────────────────────────────────────
 
 @app.get("/preferences")
 async def list_preferences():
-    from agents.memory_agent import _INDEX_KEY
-    index = memory.get_preference(_INDEX_KEY, default=[])
-    if not isinstance(index, list):
-        return {"preferences": []}
-    prefs = []
-    for key in index:
-        entry = memory.get_preference(key)
-        if entry and isinstance(entry, dict) and entry.get("label"):
-            prefs.append({"key": key, "label": entry["label"], "value": entry["value"]})
-    return {"preferences": prefs}
+    try:
+        from agents.memory_agent import MemoryAgent, _INDEX_KEY
+        index = memory.get_preference(_INDEX_KEY, default=[])
+        prefs = []
+        if isinstance(index, list):
+            for key in index:
+                val = memory.get_preference(key)
+                if val is not None:
+                    prefs.append({"key": key, "value": val})
+        return {"preferences": prefs}
+    except Exception as e:
+        return {"preferences": [], "error": str(e)}
 
 @app.post("/preferences")
-async def set_preference_api(req: PrefRequest):
-    from agents.memory_agent import _INDEX_KEY, _slug, _PREF_PREFIX
-    key   = _PREF_PREFIX + _slug(req.label)
-    entry = {"label": req.label, "value": req.value, "raw": f"{req.label}: {req.value}"}
-    memory.set_preference(key, entry)
+async def save_preference(req: PrefRequest):
+    from agents.memory_agent import _INDEX_KEY
+    key = req.label.lower().replace(" ", "_")
+    memory.set_preference(key, req.value)
     index = memory.get_preference(_INDEX_KEY, default=[])
-    if not isinstance(index, list): index = []
+    if not isinstance(index, list):
+        index = []
     if key not in index:
         index.append(key)
         memory.set_preference(_INDEX_KEY, index)
@@ -589,7 +590,8 @@ async def clear_preferences():
     from agents.memory_agent import _INDEX_KEY
     index = memory.get_preference(_INDEX_KEY, default=[])
     if isinstance(index, list):
-        for key in index: memory.delete_preference(key)
+        for key in index:
+            memory.delete_preference(key)
     memory.set_preference(_INDEX_KEY, [])
     return {"cleared": True}
 
