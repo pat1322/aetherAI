@@ -1,51 +1,51 @@
 /*
  * ╔══════════════════════════════════════════════════════════════╗
- * ║         BRONNY AI  v7.1  —  AetherAI Edition                 ║
+ * ║         BRONNY AI  v7.1  —  AetherAI Edition                ║
  * ║         by Patrick Perez                                     ║
  * ╠══════════════════════════════════════════════════════════════╣
  * ║  Hardware                                                    ║
- * ║    Board   : ESP32-S3 Dev Module  (OPI PSRAM 8MB)            ║
- * ║    Codec   : ES8311  (I2C addr 0x18) — speaker output        ║
- * ║    Mic     : INMP441  (I2S port 1)                           ║
- * ║    Display : ST7789  320×240  (HSPI)                         ║
+ * ║    Board   : ESP32-S3 Dev Module  (OPI PSRAM 8MB)           ║
+ * ║    Codec   : ES8311  (I2C addr 0x18) — speaker output       ║
+ * ║    Mic     : INMP441  (I2S port 1)                          ║
+ * ║    Display : ST7789  320×240  (HSPI)                        ║
  * ╠══════════════════════════════════════════════════════════════╣
  * ║  Wiring                                                      ║
  * ║    ES8311 codec                                              ║
- * ║      PA_EN→48  DOUT→45  DIN→12  WS→13  BCLK→14               ║
- * ║      MCLK→38   SCL→2    SDA→1                                ║
+ * ║      PA_EN→48  DOUT→45  DIN→12  WS→13  BCLK→14             ║
+ * ║      MCLK→38   SCL→2    SDA→1                               ║
  * ║    INMP441 mic                                               ║
- * ║      VDD→3.3V  GND→GND  L/R→GND                              ║
- * ║      WS→4  SCK→5  SD→6                                       ║
+ * ║      VDD→3.3V  GND→GND  L/R→GND                            ║
+ * ║      WS→4  SCK→5  SD→6                                      ║
  * ║    ST7789 TFT  (HSPI)                                        ║
- * ║      DC→39  CS→47  CLK→41  MOSI→40  BLK→42                   ║
+ * ║      DC→39  CS→47  CLK→41  MOSI→40  BLK→42                 ║
  * ╠══════════════════════════════════════════════════════════════╣
- * ║  Required Libraries (Arduino Library Manager)                ║
- * ║    • arduino-audio-tools   by pschatzmann                    ║
- * ║    • arduino-audio-driver  by pschatzmann                    ║
- * ║    • Adafruit ST7789  + Adafruit GFX Library                 ║
- * ║    • WebSockets  by Markus Sattler                           ║
- * ║    • ArduinoJson by Benoit Blanchon                          ║
+ * ║  Required Libraries (Arduino Library Manager)               ║
+ * ║    • arduino-audio-tools   by pschatzmann                   ║
+ * ║    • arduino-audio-driver  by pschatzmann                   ║
+ * ║    • Adafruit ST7789  + Adafruit GFX Library                ║
+ * ║    • WebSockets  by Markus Sattler                          ║
+ * ║    • ArduinoJson by Benoit Blanchon                         ║
  * ╠══════════════════════════════════════════════════════════════╣
  * ║  Arduino IDE Board Settings                                  ║
- * ║    Board  : ESP32S3 Dev Module                               ║
- * ║    PSRAM  : OPI PSRAM  (8MB)  ← REQUIRED                     ║
- * ║    USB CDC on Boot : Enabled                                 ║
+ * ║    Board  : ESP32S3 Dev Module                              ║
+ * ║    PSRAM  : OPI PSRAM  (8MB)  ← REQUIRED                   ║
+ * ║    USB CDC on Boot : Enabled                                ║
  * ╠══════════════════════════════════════════════════════════════╣
- * ║  Screen layout (320×240 landscape)                           ║
- * ║    ┌────────────────────────────┐ y=0                        ║
- * ║    │  [LEFT EYE]  [RIGHT EYE]   │ y=42-94  (FCY=68)          ║
- * ║    │         [MOUTH]            │ y=106-160                  ║
- * ║    ├─────────── separator ──────┤ y=161                      ║
- * ║    │  TFT log line 1 (oldest)   │ y=163                      ║
- * ║    │  TFT log line 2            │                            ║
- * ║    │  TFT log line 3            │                            ║
- * ║    │  TFT log line 4 (newest)   │ y=211                      ║
+ * ║  Screen layout (320×240 landscape)                          ║
+ * ║    ┌────────────────────────────┐ y=0                       ║
+ * ║    │  [LEFT EYE]  [RIGHT EYE]  │ y=42-94  (FCY=68)         ║
+ * ║    │         [MOUTH]           │ y=106-160                  ║
+ * ║    ├─────────── separator ──────┤ y=161                     ║
+ * ║    │  TFT log line 1 (oldest)  │ y=163                     ║
+ * ║    │  TFT log line 2           │                            ║
+ * ║    │  TFT log line 3           │                            ║
+ * ║    │  TFT log line 4 (newest)  │ y=211                     ║
  * ║    ├────────────────────────────┤                            ║
- * ║    │   ···· island bar ····     │ y=220-236                  ║
- * ║    └────────────────────────────┘ y=240                      ║
+ * ║    │   ···· island bar ····    │ y=220-236                  ║
+ * ║    └────────────────────────────┘ y=240                     ║
  * ╠══════════════════════════════════════════════════════════════╣
- * ║  BytePlus credential mapping (voice_config.h)                ║
- * ║    BYTEPLUS_APP_ID   = APP ID         → X-Api-App-Key hdr    ║
+ * ║  BytePlus credential mapping (voice_config.h)               ║
+ * ║    BYTEPLUS_APP_ID   = APP ID         → X-Api-App-Key hdr   ║
  * ║    BYTEPLUS_TOKEN    = ACCESS TOKEN   → X-Api-Access-Key hdr ║
  * ║    BYTEPLUS_API_KEY  = UUID API KEY   → X-Api-Key hdr +      ║
  * ║                                         JSON app.token       ║
@@ -55,12 +55,12 @@
  * ║          X-Api-Resource-Id + X-Api-Connect-Id headers        ║
  * ║    (Seed Speech byteplusvoice/asrstreaming — NOT Bearer;)    ║
  * ╠══════════════════════════════════════════════════════════════╣
- * ║  v7.1 changes vs v7.0                                        ║
- * ║    • ALL output goes to TFT scrolling log (no Serial)        ║
- * ║    • Face compacted to FCY=68 to fit 4-line log below        ║
- * ║    • Auth: X-Api-* headers (Seed Speech API, NOT Bearer;)    ║
- * ║    • Cluster uses API Resource ID from BytePlus console      ║
- * ║    • Error codes 1001/1002 show actionable hint on screen    ║
+ * ║  v7.1 changes vs v7.0                                       ║
+ * ║    • ALL output goes to TFT scrolling log (no Serial)       ║
+ * ║    • Face compacted to FCY=68 to fit 4-line log below       ║
+ * ║    • Auth: X-Api-* headers (Seed Speech API, NOT Bearer;)  ║
+ * ║    • Cluster uses API Resource ID from BytePlus console     ║
+ * ║    • Error codes 1001/1002 show actionable hint on screen   ║
  * ╚══════════════════════════════════════════════════════════════╝
  */
 
@@ -91,6 +91,25 @@
 #endif
 
 #include "voice_config.h"
+
+// ── Compatibility fallbacks ───────────────────────────────────────────────────
+// BYTEPLUS_API_KEY: UUID API Key (v7.1+). Falls back to ACCESS TOKEN.
+#ifndef BYTEPLUS_API_KEY
+  #define BYTEPLUS_API_KEY  BYTEPLUS_TOKEN
+#endif
+// BYTEPLUS_RESOURCE_ID: replaces old BYTEPLUS_CLUSTER (v7.2+).
+// Falls back to BYTEPLUS_CLUSTER if you haven't updated voice_config.h yet.
+#ifndef BYTEPLUS_RESOURCE_ID
+  #ifdef BYTEPLUS_CLUSTER
+    #define BYTEPLUS_RESOURCE_ID  BYTEPLUS_CLUSTER
+  #else
+    #define BYTEPLUS_RESOURCE_ID  "volc.bigasr.sauc.duration"
+  #endif
+#endif
+// BYTEPLUS_ASR_PATH: correct Seed Speech v3 path (v7.2+).
+// Override if your voice_config.h still has the old v2 path.
+#undef  BYTEPLUS_ASR_PATH
+#define BYTEPLUS_ASR_PATH  "/api/v3/sauc/bigmodel_nostream"
 
 // ============================================================
 // PIN DEFINITIONS
@@ -303,7 +322,7 @@ static bool     asrConnected = false;
 static String   asrPartial   = "";
 static String   asrFinal     = "";
 static bool     asrGotFinal  = false;
-static uint32_t reqCounter   = 0;
+// (reqCounter removed in v7.2 — Seed Speech v3 JSON has no reqid field)
 
 // ============================================================
 // GLOBAL AUDIO BUFFERS  (static — keep off stack)
@@ -685,7 +704,7 @@ static void _parseAsrResponse(const uint8_t* data, size_t len) {
         return;
     }
 
-    // Determine payload offset (optional 4-byte sequence if flags bit 1 set)
+    // Determine payload offset
     size_t offset = 4;
     if (flags & 0x02) offset += 4;
     if (offset + 4 > len) return;
@@ -699,44 +718,50 @@ static void _parseAsrResponse(const uint8_t* data, size_t len) {
     if (payloadSize == 0 || offset + payloadSize > len) return;
     if (serial != 0x01) return;   // only handle JSON payloads
 
-    StaticJsonDocument<2048> doc;
+    // ── Seed Speech v3 response JSON ─────────────────────────────────────
+    // {
+    //   "code": 0,                        ← 0 = success (NOT 1000)
+    //   "event": 0,
+    //   "is_last_package": true/false,
+    //   "payload_msg": {
+    //     "result": {
+    //       "text": "recognised text",
+    //       "utterances": [ { "definite": true, "text": "...", ... } ]
+    //     }
+    //   }
+    // }
+
+    StaticJsonDocument<3072> doc;
     DeserializationError err = deserializeJson(doc, data + offset, payloadSize);
     if (err) {
         tftLogf(LC_ERR, "ASR JSON: %s", err.c_str());
         return;
     }
 
-    int code = doc["code"]     | -1;
-    int seq  = doc["sequence"] | 0;
+    int  code       = doc["code"]            | -1;
+    bool isLast     = doc["is_last_package"] | false;
 
-    if (code == 1000) {
+    if (code == 0) {
+        // Extract text from payload_msg.result.text
         const char* topText = nullptr;
-        bool        partial = true;
-
-        JsonArray results = doc["result"].as<JsonArray>();
-        if (!results.isNull() && results.size() > 0) {
-            topText = results[0]["text"] | nullptr;
-            JsonArray utts = results[0]["utterances"].as<JsonArray>();
-            if (!utts.isNull() && utts.size() > 0) {
-                bool allDef = true;
-                for (JsonObject u : utts)
-                    if (!(u["definite"] | false)) { allDef = false; break; }
-                partial = !allDef;
-            } else {
-                partial = (seq >= 0);
+        JsonObject payloadMsg = doc["payload_msg"].as<JsonObject>();
+        if (!payloadMsg.isNull()) {
+            JsonObject result = payloadMsg["result"].as<JsonObject>();
+            if (!result.isNull()) {
+                topText = result["text"] | nullptr;
             }
         }
 
         if (topText && strlen(topText) > 0) {
-            if (!partial || seq < 0) {
-                // Final transcript — show in mint colour
+            if (isLast) {
+                // Final transcript
                 asrFinal    = String(topText);
                 asrGotFinal = true;
                 char disp[54];
                 snprintf(disp, sizeof(disp), "> %s", topText);
                 tftLog(LC_TX, disp);
             } else {
-                // Partial — show in cyan while speaking
+                // Partial — incremental result
                 asrPartial = String(topText);
                 char disp[54];
                 snprintf(disp, sizeof(disp), "~ %s", topText);
@@ -744,33 +769,27 @@ static void _parseAsrResponse(const uint8_t* data, size_t len) {
             }
         }
 
-        // Negative sequence → server is done
-        if (seq < 0 && asrFinal.length() == 0 && asrPartial.length() > 0) {
-            asrFinal    = asrPartial;
-            asrGotFinal = true;
-            char disp[54];
-            snprintf(disp, sizeof(disp), "> %s", asrFinal.c_str());
-            tftLog(LC_TX, disp);
+        // is_last_package marks end of recognition session
+        if (isLast) {
+            if (asrFinal.length() == 0 && asrPartial.length() > 0) {
+                asrFinal    = asrPartial;
+                asrGotFinal = true;
+                char disp[54];
+                snprintf(disp, sizeof(disp), "> %s", asrFinal.c_str());
+                tftLog(LC_TX, disp);
+            }
+            asrState = ASR_DONE;
         }
 
-    } else if (code == 1013) {
-        tftLog(LC_WARN, "ASR: silent audio");
-        asrState = ASR_DONE;
-
-    } else if (code == 1002) {
-        // Auth failed — show specific fix on TFT
-        tftLog(LC_ERR, "ASR: auth fail (1002)");
-        tftLog(LC_WARN, "Try API KEY as TOKEN");
-        asrState = ASR_ERROR;
-
-    } else if (code == 1001) {
-        // Invalid parameter — usually wrong cluster name
-        tftLog(LC_ERR, "ASR: bad param (1001)");
-        tftLog(LC_WARN, "Check CLUSTER in cfg");
-        asrState = ASR_ERROR;
-
-    } else if (code != -1) {
-        tftLogf(LC_ERR, "ASR code=%d", code);
+    } else if (code == -1) {
+        // Ignore empty frames
+    } else {
+        // Non-zero code = error
+        tftLogf(LC_ERR, "ASR err code=%d", code);
+        // Common Seed Speech error codes:
+        // 1001 = invalid param   1002 = auth fail   1013 = silent
+        if (code == 1002) tftLog(LC_WARN, "Check API Key/Token");
+        if (code == 1001) tftLog(LC_WARN, "Check Resource ID");
         asrState = ASR_ERROR;
     }
 }
@@ -803,40 +822,53 @@ void onAsrEvent(WStype_t type, uint8_t* payload, size_t length) {
     }
 }
 
-// ── Build the full_client_request JSON ────────────────────────────────────────
+// ── Build the full_client_request JSON for Seed Speech v3 ────────────────────
 //
-// Seed Speech ASR (byteplusvoice/asrstreaming) credential mapping:
-//   app.appid   = BYTEPLUS_APP_ID      (APP ID from console)
-//   app.token   = BYTEPLUS_API_KEY     (UUID API Key — recommended for new integrations)
-//                                      Falls back to BYTEPLUS_TOKEN if not defined.
-//   app.cluster = BYTEPLUS_CLUSTER     (API Resource ID — volc.bigasr.sauc.duration etc.)
+// Seed Speech ASR (byteplusvoice/asrstreaming) — v3 JSON body structure:
 //
-// Unlike the old Speech API, the resource/cluster goes BOTH in the JSON body AND
-// in the X-Api-Resource-Id HTTP header. Both are required.
+//   NO app{} block. Credentials go in HTTP headers only.
+//
+//   user{}                       (optional)
+//     uid: string
+//   audio{}                      (REQUIRED)
+//     format: "pcm_s16le"        raw 16-bit PCM little-endian
+//     language: "en-US"          (empty = auto-detect multilingual)
+//     codec: "raw"               default
+//     rate: 16000                only 16000 supported
+//     bits: 16                   default
+//     channel: 1                 mono
+//   request{}                    (REQUIRED)
+//     model_name: "bigmodel"     REQUIRED — only valid value
+//     enable_itn: true           inverse text normalisation (numbers etc.)
+//     enable_punc: true          auto-punctuation
+//     show_utterances: true      word-level timestamps
+//     result_type: "single"      return current clause only (incremental)
+//
+// Response success code: 0  (NOT 1000 — completely different from old API)
+// Response text path: payload_msg.result.text
 //
 static String _buildConfigJson() {
-    String reqid = "bronny_" + String(++reqCounter);
-    return String("{\"app\":{"
-        "\"appid\":\""   + String(BYTEPLUS_APP_ID)  + "\","
-        "\"token\":\""   + String(BYTEPLUS_API_KEY) + "\","   // UUID API Key
-        "\"cluster\":\"" + String(BYTEPLUS_CLUSTER) + "\""    // API Resource ID
-    "},"
-    "\"user\":{\"uid\":\"bronny\"},"
-    "\"audio\":{"
-        "\"format\":\"raw\","
-        "\"rate\":16000,"
-        "\"bits\":16,"
-        "\"channel\":1,"
-        "\"language\":\"" + String(BYTEPLUS_LANGUAGE) + "\""
-    "},"
-    "\"request\":{"
-        "\"reqid\":\""     + reqid + "\","
-        "\"workflow\":\"audio_in,resample,partition,vad,fe,decode\","
-        "\"sequence\":1,"
-        "\"nbest\":1,"
-        "\"show_utterances\":true,"
-        "\"result_type\":\"single\""
-    "}}");
+    String lang = String(BYTEPLUS_LANGUAGE);
+    String langField = lang.length() > 0
+        ? (String(",\"language\":\"") + lang + "\"")
+        : "";          // empty = auto-detect
+
+    return String("{"
+        "\"user\":{\"uid\":\"bronny\"},"
+        "\"audio\":{"
+            "\"format\":\"pcm_s16le\","
+            "\"codec\":\"raw\","
+            "\"rate\":16000,"
+            "\"bits\":16,"
+            "\"channel\":1"
+            ) + langField + String("},"
+        "\"request\":{"
+            "\"model_name\":\"bigmodel\","
+            "\"enable_itn\":true,"
+            "\"enable_punc\":true,"
+            "\"show_utterances\":true,"
+            "\"result_type\":\"single\""
+        "}}");
 }
 
 static bool _isNoise(const String& t) {
@@ -898,10 +930,10 @@ bool recordAndStream() {
              (unsigned long)(esp_random() & 0xFFFF));
 
     String hdrs = "";
-    hdrs += "X-Api-App-Key: ";    hdrs += BYTEPLUS_APP_ID;    hdrs += "\r\n";
-    hdrs += "X-Api-Access-Key: "; hdrs += BYTEPLUS_TOKEN;     hdrs += "\r\n";
-    hdrs += "X-Api-Key: ";        hdrs += BYTEPLUS_API_KEY;   hdrs += "\r\n";
-    hdrs += "X-Api-Resource-Id: "; hdrs += BYTEPLUS_CLUSTER;  hdrs += "\r\n";
+    hdrs += "X-Api-App-Key: ";    hdrs += BYTEPLUS_APP_ID;       hdrs += "\r\n";
+    hdrs += "X-Api-Access-Key: "; hdrs += BYTEPLUS_TOKEN;        hdrs += "\r\n";
+    hdrs += "X-Api-Key: ";        hdrs += BYTEPLUS_API_KEY;      hdrs += "\r\n";
+    hdrs += "X-Api-Resource-Id: "; hdrs += BYTEPLUS_RESOURCE_ID; hdrs += "\r\n";
     hdrs += "X-Api-Connect-Id: "; hdrs += connId;
     // No trailing \r\n — arduinoWebSockets adds it
 

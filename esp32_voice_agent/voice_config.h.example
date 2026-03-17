@@ -23,46 +23,45 @@
 // Must match AETHER_API_KEY in Railway environment variables
 #define AETHER_API_KEY  "your_secret_api_key_here"
 
-// ── BytePlus Speech ASR (International — accessible from Philippines) ─────────
+// ── BytePlus Seed Speech — Streaming ASR ────────────────────────────────────
 //
-// Registration: https://console.byteplus.com  (not Volcengine — that's China-only)
-// Steps:
-//   1. Sign up at console.byteplus.com
-//   2. Products → Speech → Speech-to-Text → Create Application
-//   3. Copy your App ID, Access Token, and Cluster name from the console
+// API docs: docs.byteplus.com/en/docs/byteplusvoice/asrstreaming
+// Console:  console.byteplus.com
 //
-// CRITICAL: Three separate values are required.
-//
-// Auth header sent as:  Authorization: Bearer; {BYTEPLUS_TOKEN}
-//   (note the semicolon — this is BytePlus-specific, not standard OAuth2)
-// All three values also go in the JSON request body.
+// Auth headers on WebSocket upgrade (Seed Speech API):
+//   X-Api-App-Key:    APP ID
+//   X-Api-Access-Key: ACCESS TOKEN
+//   X-Api-Key:        UUID API KEY  (new single-key method — recommended)
+//   X-Api-Resource-Id:API Resource ID (volc.bigasr.sauc.duration etc.)
+//   X-Api-Connect-Id: any UUID (connection tracking)
 //
 #define BYTEPLUS_APP_ID   "your_numeric_app_id_here"      // APP ID from console
 #define BYTEPLUS_TOKEN    "your_access_token_here"        // ACCESS TOKEN from console
-#define BYTEPLUS_API_KEY  "your_uuid_api_key_here"        // API KEY (UUID) from console
+#define BYTEPLUS_API_KEY  "your_uuid_api_key_here"        // UUID API KEY from console
                                                           // e.g. "597a6e93-df07-43d7-be40-e728500db3b9"
-                                                          // This is the NEW single-key auth method.
-                                                          // From console → API Reference → API Key
 
-// ── CLUSTER (= API Resource ID) ─────────────────────────────────────────────
-//
-// This is the "API Resource ID" shown in your BytePlus console.
-// It goes BOTH in X-Api-Resource-Id HTTP header AND in app.cluster JSON field.
-//
-//   Seed ASR 1.0 (standard):  "volc.bigasr.sauc.duration"   ← start here
-//   Seed ASR 2.0 (newer):     "volc.seedasr.sauc.duration"
-//
-#define BYTEPLUS_CLUSTER  "volc.bigasr.sauc.duration"
+// ── API Resource ID ──────────────────────────────────────────────────────────
+// From console → API Reference → API Resource ID
+//   Seed ASR 1.0: "volc.bigasr.sauc.duration"   ← recommended
+//   Seed ASR 2.0: "volc.seedasr.sauc.duration"
+// This goes in X-Api-Resource-Id header only. NOT in the JSON body.
+#define BYTEPLUS_RESOURCE_ID  "volc.bigasr.sauc.duration"
 
 // ── ASR Language ─────────────────────────────────────────────────────────────
-// English (recommended even for Filipino-English code-switching):
-//   "en-US"
-// Check https://docs.byteplus.com/en/docs/speech/docs-language-support for full list
+// From docs: leave empty for auto (supports Cantonese, Shanghainese, Minnan etc.)
+// Or set a specific language:
+//   "en-US"   English
+//   "fil-PH"  Filipino  ← useful for Tagalog
+//   "zh-CN"   Mandarin
+// Leave empty "" for automatic multilingual detection
 #define BYTEPLUS_LANGUAGE "en-US"
 
-// ── ASR Endpoint (do not change unless BytePlus updates their API) ────────────
+// ── ASR Endpoint ─────────────────────────────────────────────────────────────
+// Seed Speech streaming (unidirectional, client streams audio to server):
+//   Host: openspeech.byteoversea.com
+//   Path: /api/v3/sauc/bigmodel_nostream
 #define BYTEPLUS_ASR_HOST "openspeech.byteoversea.com"
-#define BYTEPLUS_ASR_PATH "/api/v2/asr"
+#define BYTEPLUS_ASR_PATH "/api/v3/sauc/bigmodel_nostream"
 
 // ── VAD Threshold ─────────────────────────────────────────────────────────────
 // Adjust if Bronny is too sensitive (raise) or not triggering (lower).
