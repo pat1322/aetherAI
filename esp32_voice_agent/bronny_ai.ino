@@ -116,6 +116,7 @@ static uint32_t lastHbMs        = 0;
 static uint32_t vadCooldownUntil = 0;
 static uint32_t lastRailwayMs   = 0;    // stamped on every successful Railway call
 static bool     standbyMode     = false;
+static bool     bootIntroDone   = false; // set true after first boot intro runs in loop()
 
 // ============================================================
 // PINS
@@ -1224,10 +1225,11 @@ void exitStandby() {
     Serial.println("[Standby] Exiting standby mode");
 }
 
-// Called once from setup() after Deepgram connects.
-// Sends a boot intro prompt to Railway so Bronny greets the user on first power-on.
-// NOTE: If Bronny introduces himself as "AetherAI" instead of "Bronny", the fix is
-// on the Railway backend — update the LLM system prompt to define the persona as Bronny.
+// Called once from loop() on the first iteration after Deepgram connects.
+// Running from loop() (not setup()) ensures the same stack depth and task
+// environment as runConversation(), which is known to work reliably.
+// NOTE: If Bronny introduces himself as "AetherAI" instead of "Bronny", fix
+// the LLM system prompt on the Railway backend side, not here.
 void doBootIntro() {
     if (!dgConnected) {
         Serial.println("[Intro] Skipped — Deepgram not connected");
@@ -1235,8 +1237,13 @@ void doBootIntro() {
     }
     tftLog(C_CY, "Bronny: hello!");
     setFaceThink();
-    // "bootup_intro" is a keyword your Railway LLM should map to a self-introduction.
-    // Alternatively change this to any natural prompt your system prompt handles well.
+
+    // Stop streaming to Deepgram while we process, exactly like runConversation().
+    // Without this, maintainDeepgram() inside playMp3Smooth()'s decode loop
+    // runs with dgStreaming=true but micOk=false, causing an inconsistent state
+    // that can crash on some hardware.
+    dgStreaming = false;
+
     bool ok = callRailway("bootup_intro");
     if (ok) {
         setStatus("Speaking...", C_GR);
@@ -1254,7 +1261,10 @@ void doBootIntro() {
     }
     setFaceIdle();
     drawFace(true);
-    lastRailwayMs = millis();   // count intro as activity — don't sleep immediately
+    lastRailwayMs   = millis();
+    dgStreaming     = true;           // resume streaming — same as end of runConversation()
+    dgLastKeepalive = millis();
+    setStatus("Listening...", C_CY);
     Serial.println("[Intro] Boot intro complete");
 }
 
@@ -1445,9 +1455,9 @@ void setup() {
     // Start streaming immediately
     dgStreaming = true;
     setStatus("Listening...", C_CY);
-
-    // Boot intro: Bronny introduces himself on first power-on.
-    doBootIntro();
+    // Boot intro will run on the first loop() iteration via bootIntroDone flag.
+    // Running it from loop() instead of setup() avoids stack depth issues that
+    // can crash when playMp3Smooth() is called deep inside the setup call chain.
 }
 
 // ============================================================
@@ -1465,6 +1475,15 @@ void loop() {
 
     // Deepgram: pump WS, stream audio, keepalive, reconnect-on-drop
     maintainDeepgram();
+
+    // Boot intro: runs once on first loop() iteration after Deepgram connects.
+    // Placed here (in loop, not setup) so playMp3Smooth() runs at the same stack
+    // depth as runConversation(), preventing the crash that occurred in setup().
+    if (!bootIntroDone && !busy && dgConnected) {
+        bootIntroDone = true;
+        doBootIntro();
+        return;   // let the loop tick before processing anything else
+    }
 
     // Standby: enter after STANDBY_TIMEOUT_MS of no Railway activity.
     // Deepgram WS and mic streaming stay completely untouched.
