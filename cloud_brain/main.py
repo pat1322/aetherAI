@@ -9,6 +9,16 @@ BRONNY 1  POST /bronny/heartbeat
           center recent tasks (not just the badge).
           Default version bumped to "7.0".
 
+Bronny voice identity patch
+────────────────────────────
+VOICE 4  /voice/text now uses qwen.bronny_answer() instead of qwen.answer()
+         so all spoken responses identify as Bronny, not AetherAI.
+         Special case: if transcript is "bootup_intro" (sent by v5.7 firmware
+         doBootIntro()), skip classify/plan and return a Bronny self-introduction
+         directly. This fixes:
+           - Boot intro saying "Hi, I'm AetherAI" instead of "Hi, I'm Bronny"
+           - "Who are you?" returning the wrong name
+
 All Stage 6 retained:
   VOICE 1  POST /voice/chat     — WAV → STT → LLM → TTS → MP3
   VOICE 2  GET  /tts/voices     — list edge-tts voices
@@ -131,7 +141,7 @@ class VoiceTextRequest(BaseModel):
 
 class BronnyHeartbeatRequest(BaseModel):
     device:  str = "bronny"
-    version: str = "7.0"    # updated: v7.0 streaming ASR firmware
+    version: str = "7.0"
 
 # ── Core endpoints ────────────────────────────────────────────────────────────
 
@@ -169,7 +179,7 @@ async def receive_command(req: CommandRequest):
         message=f"Task received: '{req.command}'",
     )
 
-# ── SSE streaming endpoint (Layer 1) ─────────────────────────────────────────
+# ── SSE streaming endpoint ────────────────────────────────────────────────────
 
 def _load_user_ctx() -> str:
     try:
@@ -180,10 +190,7 @@ def _load_user_ctx() -> str:
 
 @app.post("/stream")
 async def stream_command(req: CommandRequest):
-    """
-    SSE endpoint — streams chat tokens directly, or returns task_id for
-    task-classified commands.
-    """
+    """SSE endpoint — streams chat tokens or returns task_id for task commands."""
     async def generate() -> AsyncGenerator[str, None]:
         user_ctx     = _load_user_ctx()
         command_type = await orchestrator.qwen.classify_command(
@@ -214,7 +221,7 @@ async def stream_command(req: CommandRequest):
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
-# ── Voice endpoints (Layer 2) ─────────────────────────────────────────────────
+# ── Voice endpoints ───────────────────────────────────────────────────────────
 
 @app.post("/voice/chat")
 async def voice_chat(request: Request):
@@ -231,9 +238,6 @@ async def voice_chat(request: Request):
         X-Transcript:    What the user said (UTF-8, URL-encoded)
         X-Response-Text: Short spoken response text (UTF-8, URL-encoded)
         Body:            MP3 audio bytes ready to feed to the ES8311
-
-    Creates a task in the database and broadcasts WebSocket updates so
-    every voice conversation appears in the command center task list.
     """
     from urllib.parse import quote as urlquote
 
@@ -304,22 +308,27 @@ async def voice_chat(request: Request):
 @app.post("/voice/text")
 async def voice_text_chat(req: VoiceTextRequest):
     """
-    VOICE 3 — ESP32 sends a pre-transcribed text (from BytePlus streaming ASR on-device).
+    VOICE 3 — ESP32 sends pre-transcribed text (Deepgram streaming ASR on-device).
     Skips STT entirely. Runs: text → Qwen LLM → edge-tts → MP3 bytes.
 
-    Used by Bronny v7.0 streaming ASR firmware.
+    Used by Bronny v5.7+ firmware (Deepgram persistent WS architecture).
+
+    Bronny voice identity:
+      - All responses use bronny_answer() so Bronny never identifies as AetherAI.
+      - Special trigger "bootup_intro": skips classify/plan entirely and returns
+        a short Bronny self-introduction. Sent by doBootIntro() in v5.7 firmware
+        on first power-on after Deepgram connects.
 
     Request:
         Content-Type:  application/json
         X-Api-Key:     AETHER_API_KEY
         Body:          {"text": "what is the weather in Manila"}
+                  OR:  {"text": "bootup_intro"}   ← firmware boot greeting
 
     Response:
         Content-Type:    audio/mpeg
         X-Response-Text: Short spoken response (URL-encoded)
         Body:            MP3 audio bytes
-
-    Faster than /voice/chat because WAV upload + STT are handled on-device.
     """
     from urllib.parse import quote as urlquote
     from agents.voice_agent import _voice_summarize, _safe_synthesize
@@ -328,7 +337,7 @@ async def voice_text_chat(req: VoiceTextRequest):
     if not transcript:
         raise HTTPException(status_code=400, detail="text field is empty")
 
-    # Create task — appears in command center recent tasks with the transcript
+    # Create task entry — appears in command center recent tasks
     task_id = str(uuid.uuid4())
     memory.create_task(task_id, f"[Voice] {transcript[:80]}", "voice")
     memory.update_task_status(task_id, "running")
@@ -345,25 +354,43 @@ async def voice_text_chat(req: VoiceTextRequest):
         except Exception:
             pass
 
-        command_type = await orchestrator.qwen.classify_command(
-            transcript, user_context=user_context
-        )
-
-        response_text = ""
-        if command_type == "task":
-            plan        = await orchestrator.qwen.plan_task(transcript, user_context=user_context)
-            first_agent = plan[0].get("agent", "") if plan else ""
-            _QUICK_AGENTS = {"weather_agent", "crypto_agent", "news_agent", "finance_agent"}
-            if first_agent in _QUICK_AGENTS:
-                from agents.voice_agent import _run_single_agent
-                response_text = await _run_single_agent(
-                    first_agent, transcript, orchestrator.qwen, memory
-                )
-
-        if not response_text:
-            response_text = await orchestrator.qwen.answer(
+        # ── bootup_intro: Bronny self-introduction on first power-on ─────────
+        # The v5.7 firmware sends "bootup_intro" from doBootIntro() after
+        # Deepgram connects. Skip classify/plan and return a Bronny greeting
+        # directly so the device never says "Hi I'm AetherAI" on boot.
+        BOOTUP_INTRO_TRIGGERS = {"bootup_intro", "bootup intro"}
+        if transcript.lower().strip() in BOOTUP_INTRO_TRIGGERS:
+            response_text = await orchestrator.qwen.bronny_answer(
+                "Please introduce yourself in 2-3 warm, friendly sentences. "
+                "Your name is Bronny. You are a voice assistant built into a "
+                "physical desktop device by Patrick. You are ready and listening.",
+                user_context=user_context,
+            )
+        else:
+            # ── Normal voice turn ─────────────────────────────────────────────
+            command_type = await orchestrator.qwen.classify_command(
                 transcript, user_context=user_context
             )
+
+            response_text = ""
+            if command_type == "task":
+                plan        = await orchestrator.qwen.plan_task(
+                    transcript, user_context=user_context
+                )
+                first_agent = plan[0].get("agent", "") if plan else ""
+                _QUICK_AGENTS = {"weather_agent", "crypto_agent", "news_agent", "finance_agent"}
+                if first_agent in _QUICK_AGENTS:
+                    from agents.voice_agent import _run_single_agent
+                    response_text = await _run_single_agent(
+                        first_agent, transcript, orchestrator.qwen, memory
+                    )
+
+            if not response_text:
+                # Use bronny_answer() so all voice responses use Bronny identity.
+                # This fixes "who are you?" returning "AetherAI" instead of "Bronny".
+                response_text = await orchestrator.qwen.bronny_answer(
+                    transcript, user_context=user_context
+                )
 
         if not response_text:
             response_text = "I wasn't able to get an answer for that. Please try again."
@@ -408,11 +435,9 @@ async def voice_text_chat(req: VoiceTextRequest):
 @app.post("/bronny/heartbeat")
 async def bronny_heartbeat(req: BronnyHeartbeatRequest):
     """
-    Called by the ESP32 on boot and every 30 s to keep alive.
-
-    v7.0 change: on offline → online transition, creates a task entry in the
-    command center task list so the connection is visible in recent tasks
-    (not just the badge).  Subsequent heartbeats only update the badge.
+    Called by the ESP32 on boot and every 30s to keep alive.
+    On offline → online transition, creates a task entry in the command
+    center task list so the connection is visible in recent tasks.
     """
     was_offline = not _bronny_status["online"]
 
@@ -421,15 +446,12 @@ async def bronny_heartbeat(req: BronnyHeartbeatRequest):
     _bronny_status["version"]   = req.version
     _bronny_status["device"]    = req.device
 
-    # Badge update — received by ws.onmessage → updateBronnyBadge()
     await ws_manager.broadcast_ui_event({
         "type":    "bronny_status",
         "online":  True,
         "version": req.version,
     })
 
-    # On first connection (or reconnection after offline), also add a task row
-    # so it shows up in the recent tasks list in the command center.
     if was_offline:
         conn_task_id = str(uuid.uuid4())
         label = f"[Bronny] Device connected — v{req.version}"
@@ -452,8 +474,7 @@ async def bronny_heartbeat(req: BronnyHeartbeatRequest):
 async def bronny_status():
     """
     Returns Bronny online/offline status.
-    UI polls this on load; also receives live updates via WebSocket bronny_status event.
-    Bronny is considered offline if last heartbeat is > 60 s ago.
+    Bronny is considered offline if last heartbeat is > 60s ago.
     """
     if _bronny_status["last_seen"]:
         last = datetime.fromisoformat(_bronny_status["last_seen"])
@@ -465,10 +486,7 @@ async def bronny_status():
 
 @app.get("/tts/voices")
 async def tts_voices():
-    """
-    VOICE 2 — List all available edge-tts voices.
-    Useful for choosing a voice in settings or verifying TTS_VOICE is valid.
-    """
+    """VOICE 2 — List all available edge-tts voices."""
     from utils.tts_client import list_voices
     voices = await list_voices()
     return {

@@ -1,16 +1,16 @@
 """
-AetherAI — Qwen API Client  (Stage 6 — Layer 1)
+AetherAI — Qwen API Client  (Stage 6 — Layer 1 + Bronny voice patch)
 
-Stage 6 additions
-─────────────────
-STREAM 1  stream_chat() — async generator that yields text chunks using
-          the OpenAI-compatible streaming API. Used by the orchestrator's
-          chat branch so tokens appear in the UI as they arrive instead
-          of waiting for the full response.
+Bronny voice patch
+──────────────────
+bronny_answer() — voice-specific answer method used exclusively by
+/voice/text. Gives all voice responses a Bronny persona so the device
+never identifies as AetherAI. Shorter, conversational responses suitable
+for speaking aloud. Also handles the bootup_intro trigger correctly.
 
-STREAM 2  stream_answer() — same as answer() but yields chunks instead
-          of returning a complete string. Injects the live datetime and
-          user context exactly like the blocking version does.
+Stage 6 additions retained:
+STREAM 1  stream_chat() — async generator that yields text chunks
+STREAM 2  stream_answer() — same as answer() but yields chunks
 
 Previous fixes retained (FIX 1–5):
   FIX 1   open-app-and-write routes to task not chat
@@ -39,8 +39,7 @@ class QwenClient:
         self._client = AsyncOpenAI(
             api_key=settings.QWEN_API_KEY,
             base_url=settings.QWEN_BASE_URL,
-            timeout=30.0,   # 30s hard cap — prevents Railway from killing the dyno
-                            # on slow Qwen responses during classify/plan/chat
+            timeout=30.0,
         )
         self.model        = settings.QWEN_MODEL
         self.vision_model = settings.QWEN_VISION_MODEL
@@ -110,6 +109,50 @@ class QwenClient:
         parts.append(f"Request: {question}")
         return await self.chat(system, "\n\n".join(parts), temperature=0.7)
 
+    async def bronny_answer(self, question: str, context: str = "",
+                             user_context: str = "") -> str:
+        """
+        Voice-specific answer with Bronny persona.
+
+        Used exclusively by the /voice/text endpoint so all spoken responses
+        identify as Bronny, not AetherAI. Key differences from answer():
+          - Bronny identity (never says AetherAI)
+          - Shorter, conversational responses — no markdown, no bullet points
+          - Warm, friendly tone suitable for speaking aloud
+          - Handles bootup_intro greeting correctly
+        """
+        from datetime import datetime
+        try:
+            ph_tz   = ZoneInfo("Asia/Manila")
+            now_str = datetime.now(ph_tz).strftime("%A, %B %d, %Y %I:%M %p (Asia/Manila)")
+        except Exception:
+            now_str = datetime.utcnow().strftime("%A, %B %d, %Y %H:%M UTC")
+
+        system = (
+            f"You are Bronny, a friendly AI voice assistant built into a physical "
+            f"desktop device by Patrick Perez, a software engineer from the Philippines. "
+            f"You run on an ESP32-S3 microcontroller with a speaker and a small display "
+            f"that shows your animated face.\n"
+            f"CURRENT DATE AND TIME: {now_str}\n\n"
+            "VOICE RESPONSE RULES:\n"
+            "- Answer in 1-3 natural spoken sentences unless the user explicitly asks "
+            "for more detail.\n"
+            "- No markdown, no bullet points, no numbered lists, no headers — you are "
+            "speaking aloud, not typing.\n"
+            "- Sound warm, friendly, and natural — like a helpful companion.\n"
+            "- For date/time questions: use the CURRENT DATE AND TIME provided above.\n"
+            "- If asked who you are: say you are Bronny, Patrick's personal voice "
+            "assistant built into this device.\n"
+            "- Never identify yourself as AetherAI — your name is Bronny.\n"
+            "- Never say 'I cannot access real-time data'.\n"
+            "- Keep weather, crypto, and news answers brief and spoken-friendly."
+        )
+        parts = []
+        if user_context: parts.append(f"Facts about this user:\n{user_context}")
+        if context:      parts.append(f"Context:\n{context}")
+        parts.append(f"Request: {question}")
+        return await self.chat(system, "\n\n".join(parts), temperature=0.7)
+
     async def summarize(self, content: str, context: str = "",
                         source: str = "") -> str:
         if source == "web":
@@ -140,10 +183,6 @@ class QwenClient:
         STREAM 1 — Async generator that yields string chunks from the
         streaming API. Drop-in counterpart to chat() for hot paths that
         need progressive output.
-
-        Usage:
-            async for chunk in qwen.stream_chat(system, user):
-                do_something(chunk)
         """
         try:
             stream = await self._client.chat.completions.create(
@@ -161,7 +200,6 @@ class QwenClient:
                     yield delta.content
         except Exception as e:
             logger.error(f"[QwenClient] stream_chat failed: {e}")
-            # Yield the error token so the UI shows something rather than freezing
             yield f"\n\n⚠️ Stream error: {e}"
 
     async def stream_answer(self, question: str, context: str = "",
@@ -170,12 +208,6 @@ class QwenClient:
         STREAM 2 — Streaming counterpart to answer(). Builds the same
         system prompt (datetime + quality rules + user context) and yields
         chunks as they arrive from the model.
-
-        Usage:
-            full = ""
-            async for chunk in qwen.stream_answer(question, user_context=ctx):
-                full += chunk
-                await ws.send(chunk)
         """
         from datetime import datetime
         try:
@@ -360,7 +392,6 @@ class QwenClient:
         "open notepad", "open calculator", "open calc", "open paint",
         "open mspaint", "open wordpad", "open task manager",
         "open snipping tool",
-        # Office apps — "open powerpoint" alone should NOT trigger vision loop
         "open powerpoint", "open excel", "open word",
         "launch powerpoint", "launch excel", "launch word",
         "open chrome", "open firefox", "open edge",
@@ -517,8 +548,6 @@ class QwenClient:
         if self._is_research_task(c):
             return self._build_research_plan(command, c)
 
-        # Code task must come BEFORE browser task — "write a script to scrape..."
-        # contains "scrape" which is also a BROWSER_KEYWORD, but intent is coding.
         if self._is_code_task(c):
             lang = self._detect_language_hint(c)
             return [{"step":1,"agent":"coding_agent",
@@ -578,7 +607,7 @@ class QwenClient:
                      "parameters":{"query":command}}]
 
     # =========================================================================
-    # PLAN BUILDERS  (unchanged from Stage 5)
+    # PLAN BUILDERS
     # =========================================================================
 
     def _build_document_plan(self, command: str, c: str) -> list[dict]:
@@ -808,7 +837,7 @@ class QwenClient:
                  "parameters":{"action":"search","query":command,"engine":"google"}}]
 
     # =========================================================================
-    # HELPERS  (unchanged from Stage 5)
+    # HELPERS
     # =========================================================================
 
     def _dedup_open_steps(self, plan: list) -> list:
