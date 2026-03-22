@@ -253,6 +253,7 @@ void micInit() {
 
 void audioInitRec() {
     if (inTtsMode || !audioOk) {
+        i2s.end(); delay(100);           // must end before re-begin or codec panics
         audioPinsSetup();
         auto cfg=i2s.defaultConfig(TX_MODE); cfg.copyFrom(ainf_rec);
         cfg.output_device=DAC_OUTPUT_ALL;
@@ -264,6 +265,7 @@ void audioInitRec() {
 
 void audioInitTTS() {
     if (!inTtsMode) {
+        i2s.end(); delay(100);           // must end before re-begin or codec panics
         audioPinsSetup();
         auto cfg=i2s.defaultConfig(TX_MODE); cfg.copyFrom(ainf_tts);
         cfg.output_device=DAC_OUTPUT_ALL;
@@ -441,14 +443,14 @@ void playMp3Smooth() {
     decoded.begin();
     MemoryStream mp3Mem(mp3Buf,mp3Len);
 
-    const size_t BYTES_PER_TICK=512;
+    const size_t BYTES_PER_TICK = 512;
+    uint8_t tmp[512];                    // outside the loop — avoids repeated stack alloc
     while(mp3Mem.available()>0){
         size_t avail=(size_t)mp3Mem.available();
         size_t toRead=min(avail,BYTES_PER_TICK);
-        uint8_t tmp[512];
         size_t got=mp3Mem.readBytes(tmp,toRead);
         if(got>0)decoded.write(tmp,got);
-        maintainDeepgram();  // keepalive while playing
+        maintainDeepgram();
         animFace(); if(faceRedraw){drawFace(false);faceRedraw=false;}
         yield();
     }
@@ -1409,7 +1411,6 @@ void setup() {
 
     micInit();
 
-    mp3Decoder.begin();
     mp3Buf = (uint8_t*)heap_caps_malloc(MP3_MAX_BYTES, MALLOC_CAP_SPIRAM);
     if (!mp3Buf) Serial.println("[Boot] WARNING: mp3Buf alloc failed");
 
