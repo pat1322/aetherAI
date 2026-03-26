@@ -308,28 +308,36 @@ async def voice_chat(request: Request):
 @app.post("/voice/text")
 async def voice_text_chat(req: VoiceTextRequest):
     """
-    VOICE 3 (v5.8) — ESP32 sends pre-transcribed text (Qwen3 ASR on-device).
-    Runs LLM pipeline and returns JSON text for the ESP32 to synthesise locally
-    via Qwen3 TTS Flash Realtime WebSocket. No TTS synthesis happens here.
- 
+    VOICE 3 — ESP32 sends pre-transcribed text (Deepgram streaming ASR on-device).
+    Skips STT entirely. Runs: text → Qwen LLM → edge-tts → MP3 bytes.
+
+    Used by Bronny v5.7+ firmware (Deepgram persistent WS architecture).
+
+    Bronny voice identity:
+      - All responses use bronny_answer() so Bronny never identifies as AetherAI.
+      - Special trigger "bootup_intro": skips classify/plan entirely and returns
+        a short Bronny self-introduction. Sent by doBootIntro() in v5.7 firmware
+        on first power-on after Deepgram connects.
+
     Request:
         Content-Type:  application/json
         X-Api-Key:     AETHER_API_KEY
         Body:          {"text": "what is the weather in Manila"}
-                  OR:  {"text": "bootup_intro"}
- 
-    Response (JSON, not MP3):
-        {
-          "spoken":  "condensed 1-3 sentence version for TTS",
-          "full":    "full agent/LLM response (for TFT display)"
-        }
+                  OR:  {"text": "bootup_intro"}   ← firmware boot greeting
+
+    Response:
+        Content-Type:    audio/mpeg
+        X-Response-Text: Short spoken response (URL-encoded)
+        Body:            MP3 audio bytes
     """
-    from agents.voice_agent import _voice_summarize
- 
+    from urllib.parse import quote as urlquote
+    from agents.voice_agent import _voice_summarize, _safe_synthesize
+
     transcript = req.text.strip()
     if not transcript:
         raise HTTPException(status_code=400, detail="text field is empty")
- 
+
+    # Create task entry — appears in command center recent tasks
     task_id = str(uuid.uuid4())
     memory.create_task(task_id, f"[Voice] {transcript[:80]}", "voice")
     memory.update_task_status(task_id, "running")
@@ -337,7 +345,7 @@ async def voice_text_chat(req: VoiceTextRequest):
         "status":  "running",
         "message": f"🎙️ Voice: {transcript[:60]}",
     })
- 
+
     try:
         user_context = ""
         try:
@@ -345,8 +353,11 @@ async def voice_text_chat(req: VoiceTextRequest):
             user_context = MemoryAgent.load_context(memory)
         except Exception:
             pass
- 
+
         # ── bootup_intro: Bronny self-introduction on first power-on ─────────
+        # The v5.7 firmware sends "bootup_intro" from doBootIntro() after
+        # Deepgram connects. Skip classify/plan and return a Bronny greeting
+        # directly so the device never says "Hi I'm AetherAI" on boot.
         BOOTUP_INTRO_TRIGGERS = {"bootup_intro", "bootup intro"}
         if transcript.lower().strip() in BOOTUP_INTRO_TRIGGERS:
             response_text = await orchestrator.qwen.bronny_answer(
@@ -360,7 +371,7 @@ async def voice_text_chat(req: VoiceTextRequest):
             command_type = await orchestrator.qwen.classify_command(
                 transcript, user_context=user_context
             )
- 
+
             response_text = ""
             if command_type == "task":
                 plan        = await orchestrator.qwen.plan_task(
@@ -373,18 +384,20 @@ async def voice_text_chat(req: VoiceTextRequest):
                     response_text = await _run_single_agent(
                         first_agent, transcript, orchestrator.qwen, memory
                     )
- 
+
             if not response_text:
+                # Use bronny_answer() so all voice responses use Bronny identity.
+                # This fixes "who are you?" returning "AetherAI" instead of "Bronny".
                 response_text = await orchestrator.qwen.bronny_answer(
                     transcript, user_context=user_context
                 )
- 
+
         if not response_text:
             response_text = "I wasn't able to get an answer for that. Please try again."
- 
-        # Condense to spoken-friendly 1-3 sentences for TTS
+
         spoken_text = await _voice_summarize(orchestrator.qwen, response_text, transcript)
- 
+        mp3_bytes   = await _safe_synthesize(spoken_text)
+
     except Exception as e:
         memory.update_task_status(task_id, "failed", result=str(e))
         await ws_manager.broadcast_task_update(task_id, {
@@ -392,7 +405,11 @@ async def voice_text_chat(req: VoiceTextRequest):
             "message": f"Voice text error: {e}",
         })
         raise HTTPException(status_code=500, detail=f"Voice text error: {e}")
- 
+
+    if not mp3_bytes:
+        memory.update_task_status(task_id, "failed", result="TTS produced no audio")
+        raise HTTPException(status_code=502, detail="TTS produced no audio")
+
     voice_summary = f"Heard: {transcript}\n\nResponse: {spoken_text}"
     memory.update_task_status(task_id, "completed", result=voice_summary)
     await ws_manager.broadcast_task_update(task_id, {
@@ -402,12 +419,16 @@ async def voice_text_chat(req: VoiceTextRequest):
         "output":      voice_summary,
         "result":      voice_summary,
     })
- 
-    # Return JSON text — ESP32 synthesises locally via Qwen3 TTS Flash Realtime
-    return JSONResponse({
-        "spoken": spoken_text,       # condensed 1-3 sentences for TTS
-        "full":   response_text,     # full response for TFT display
-    })
+
+    return Response(
+        content=mp3_bytes,
+        media_type="audio/mpeg",
+        headers={
+            "X-Response-Text": urlquote(spoken_text[:300]),
+            "Cache-Control":   "no-cache",
+        },
+    )
+
 
 # ── Bronny device endpoints ───────────────────────────────────────────────────
 
