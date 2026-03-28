@@ -63,7 +63,7 @@ class Settings:
 
     # ── Stage 6: Voice / TTS ──────────────────────────────────────────────────
     TTS_VOICE: str = field(
-        default_factory=lambda: os.getenv("TTS_VOICE", "en-US-AriaNeural")
+        default_factory=lambda: os.getenv("TTS_VOICE", "en-US-GuyNeural")
     )
 
 

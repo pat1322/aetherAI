@@ -1819,7 +1819,7 @@ function _pickVoice(lang) {
     }
   }
   // English — prefer AnaNeural, fall back to Aria, then any en-US
-  const enPref = ['en-US-AnaNeural', 'AnaNeural', 'en-US-AriaNeural', 'AriaNeural'];
+  const enPref = ['en-US-GuyNeural', 'GuyNeural', 'en-US-ChristopherNeural', 'ChristopherNeural'];
   for (const pref of enPref) {
     const v = voices.find(v => v.name.includes(pref));
     if (v) return v;
