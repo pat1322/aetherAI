@@ -7,7 +7,7 @@
 
 ---
 
-## Stage 6 — What's Running
+## Stage 7 — What's Running
 
 | Component | Status | Description |
 |---|---|---|
@@ -23,10 +23,10 @@
 | Crypto Agent | ✅ | CoinGecko — live prices in USD + PHP, top 10, trending |
 | News Agent | ✅ | GNews + Hacker News — headlines, topic news, morning briefings |
 | Finance Agent | ✅ | ExchangeRate-API (currency) + Alpha Vantage (stocks) |
-| **STT Client** | ✅ | **Qwen Paraformer ASR — transcribes audio, reuses QWEN_API_KEY** |
-| **TTS Client** | ✅ | **edge-tts — free Microsoft neural voices, returns MP3** |
-| **Voice Agent** | ✅ | **Full pipeline: WAV → Paraformer → Qwen → edge-tts → MP3** |
-| **ESP32 Voice Device** | ✅ | **ESP32-S3 + INMP441 + ES8311 + ST7789 — always-on voice assistant** |
+| STT Client | ✅ | Qwen Paraformer ASR — browser mic transcription, reuses QWEN_API_KEY |
+| TTS Client | ✅ | edge-tts — free Microsoft neural voices, returns MP3 |
+| Voice Agent | ✅ | Full pipeline: text → Qwen → edge-tts → MP3 |
+| **Bronny AI v5.9** | ✅ | **ESP32-S3 + Deepgram Nova-2 WSS ASR + ES8311 + ST7789 Sprite Edition** |
 | Web UI | ✅ | Streaming token rendering, 🎤 mic button, TTS readback toggle |
 | Memory (SQLite) | ✅ | WAL mode, FK constraints, indexes, auto-cleanup, Railway volume |
 | Standalone EXE | ✅ | Others can connect their PC without installing Python |
@@ -92,7 +92,7 @@ QWEN_VISION_MODEL = qwen-vl-plus
 DB_PATH           = /data/aether.db
 ```
 
-**Optional (Stage 6 voice — defaults already work):**
+**Optional (voice — defaults already work):**
 ```
 TTS_VOICE = en-US-AriaNeural   # any edge-tts voice, see list below
 ```
@@ -124,10 +124,10 @@ api_key   = your_secret_here
 
 ---
 
-## ESP32 Voice Agent Setup
+## ESP32 Voice Agent Setup — Bronny AI v5.9 (Sprite Edition)
 
-The ESP32-S3 device acts as a dedicated always-on voice assistant.
-Hold the BOOT button to speak, release to send.
+The ESP32-S3 device is a dedicated always-on, hands-free voice assistant.
+No button press required — Deepgram streams audio continuously and triggers responses automatically via VAD (voice activity detection).
 
 ### Hardware wiring
 
@@ -136,13 +136,12 @@ Hold the BOOT button to speak, release to send.
 | ES8311 codec (speaker) | PA_EN→48, DOUT→45, DIN→12, WS→13, BCLK→14, MCLK→38, SCL→2, SDA→1 |
 | INMP441 mic | VDD→3.3V, GND→GND, L/R→GND, WS→4, SCK→5, SD→6 |
 | ST7789 TFT 320×240 | DC→39, CS→47, CLK→41, SDA→40, BLK→42 |
-| Trigger button | GPIO0 (built-in BOOT button, active LOW) |
 
 ### Arduino IDE settings
 
 ```
 Board:              ESP32S3 Dev Module
-PSRAM:              OPI PSRAM (8MB)    ← required for audio buffers
+PSRAM:              OPI PSRAM (8MB)    ← required for sprite canvas (100 KB) and audio buffers
 USB CDC on Boot:    Enabled
 ```
 
@@ -150,47 +149,78 @@ USB CDC on Boot:    Enabled
 
 - `pschatzmann/arduino-audio-tools`
 - `pschatzmann/arduino-audio-driver`
+- `Links2004/arduinoWebSockets` (WebSocketsClient — for Deepgram)
+- `bblanchon/ArduinoJson`
 - `Adafruit ST7789` + `Adafruit GFX Library`
 
 ### Flash the firmware
 
 ```
 1. Copy esp32_voice_agent/voice_config.h.example → esp32_voice_agent/voice_config.h
-2. Fill in: WIFI_SSID, WIFI_PASSWORD, AETHER_URL, AETHER_API_KEY
-3. Open aether_voice.ino in Arduino IDE
+2. Fill in: WIFI_SSID, WIFI_PASS, AETHER_URL, AETHER_API_KEY, DEEPGRAM_API_KEY
+3. Open bronny_ai.ino in Arduino IDE
 4. Select your board + port, click Upload
 ```
 
 > `voice_config.h` is in `.gitignore` — your credentials are never committed.
 
-### ESP32 TFT state machine
-
-| State | Display |
-|---|---|
-| IDLE | Animated cyan hexagon logo + "Hold BOOT to speak" |
-| RECORDING | Pulsing red ring + VU meter + countdown timer |
-| UPLOADING | Arc progress animation |
-| THINKING | Three bouncing dots |
-| SPEAKING | Animated waveform bars (synced to playback) |
-| ERROR | Red ✕ + message, auto-returns to IDLE after 3 seconds |
+> Get a free Deepgram API key at [console.deepgram.com](https://console.deepgram.com) — Nova-2 model, no usage cap for low-volume personal use.
 
 ### Voice pipeline
 
 ```
-INMP441 mic
-    ↓ (16kHz mono WAV, PSRAM buffer)
-POST /voice/chat  (HTTPS to Railway)
+INMP441 mic  (16kHz mono, 32-bit I2S)
     ↓
-Qwen Paraformer ASR  →  transcript text
+Deepgram Nova-2 (persistent WebSocket to api.deepgram.com)
+    → interim_results + endpointing=350ms VAD
+    → speech_final event fires → transcript ready
     ↓
-classify_command()  →  weather/crypto/finance/news agent  OR  Qwen direct answer
+isNoise() filter → if noise, discard and keep listening
     ↓
-_voice_summarize()  →  condenses to 1–3 spoken sentences
+POST /voice/text  (pre-transcribed text → Railway)
     ↓
-edge-tts  →  MP3 bytes  (response headers: X-Transcript, X-Response-Text)
+classify_command() → agent or Qwen direct answer
     ↓
-ESP32 MP3DecoderHelix → ES8311 → speaker
+_voice_summarize() → condenses to 1–3 spoken sentences
+    ↓
+edge-tts → MP3 bytes streamed back
+    ↓
+MP3DecoderHelix → ES8311 codec → speaker
+    ↓
+dgStreaming resumes → back to listening
 ```
+
+### Standby mode
+
+After **3 minutes** of no Railway calls, Bronny enters standby (sleep face + zzz animation).
+Speak a **wake word** to resume ("hey bronny", "bronny", "wake up", "hello", etc.).
+Any non-noise utterance also wakes the device.
+
+### Log visibility
+
+By default, Bronny boots in **face-only mode** (logs hidden for a clean look).
+You can toggle at runtime:
+
+| Command | Effect |
+|---|---|
+| "show logs" / "display logs" | Shows log zone + status bar |
+| "hide logs" / "hide the logs" | Returns to face-only mode |
+| Serial Monitor: press `l` | Toggles manually |
+| Serial Monitor: press `m` | Prints Deepgram connection status |
+
+### TFT face states (Sprite Edition)
+
+The face is rendered to a `GFXcanvas16` sprite (320×160 px, 100 KB PSRAM) and blit to TFT atomically — no flicker.
+
+| State | Display |
+|---|---|
+| `FS_IDLE` | Animated robot face, idle bob, random eye glances, blinking |
+| `FS_LISTEN` | Eyes wide, listening pulse ring |
+| `FS_THINK` | Eyes half-closed, animated thinking expression |
+| `FS_TALKING` | Mouth animates open/close synced to speech |
+| `FS_HAPPY` | Wide smile, happy eyes — shown after a successful response |
+| `FS_SURPRISED` | Eyes enlarged, mouth open |
+| `FS_SLEEP` | Zzz particle animation, eyes closed — standby mode |
 
 ### Available TTS voices (selection)
 
@@ -350,21 +380,21 @@ aetherAI/
 │   │   ├── crypto_agent.py            # CoinGecko
 │   │   ├── news_agent.py              # GNews + Hacker News
 │   │   ├── finance_agent.py           # ExchangeRate-API + Alpha Vantage
-│   │   └── voice_agent.py             # STT → LLM → TTS pipeline ← Stage 6
+│   │   └── voice_agent.py             # text → LLM → TTS pipeline
 │   └── utils/
 │       ├── qwen_client.py             # Qwen API — blocking + streaming
 │       ├── websocket_manager.py       # WS manager, queues, stream chunks
-│       ├── stt_client.py              # Paraformer ASR wrapper ← Stage 6
-│       └── tts_client.py              # edge-tts synthesis wrapper ← Stage 6
+│       ├── stt_client.py              # Paraformer ASR wrapper (browser mic)
+│       └── tts_client.py              # edge-tts synthesis wrapper
 ├── device_agent/
 │   ├── agent.py                       # PC control, pywinauto, vision loop
 │   ├── config.py
 │   ├── aether_config.ini
 │   ├── build_exe.bat
 │   └── requirements.txt
-├── esp32_voice_agent/                 # ← Stage 6
-│   ├── aether_voice.ino               # Full ESP32 voice agent firmware
-│   └── voice_config.h.example        # WiFi + URL config template
+├── esp32_voice_agent/                 # ← Stage 7
+│   ├── bronny_ai.ino                  # Bronny AI v5.9 — Sprite Edition firmware
+│   └── voice_config.h.example        # WiFi + credentials config template
 ├── web_ui/
 │   └── index.html                     # Streaming UI, mic button, TTS toggle
 ├── database/
@@ -389,6 +419,7 @@ aetherAI/
 | `AETHER_API_KEY` | Recommended | — | Protects API endpoints |
 | `DB_PATH` | No | `../database/aether.db` | SQLite path — use `/data/aether.db` on Railway |
 | `TTS_VOICE` | No | `en-US-AriaNeural` | edge-tts voice for ESP32 + browser readback |
+| `DEEPGRAM_API_KEY` | ESP32 only | — | Nova-2 ASR for Bronny device (not used by cloud brain) |
 | `GNEWS_API_KEY` | No | — | GNews headlines (100 req/day free) |
 | `ALPHAVANTAGE_API_KEY` | No | — | Stock prices (25 req/day free) |
 | `TASK_RETENTION_DAYS` | No | `30` | Auto-purge old tasks |
@@ -404,7 +435,7 @@ aetherAI/
 - **Stage 4** ✅ Browser Agent (Playwright, YouTube, scraping) + Standalone EXE
 - **Stage 5** ✅ Memory system + Weather/Crypto/News/Finance agents + trafilatura + yt-dlp + pywinauto
 - **Stage 6** ✅ Streaming responses + Browser mic + ESP32-S3 voice agent (INMP441 + ES8311 + ST7789)
-- **Stage 7** — Web Dashboard v2 (multi-device management, scheduled tasks)
+- **Stage 7** ✅ Bronny AI v5.9 — Deepgram Nova-2 WSS ASR, always-on hands-free, sprite animation engine, standby/wake-word mode, log visibility voice commands
 
 ---
 
@@ -412,7 +443,7 @@ aetherAI/
 
 - Set `AETHER_API_KEY` in production — prevents unauthorized API access
 - The web UI fetches the key automatically — users never need to enter it
-- `voice_config.h` is gitignored — WiFi credentials never leave your machine
+- `voice_config.h` is gitignored — WiFi, AetherAI, and Deepgram credentials never leave your machine
 - Device Agent has pyautogui FAILSAFE enabled (move mouse to top-left to abort)
 - Preferences are stored in your Railway SQLite volume — never leave your instance
 - Each connected device shows up by `device_id` — give each person a unique ID
