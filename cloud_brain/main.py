@@ -20,9 +20,9 @@ VOICE 4  /voice/text now uses qwen.bronny_answer() instead of qwen.answer()
            - "Who are you?" returning the wrong name
 
 All Stage 6 retained:
-  VOICE 1  POST /voice/chat     — WAV → STT → LLM → TTS → MP3
   VOICE 2  GET  /tts/voices     — list edge-tts voices
   VOICE 3  POST /voice/text     — pre-transcribed text → LLM → TTS → MP3
+  (VOICE 1 /voice/chat removed — Bronny v5.7+ transcribes on-device via Deepgram)
   BRONNY 2 GET  /bronny/status  — online/offline badge poll
   SSE 1    POST /stream         — SSE streaming for chat commands
   All Stage 5 fixes retained.
@@ -222,88 +222,6 @@ async def stream_command(req: CommandRequest):
     )
 
 # ── Voice endpoints ───────────────────────────────────────────────────────────
-
-@app.post("/voice/chat")
-async def voice_chat(request: Request):
-    """
-    VOICE 1 — ESP32 voice pipeline endpoint (full WAV upload path).
-
-    Request:
-        Content-Type: audio/wav
-        Body:         Raw WAV audio bytes (16kHz mono 16-bit from INMP441)
-        X-Api-Key:    AETHER_API_KEY
-
-    Response:
-        Content-Type:    audio/mpeg
-        X-Transcript:    What the user said (UTF-8, URL-encoded)
-        X-Response-Text: Short spoken response text (UTF-8, URL-encoded)
-        Body:            MP3 audio bytes ready to feed to the ES8311
-    """
-    from urllib.parse import quote as urlquote
-
-    audio_bytes = await request.body()
-    if not audio_bytes:
-        raise HTTPException(status_code=400, detail="Empty audio body")
-    if len(audio_bytes) < 100:
-        raise HTTPException(status_code=400, detail="Audio too short")
-
-    task_id = str(uuid.uuid4())
-    memory.create_task(task_id, "[Voice] Transcribing...", "voice")
-    memory.update_task_status(task_id, "running")
-    await ws_manager.broadcast_task_update(task_id, {
-        "status":  "running",
-        "message": "🎙️ Voice: transcribing audio...",
-    })
-
-    try:
-        from agents.voice_agent import process_voice
-        result = await process_voice(
-            audio_bytes=audio_bytes,
-            qwen=orchestrator.qwen,
-            memory=memory,
-        )
-    except Exception as e:
-        memory.update_task_status(task_id, "failed", result=str(e))
-        await ws_manager.broadcast_task_update(task_id, {
-            "status":  "failed",
-            "message": f"Voice pipeline error: {e}",
-        })
-        raise HTTPException(status_code=500, detail=f"Voice pipeline error: {e}")
-
-    if not result.mp3_bytes:
-        memory.update_task_status(task_id, "failed", result="TTS produced no audio")
-        await ws_manager.broadcast_task_update(task_id, {
-            "status":  "failed",
-            "message": "TTS produced no audio. Check TTS_VOICE env var.",
-        })
-        raise HTTPException(
-            status_code=502,
-            detail="TTS produced no audio. Check TTS_VOICE env var and edge-tts installation.",
-        )
-
-    transcript_display = result.transcript or "(no transcript)"
-    spoken_display     = result.spoken_text or result.response_text or ""
-    voice_summary      = f"Heard: {transcript_display}\n\nResponse: {spoken_display}"
-
-    memory.update_task_status(task_id, "completed", result=voice_summary)
-    await ws_manager.broadcast_task_update(task_id, {
-        "status":      "completed",
-        "message":     f"🎙️ {transcript_display}",
-        "step_status": "completed",
-        "output":      voice_summary,
-        "result":      voice_summary,
-    })
-
-    return Response(
-        content=result.mp3_bytes,
-        media_type="audio/mpeg",
-        headers={
-            "X-Transcript":    urlquote(result.transcript[:300]),
-            "X-Response-Text": urlquote(result.spoken_text[:300]),
-            "Cache-Control":   "no-cache",
-        },
-    )
-
 
 @app.post("/voice/text")
 async def voice_text_chat(req: VoiceTextRequest):

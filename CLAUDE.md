@@ -62,8 +62,8 @@ classify_command()  →  "chat": stream_answer() → tokens to UI
 
 ### Voice Pipeline (ESP32 → Cloud)
 ```
-INMP441 mic (16kHz WAV) → POST /voice/chat → Paraformer ASR → classify_command()
-→ Qwen LLM → voice_summarize() (≤600 chars) → edge-tts → MP3 → ESP32 speaker
+INMP441 mic → Deepgram Nova-2 WebSocket (on-device ASR) → POST /voice/text
+→ Qwen LLM → _voice_summarize() (≤600 chars) → edge-tts → MP3 → ESP32 speaker
 ```
 
 ### Key Files
@@ -75,7 +75,6 @@ INMP441 mic (16kHz WAV) → POST /voice/chat → Paraformer ASR → classify_com
 | `cloud_brain/agent_router.py` | Instantiates and dispatches to the right agent |
 | `cloud_brain/agents/__init__.py` | `BaseAgent` class with `stream_llm()` / `stream_context()` |
 | `cloud_brain/utils/qwen_client.py` | LLM wrapper (chat, vision, streaming) |
-| `cloud_brain/utils/stt_client.py` | Paraformer speech-to-text via DashScope |
 | `cloud_brain/utils/tts_client.py` | edge-tts synthesis (no API key needed) |
 | `cloud_brain/memory.py` | SQLite persistence (tasks + user preferences) |
 | `device_agent/agent.py` | PC control WebSocket client (pyautogui, pywinauto) |

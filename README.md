@@ -337,7 +337,6 @@ Controls your physical PC — open apps, type text, navigate Chrome, take screen
 | GET | `/ui/config` | Auto-fetch API key for web UI (public) |
 | POST | `/command` | Send a command (WebSocket streaming response) |
 | POST | `/stream` | Send a command (SSE streaming response) |
-| POST | `/voice/chat` | ESP32 voice endpoint — WAV in, MP3 out |
 | GET | `/tts/voices` | List all available edge-tts voices |
 | GET | `/task/{id}` | Get task status |
 | GET | `/tasks` | List recent tasks |
