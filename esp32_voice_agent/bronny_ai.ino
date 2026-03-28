@@ -56,6 +56,10 @@ const char* WIFI_PASS = WIFI_PASS_CFG;
 
 #define VOL_MAIN             0.50f
 #define VOL_JINGLE           0.25f
+
+// Mic gain: lower shift = more gain. 14 = 4x (default), 12 = 16x, 10 = 64x.
+// Increase if words are missed; decrease if audio clips/distorts.
+#define MIC_GAIN_SHIFT       12
 #define TTS_COOLDOWN_MS       800
 #define HEARTBEAT_MS         30000
 
@@ -194,7 +198,12 @@ static bool audioOk   = false;
 static bool micOk     = false;
 static bool inTtsMode = false;
 
-static inline int16_t inmp441Sample(int32_t raw) { return (int16_t)(raw >> 14); }
+static inline int16_t inmp441Sample(int32_t raw) {
+    int32_t s = raw >> MIC_GAIN_SHIFT;
+    if (s >  32767) s =  32767;
+    if (s < -32768) s = -32768;
+    return (int16_t)s;
+}
 
 // ============================================================
 // AUDIO INIT
@@ -392,9 +401,6 @@ static void logRedraw() {
     for (int i = 0; i < total; i++) {
         int slot = (gLogHead + i) % LOG_LINES;
         uint16_t c = gLogCol[slot];
-        // Progressively dim older entries
-        if      (i < total - 2) c = dimCol(c, 2);
-        else if (i < total - 1) c = dimCol(c, 4);
         int ly = LOG_Y + 2 + i * LOG_LINE_H;
         // Colored left accent bar
         tft.fillRect(0, ly + 1, 3, LOG_LINE_H - 3, c);
@@ -1044,6 +1050,8 @@ void drawFace(bool /*full*/) {
     float sx = face.eyeScaleX;
     float sy = face.eyeScaleY;
     if (face.state == FS_SURPRISED) { sx = face.surpriseScale; sy = face.surpriseScale; }
+    // Listening pulse: eyes gently breathe open/close to show active listening
+    if (face.state == FS_LISTEN) sy *= (0.82f + sinf(face.listenPulse) * 0.18f);
 
     drawOneEyeSprite(lex, ey, blinkFrac, squint, sx, sy);
     drawOneEyeSprite(rex, ey, blinkFrac, squint, sx, sy);
@@ -1102,7 +1110,8 @@ void animFace() {
         ch = true;
     }
 
-    bool canBlink = (face.state == FS_IDLE || face.state == FS_TALKING || face.state == FS_HAPPY);
+    bool canBlink = (face.state == FS_IDLE || face.state == FS_TALKING ||
+                     face.state == FS_HAPPY || face.state == FS_LISTEN);
     if (canBlink && !face.blink && now - lastBlink > nextBlink) {
         face.blink = true; face.blinkF = 0;
         nextBlink = 2200 + (uint32_t)random(2800);
@@ -1550,7 +1559,7 @@ void enterStandby() {
     standbyMode = true;
     setFaceSleep(); drawFace(true);
     setStatus("Standby...", C_DCY);
-    tftLog(C_DCY, "Standby — say 'Hi Bronny'");
+    tftLog(C_CY, "Standby — say 'Hi Bronny'");
     Serial.println("[Standby] Entering standby mode");
 }
 
@@ -1757,7 +1766,8 @@ void setup() {
     setFaceListen();
     setStatus("Listening...", C_CY);
 
-    bootReadyAt = millis() + 2000;
+    lastRailwayMs = millis();   // start standby countdown from boot
+    bootReadyAt   = millis() + 2000;
 }
 
 // ============================================================
