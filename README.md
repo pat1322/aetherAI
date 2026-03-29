@@ -1,33 +1,33 @@
 # ⬡ AetherAI — Personal AI Agent System
 
-> A cloud-hosted AI agent that acts as your digital employee.
-> Controls computers, automates tasks, researches topics, browses the web,
-> generates documents, remembers your preferences, and now speaks and listens
-> through a dedicated ESP32-S3 voice device.
+> A cloud-hosted AI agent platform that controls computers, automates tasks,
+> researches topics, browses the web, generates documents, remembers your
+> preferences, and speaks and listens through a dedicated ESP32-S3 voice device.
+
+**Stage 7 — Cloud Brain v7.0 · Bronny AI v1.1**
 
 ---
 
-## Stage 7 — What's Running
+## What's Running
 
 | Component | Status | Description |
 |---|---|---|
 | Cloud Brain (FastAPI) | ✅ | API Gateway, WebSocket hub, SSE streaming endpoint |
-| Orchestrator | ✅ | Streaming chat (token-by-token) + task planning with user context |
+| Orchestrator | ✅ | Token-by-token streaming chat + multi-step task planning with user context |
 | Research Agent | ✅ | Academic-style research — DDG multi-source, structured reports, citations |
-| Document Agent | ✅ | PowerPoint / Word / Excel — 6 themes, Wikimedia photos |
-| Browser Agent | ✅ | Playwright + trafilatura scraping, yt-dlp YouTube, web search |
+| Document Agent | ✅ | PowerPoint / Word / Excel — 6 themes, Wikimedia + loremflickr photos |
+| Browser Agent | ✅ | Playwright + trafilatura scraping, yt-dlp YouTube, Serper/SearXNG/DDG web search |
 | Device Agent | ✅ | PC control via WebSocket — mouse, keyboard, vision loop, pywinauto |
 | Automation Agent | ✅ | Single actions, sequences, vision loop, Chrome navigation |
 | Memory Agent | ✅ | Save/recall/forget user preferences — persists across sessions |
-| Weather Agent | ✅ | Open-Meteo — live weather + 7-day forecast, any city, no API key |
-| Crypto Agent | ✅ | CoinGecko — live prices in USD + PHP, top 10, trending |
+| Weather Agent | ✅ | Open-Meteo + wttr.in fallback — live weather + 7-day forecast, any city, no API key |
+| Crypto Agent | ✅ | CoinGecko — live prices in USD + PHP, top 10, trending, 429 retry back-off |
 | News Agent | ✅ | GNews + Hacker News — headlines, topic news, morning briefings |
 | Finance Agent | ✅ | ExchangeRate-API (currency) + Alpha Vantage (stocks) |
-| STT Client | ✅ | Qwen Paraformer ASR — browser mic transcription, reuses QWEN_API_KEY |
 | TTS Client | ✅ | edge-tts — free Microsoft neural voices, returns MP3 |
-| Voice Agent | ✅ | Full pipeline: text → Qwen → edge-tts → MP3 |
-| **Bronny AI v5.9** | ✅ | **ESP32-S3 + Deepgram Nova-2 WSS ASR + ES8311 + ST7789 Sprite Edition** |
-| Web UI | ✅ | Streaming token rendering, 🎤 mic button, TTS readback toggle |
+| Voice Agent | ✅ | text → Qwen LLM → edge-tts → MP3 pipeline |
+| **Bronny AI v1.1** | ✅ | **ESP32-S3 · Deepgram Nova-3 WSS ASR · ES8311 DAC · ST7789 Sprite Edition** |
+| Web UI | ✅ | Token streaming, 🎤 mic button, TTS readback, KaTeX math rendering |
 | Memory (SQLite) | ✅ | WAL mode, FK constraints, indexes, auto-cleanup, Railway volume |
 | Standalone EXE | ✅ | Others can connect their PC without installing Python |
 
@@ -81,7 +81,7 @@ git push origin main
 2. New Project → Deploy from GitHub repo → select `aetherAI`
 3. Railway auto-detects `nixpacks.toml` (installs Playwright at build time)
 
-### Step 3: Set environment variables in Railway
+### Step 3: Set environment variables
 
 **Required:**
 ```
@@ -92,19 +92,16 @@ QWEN_VISION_MODEL = qwen-vl-plus
 DB_PATH           = /data/aether.db
 ```
 
-**Optional (voice — defaults already work):**
-```
-TTS_VOICE = en-US-AriaNeural   # any edge-tts voice, see list below
-```
-
 **Optional (free API keys — unlock full features):**
 ```
-GNEWS_API_KEY         = get free at gnews.io         (news agent — 100 req/day)
-ALPHAVANTAGE_API_KEY  = get free at alphavantage.co  (stock prices — 25 req/day)
+TTS_VOICE             = en-US-AriaNeural   # any edge-tts voice
+GNEWS_API_KEY         = gnews.io           # news agent — 100 req/day free
+ALPHAVANTAGE_API_KEY  = alphavantage.co    # stock prices — 25 req/day free
+SERPER_API_KEY        = serper.dev         # Google search — 2500 req/month free
 ```
 
-> No key needed for: Open-Meteo (weather), CoinGecko (crypto), ExchangeRate-API (currency),
-> Paraformer ASR (reuses QWEN_API_KEY), edge-tts (free, no key)
+> No key needed for: Open-Meteo (weather), CoinGecko (crypto), ExchangeRate-API
+> (currency), Hacker News, edge-tts
 
 ### Step 4: Add persistent volume
 
@@ -124,28 +121,28 @@ api_key   = your_secret_here
 
 ---
 
-## ESP32 Voice Agent Setup — Bronny AI v5.9 (Sprite Edition)
+## ESP32 Voice Agent — Bronny AI v1.1
 
-The ESP32-S3 device is a dedicated always-on, hands-free voice assistant.
-No button press required — Deepgram streams audio continuously and triggers responses automatically via VAD (voice activity detection).
+A dedicated always-on hands-free voice assistant. Deepgram streams audio
+continuously and triggers responses via VAD — no button press required.
 
-### Hardware wiring
+### Hardware Wiring
 
 | Component | Pins |
 |---|---|
 | ES8311 codec (speaker) | PA_EN→48, DOUT→45, DIN→12, WS→13, BCLK→14, MCLK→38, SCL→2, SDA→1 |
-| INMP441 mic | VDD→3.3V, GND→GND, L/R→GND, WS→4, SCK→5, SD→6 |
+| INMP441 mic (mono) | VDD→3.3V, GND→GND, L/R→GND, WS→4, SCK→5, SD→6 |
 | ST7789 TFT 320×240 | DC→39, CS→47, CLK→41, SDA→40, BLK→42 |
 
-### Arduino IDE settings
+### Arduino IDE Settings
 
 ```
 Board:              ESP32S3 Dev Module
-PSRAM:              OPI PSRAM (8MB)    ← required for sprite canvas (100 KB) and audio buffers
+PSRAM:              OPI PSRAM (8MB)    ← required for sprite canvas + audio buffers
 USB CDC on Boot:    Enabled
 ```
 
-### Required Arduino libraries
+### Required Arduino Libraries
 
 - `pschatzmann/arduino-audio-tools`
 - `pschatzmann/arduino-audio-driver`
@@ -153,29 +150,29 @@ USB CDC on Boot:    Enabled
 - `bblanchon/ArduinoJson`
 - `Adafruit ST7789` + `Adafruit GFX Library`
 
-### Flash the firmware
+### Flash the Firmware
 
 ```
-1. Copy esp32_voice_agent/voice_config.h.example → esp32_voice_agent/voice_config.h
+1. Copy esp32_voice_agent/voice_config.h.example → voice_config.h
 2. Fill in: WIFI_SSID, WIFI_PASS, AETHER_URL, AETHER_API_KEY, DEEPGRAM_API_KEY
 3. Open bronny_ai.ino in Arduino IDE
 4. Select your board + port, click Upload
 ```
 
-> `voice_config.h` is in `.gitignore` — your credentials are never committed.
+> `voice_config.h` is in `.gitignore` — credentials are never committed.
 
-> Get a free Deepgram API key at [console.deepgram.com](https://console.deepgram.com) — Nova-2 model, no usage cap for low-volume personal use.
+> Get a free Deepgram API key at [console.deepgram.com](https://console.deepgram.com).
 
-### Voice pipeline
+### Voice Pipeline
 
 ```
-INMP441 mic  (16kHz mono, 32-bit I2S)
+INMP441 mic  (16kHz mono, 32-bit I2S, channels=1)
     ↓
-Deepgram Nova-2 (persistent WebSocket to api.deepgram.com)
+Deepgram Nova-3 (persistent WSS to api.deepgram.com)
     → interim_results + endpointing=350ms VAD
     → speech_final event fires → transcript ready
     ↓
-isNoise() filter → if noise, discard and keep listening
+isNoise() filter → discard if noise
     ↓
 POST /voice/text  (pre-transcribed text → Railway)
     ↓
@@ -187,71 +184,72 @@ edge-tts → MP3 bytes streamed back
     ↓
 MP3DecoderHelix → ES8311 codec → speaker
     ↓
-dgStreaming resumes → back to listening
+Deepgram streaming resumes → back to listening
 ```
 
-### Standby mode
+### Mic Configuration
 
-After **3 minutes** of no Railway calls, Bronny enters standby (sleep face + zzz animation).
-Speak a **wake word** to resume ("hey bronny", "bronny", "wake up", "hello", etc.).
-Any non-noise utterance also wakes the device.
+The INMP441 is a mono microphone. The firmware reads a single channel (`channels=1`).
+Gain is controlled by `MIC_GAIN_SHIFT` (default 12 = 16× gain). Increase to 10 for
+louder environments; decrease to 14 if audio clips.
 
-### Log visibility
+### Face States (Sprite Edition)
 
-By default, Bronny boots in **face-only mode** (logs hidden for a clean look).
-You can toggle at runtime:
-
-| Command | Effect |
-|---|---|
-| "show logs" / "display logs" | Shows log zone + status bar |
-| "hide logs" / "hide the logs" | Returns to face-only mode |
-| Serial Monitor: press `l` | Toggles manually |
-| Serial Monitor: press `m` | Prints Deepgram connection status |
-
-### TFT face states (Sprite Edition)
-
-The face is rendered to a `GFXcanvas16` sprite (320×160 px, 100 KB PSRAM) and blit to TFT atomically — no flicker.
+The face renders to a `GFXcanvas16` sprite (320×160 px, ~100KB PSRAM) and blits
+atomically to TFT — no flicker.
 
 | State | Display |
 |---|---|
 | `FS_IDLE` | Animated robot face, idle bob, random eye glances, blinking |
-| `FS_LISTEN` | Eyes wide, listening pulse ring |
-| `FS_THINK` | Eyes half-closed, animated thinking expression |
-| `FS_TALKING` | Mouth animates open/close synced to speech |
-| `FS_HAPPY` | Wide smile, happy eyes — shown after a successful response |
-| `FS_SURPRISED` | Eyes enlarged, mouth open |
-| `FS_SLEEP` | Zzz particle animation, eyes closed — standby mode |
+| `FS_LISTEN` | Listening pulse, eyes alert — active while Deepgram streams |
+| `FS_THINK` | Eyes squinted, looking up-right — while Railway is processing |
+| `FS_TALKING` | Mouth animates open/close synced to speech playback |
+| `FS_HAPPY` | Wide smile, happy bounce — shown after a successful response |
+| `FS_SURPRISED` | Eyes enlarged, open mouth — shown on wake-word detection |
+| `FS_SLEEP` | Eyes closed, ZZZ particle animation — standby mode |
 
-### Available TTS voices (selection)
+### Standby & Wake Word
 
-```bash
-# List all:
-python -m edge_tts --list-voices
+After **3 minutes** of no Railway calls, Bronny enters standby (sleep face + ZZZ).
+Say any of the following to wake: **"bronny"**, **"hi bronny"**, **"hey bronny"**,
+**"brownie"**, **"brawny"**, or several phonetic variants.
 
-# Good defaults:
-en-US-AriaNeural      Female, neutral (default)
-en-US-GuyNeural       Male, neutral
-en-GB-SoniaNeural     Female, British
-fil-PH-BlessicaNeural Female, Filipino
-fil-PH-AngeloNeural   Male, Filipino
-```
+### Log Visibility Toggle
 
-Set via `TTS_VOICE` env var in Railway.
+At boot, logs are **hidden** (face centred on the full 240px screen). Toggle at any time:
+
+| Method | Effect |
+|---|---|
+| Say "show logs" / "display logs" | Shows log zone below face |
+| Say "hide logs" / "hide the logs" | Returns to face-only mode |
+| Serial Monitor: press `l` | Toggles manually |
+| Serial Monitor: press `m` | Prints Deepgram connection status |
+
+### Bronny Identity
+
+All voice responses use `bronny_answer()` on the cloud brain so Bronny never
+identifies as AetherAI. The boot intro (`bootup_intro` trigger) delivers a
+warm self-introduction on first power-on after Deepgram connects.
 
 ---
 
-## Web UI — Stage 6 Features
+## Web UI Features
 
-### Streaming responses
-Chat answers now stream token-by-token with a blinking cursor.
-No more waiting for the full response — you see it as it's generated.
+### Streaming Responses
+Chat answers stream token-by-token with a blinking cursor. Research and browser
+agent results also stream as they are written. No waiting for full responses.
 
-### Voice input (browser)
-Click the 🎤 button or press `Ctrl+M` to speak your command.
-Uses the Web Speech API — works in Chrome and Edge.
+### Voice Input (Browser)
+Click 🎤 or press `Ctrl+M` to speak. Uses the Web Speech API (Chrome/Edge).
+
 Settings: Voice Readback toggle, Mic Auto-Send toggle, TTS speed (0.75×–2×).
+Readback auto-detects Filipino text and routes to a Filipino voice if available.
 
-### Keyboard shortcuts
+### Math Rendering
+KaTeX renders inline (`$...$`) and display (`$$...$$`) math expressions.
+
+### Keyboard Shortcuts
+
 | Key | Action |
 |---|---|
 | `Enter` | Send command |
@@ -266,7 +264,6 @@ Settings: Voice Readback toggle, Mic Auto-Send toggle, TTS speed (0.75×–2×).
 
 AetherAI remembers facts and preferences across all sessions.
 
-### Save
 ```
 remember that my name is Patrick
 my timezone is Asia/Manila
@@ -274,57 +271,17 @@ i prefer Python over JavaScript
 my preferred presentation theme is Ocean Deep
 ```
 
-### Recall
-```
-what do you know about me
-show my preferences
-what is my timezone
-```
-
-### Forget
-```
-forget my timezone
-clear all preferences
-```
+Recall: `what do you know about me` · Forget: `forget my timezone`
 
 ---
 
-## Agent Capabilities
+## Web Search Priority (Browser Agent)
 
-### 💬 Chat (streaming)
-General questions, creative writing, math, translations — streamed token-by-token.
-
-### 🔍 Research Agent
-Triggered by the word **"research"**. Searches the web and produces structured
-academic-style reports with real URL citations.
-
-### 🌐 Browser Agent
-Scrapes URLs, searches YouTube, reads Hacker News, does web searches.
-
-### 📄 Document Agent
-Creates downloadable PowerPoint, Word, and Excel files.
-
-### 💻 Coding Agent
-Writes and saves code files (Python, JS, C, C++, Java, Rust, Go, and more).
-
-### 🌤️ Weather Agent
-Live weather + 7-day forecast via Open-Meteo. No API key needed.
-
-### 🪙 Crypto Agent
-Live prices in USD and PHP via CoinGecko. No API key needed.
-
-### 📰 News Agent
-Headlines and briefings via GNews + Hacker News fallback.
-
-### 💱 Finance Agent
-Currency conversion + stock prices (Alpha Vantage).
-
-### 🎙️ Voice Agent (ESP32 + Web)
-Speak commands to the ESP32 — it transcribes, thinks, and speaks back.
-Also available in the browser via the 🎤 mic button.
-
-### 🖥️ Automation Agent
-Controls your physical PC — open apps, type text, navigate Chrome, take screenshots.
+1. **Serper.dev** — Google results via API, free 2500/month (`SERPER_API_KEY`)
+2. **SearXNG** — meta-search (Google + Bing + DDG), public instances, no key
+3. **Playwright + Google** — headless real Google (if Playwright installed)
+4. **DDG Lite** — HTML scrape fallback
+5. **Knowledge fallback** — model answer with disclaimer
 
 ---
 
@@ -352,6 +309,9 @@ Controls your physical PC — open apps, type text, navigate Chrome, take screen
 | DELETE | `/preferences/all` | Clear all preferences |
 | DELETE | `/preferences/{key}` | Delete one preference |
 | GET | `/devices` | List connected devices |
+| POST | `/bronny/heartbeat` | Bronny device keepalive |
+| GET | `/bronny/status` | Bronny online/offline status |
+| POST | `/voice/text` | Pre-transcribed text → LLM → TTS → MP3 |
 | WS | `/ws/device/{id}` | Device Agent connection |
 | WS | `/ws/ui/{id}` | Web UI live updates |
 
@@ -362,43 +322,42 @@ Controls your physical PC — open apps, type text, navigate Chrome, take screen
 ```
 aetherAI/
 ├── cloud_brain/
-│   ├── main.py                        # FastAPI app, endpoints, SSE, voice
-│   ├── orchestrator.py                # Streaming chat + task planning
-│   ├── agent_router.py                # Routes to correct agent
-│   ├── memory.py                      # SQLite — WAL, FK, auto-cleanup
-│   ├── config.py                      # Settings — includes TTS_VOICE
+│   ├── main.py                     # FastAPI app, all endpoints, voice pipeline
+│   ├── orchestrator.py             # Streaming chat + task planning
+│   ├── agent_router.py             # Routes to correct agent
+│   ├── memory.py                   # SQLite — WAL, FK, auto-cleanup
+│   ├── config.py                   # Settings (TTS_VOICE, DB_PATH, etc.)
 │   ├── agents/
-│   │   ├── __init__.py                # BaseAgent
-│   │   ├── research_agent.py          # Academic research, trafilatura
-│   │   ├── document_agent.py          # PPTX/DOCX/XLSX, 6 themes
-│   │   ├── browser_agent.py           # Playwright + trafilatura + yt-dlp
-│   │   ├── coding_agent.py            # Code generation, syntax validation
-│   │   ├── automation_agent.py        # PC control, vision loop
-│   │   ├── memory_agent.py            # Preferences CRUD
-│   │   ├── weather_agent.py           # Open-Meteo
-│   │   ├── crypto_agent.py            # CoinGecko
-│   │   ├── news_agent.py              # GNews + Hacker News
-│   │   ├── finance_agent.py           # ExchangeRate-API + Alpha Vantage
-│   │   └── voice_agent.py             # text → LLM → TTS pipeline
+│   │   ├── __init__.py             # BaseAgent + stream_llm / stream_summarize
+│   │   ├── research_agent.py       # DDG search, page fetch, streaming reports
+│   │   ├── document_agent.py       # PPTX/DOCX/XLSX, 6 themes, Wikimedia images
+│   │   ├── browser_agent.py        # Playwright + trafilatura + yt-dlp
+│   │   ├── coding_agent.py         # Code generation, syntax validation
+│   │   ├── automation_agent.py     # PC control, vision loop
+│   │   ├── memory_agent.py         # Preferences CRUD
+│   │   ├── weather_agent.py        # Open-Meteo + wttr.in fallback
+│   │   ├── crypto_agent.py         # CoinGecko + 429 retry
+│   │   ├── news_agent.py           # GNews + Hacker News
+│   │   ├── finance_agent.py        # ExchangeRate-API + Alpha Vantage
+│   │   └── voice_agent.py          # _voice_summarize + _safe_synthesize
 │   └── utils/
-│       ├── qwen_client.py             # Qwen API — blocking + streaming
-│       ├── websocket_manager.py       # WS manager, queues, stream chunks
-│       ├── stt_client.py              # Paraformer ASR wrapper (browser mic)
-│       └── tts_client.py              # edge-tts synthesis wrapper
+│       ├── qwen_client.py          # Qwen API — blocking + streaming + bronny_answer
+│       ├── websocket_manager.py    # WS pool, session routing, stream chunks
+│       └── tts_client.py           # edge-tts synthesis wrapper
 ├── device_agent/
-│   ├── agent.py                       # PC control, pywinauto, vision loop
-│   ├── config.py
-│   ├── aether_config.ini
-│   ├── build_exe.bat
+│   ├── agent.py                    # PC control — pyautogui, pywinauto, vision loop
+│   ├── config.py                   # Reads from aether_config.ini or env vars
+│   ├── aether_config.ini           # Local credentials (never commit with filled values)
+│   ├── build_exe.bat               # PyInstaller build script
 │   └── requirements.txt
-├── esp32_voice_agent/                 # ← Stage 7
-│   ├── bronny_ai.ino                  # Bronny AI v5.9 — Sprite Edition firmware
-│   └── voice_config.h.example        # WiFi + credentials config template
+├── esp32_voice_agent/
+│   ├── bronny_ai.ino               # Bronny AI v1.1 firmware
+│   └── voice_config.h.example     # WiFi + credentials template (copy → voice_config.h)
 ├── web_ui/
-│   └── index.html                     # Streaming UI, mic button, TTS toggle
-├── database/
-├── output/
-├── nixpacks.toml
+│   └── index.html                  # Streaming UI, mic, TTS, KaTeX — no build step
+├── database/                       # Local SQLite (gitignored)
+├── output/                         # Generated files (gitignored)
+├── nixpacks.toml                   # Railway build config (Playwright at build time)
 ├── requirements.txt
 ├── Procfile
 ├── .env.example
@@ -407,22 +366,55 @@ aetherAI/
 
 ---
 
-## Environment Variables Reference
+## Environment Variables
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `QWEN_API_KEY` | ✅ Yes | — | DashScope API key (also used for Paraformer ASR) |
-| `QWEN_MODEL` | No | `qwen-turbo` | Text model |
+| `QWEN_API_KEY` | ✅ | — | DashScope API key |
+| `QWEN_MODEL` | No | `qwen-turbo-latest` | Text LLM model |
 | `QWEN_VISION_MODEL` | No | same as QWEN_MODEL | Vision model for screenshot analysis |
 | `QWEN_BASE_URL` | No | DashScope intl | API base URL |
-| `AETHER_API_KEY` | Recommended | — | Protects API endpoints |
+| `AETHER_API_KEY` | Recommended | — | Protects API endpoints via `X-Api-Key` header |
 | `DB_PATH` | No | `../database/aether.db` | SQLite path — use `/data/aether.db` on Railway |
-| `TTS_VOICE` | No | `en-US-AriaNeural` | edge-tts voice for ESP32 + browser readback |
-| `DEEPGRAM_API_KEY` | ESP32 only | — | Nova-2 ASR for Bronny device (not used by cloud brain) |
+| `TTS_VOICE` | No | `en-US-GuyNeural` | edge-tts voice for ESP32 + browser readback |
+| `SERPER_API_KEY` | No | — | Google search (2500 req/month free) |
 | `GNEWS_API_KEY` | No | — | GNews headlines (100 req/day free) |
 | `ALPHAVANTAGE_API_KEY` | No | — | Stock prices (25 req/day free) |
 | `TASK_RETENTION_DAYS` | No | `30` | Auto-purge old tasks |
 | `MAX_CONCURRENT_TASKS` | No | `5` | Max parallel tasks before 429 |
+
+`DEEPGRAM_API_KEY` lives in `voice_config.h` on the ESP32 only — it is never sent to the cloud brain.
+
+---
+
+## Distributing the Device Agent
+
+### Build the EXE (once)
+```bash
+cd device_agent
+build_exe.bat
+```
+
+### Distribute
+Send two files: `AetherAI_Agent.exe` + `aether_config.ini`
+
+```ini
+[aether]
+cloud_url = wss://aetherai.up.railway.app
+device_id = johns-laptop
+api_key   = your_shared_api_key
+```
+
+---
+
+## Safety Notes
+
+- Set `AETHER_API_KEY` in production — prevents unauthorized API access
+- The web UI fetches the key automatically from `/ui/config` — users never type it
+- `voice_config.h` is gitignored — WiFi, AetherAI, and Deepgram credentials stay local
+- `aether_config.ini` has no real key in the repo — fill it in locally only
+- Device Agent has `pyautogui.FAILSAFE = True` — move mouse to top-left to abort
+- Preferences are stored in your Railway SQLite volume — never leave your instance
 
 ---
 
@@ -432,44 +424,13 @@ aetherAI/
 - **Stage 2** ✅ Document Agent (PPTX, DOCX, XLSX — 6 themes)
 - **Stage 3** ✅ Device Agent (vision loop, mouse/keyboard, app automation)
 - **Stage 4** ✅ Browser Agent (Playwright, YouTube, scraping) + Standalone EXE
-- **Stage 5** ✅ Memory system + Weather/Crypto/News/Finance agents + trafilatura + yt-dlp + pywinauto
-- **Stage 6** ✅ Streaming responses + Browser mic + ESP32-S3 voice agent (INMP441 + ES8311 + ST7789)
-- **Stage 7** ✅ Bronny AI v5.9 — Deepgram Nova-2 WSS ASR, always-on hands-free, sprite animation engine, standby/wake-word mode, log visibility voice commands
+- **Stage 5** ✅ Memory + Weather/Crypto/News/Finance + trafilatura + yt-dlp + pywinauto
+- **Stage 6** ✅ Streaming responses + browser mic + ESP32-S3 voice agent
+- **Stage 7** ✅ Bronny AI v1.1 — Deepgram Nova-3 WSS ASR, always-on hands-free, sprite animation engine, standby/wake-word, log visibility voice commands, mono mic, Bronny identity patch
 
 ---
 
-## Safety Notes
+## License
 
-- Set `AETHER_API_KEY` in production — prevents unauthorized API access
-- The web UI fetches the key automatically — users never need to enter it
-- `voice_config.h` is gitignored — WiFi, AetherAI, and Deepgram credentials never leave your machine
-- Device Agent has pyautogui FAILSAFE enabled (move mouse to top-left to abort)
-- Preferences are stored in your Railway SQLite volume — never leave your instance
-- Each connected device shows up by `device_id` — give each person a unique ID
-
----
-
-## Letting Others Connect Their PC
-
-### Build the EXE (once)
-```bash
-cd device_agent
-build_exe.bat
-```
-
-### Distribute
-Send these two files:
-```
-AetherAI_Agent.exe
-aether_config.ini
-```
-
-They edit `aether_config.ini`:
-```ini
-[aether]
-cloud_url = wss://aetherai.up.railway.app
-device_id = johns-laptop
-api_key   = your_shared_api_key
-```
-
-Double-click `AetherAI_Agent.exe` to connect.
+MIT License — see [LICENSE](LICENSE) for details.  
+© 2026 Patrick Perez
