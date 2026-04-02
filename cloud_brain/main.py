@@ -89,7 +89,7 @@ app.add_middleware(
 
 # ── API key middleware ────────────────────────────────────────────────────────
 
-_PUBLIC_PREFIXES = ("/ui", "/health", "/docs", "/openapi", "/redoc", "/files/download", "/bronny")
+_PUBLIC_PREFIXES = ("/ui", "/health", "/docs", "/openapi", "/redoc", "/files/download", "/bronny", "/video")
 _PUBLIC_EXACT    = frozenset(["/", "/health", "/ui/config"])
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):
