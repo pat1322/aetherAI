@@ -16,7 +16,7 @@ router = APIRouter()
 
 CACHE_DIR  = os.environ.get("VIDEO_CACHE_DIR", "/tmp/bronny_videos")
 FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
-TARGET_FPS = 15
+TARGET_FPS = 25
 
 # Auto-delete converted files older than this many seconds (2 hours)
 # Railway /tmp is limited; this prevents it from filling up.
