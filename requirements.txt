@@ -18,3 +18,5 @@ trafilatura>=1.9.0
 yt-dlp>=2024.1.0
 edge-tts>=6.1.9
 # pytz removed — replaced by stdlib zoneinfo (Python 3.9+)
+
+imageio-ffmpeg

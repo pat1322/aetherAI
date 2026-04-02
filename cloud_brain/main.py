@@ -110,6 +110,9 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(ApiKeyMiddleware)
 
+from video_routes import router as video_router
+app.include_router(video_router)
+
 # ── Models ────────────────────────────────────────────────────────────────────
 
 class CommandRequest(BaseModel):
