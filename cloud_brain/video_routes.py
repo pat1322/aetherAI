@@ -49,9 +49,11 @@ def _convert(job_id: str, url: str):
         r = subprocess.run([
             "yt-dlp",
             "-f", (
-                "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]"
-                "/best[height<=360][ext=mp4]/best[height<=360]"
+                "best[height<=360][ext=mp4]"
+                "/best[height<=360]"
+                "/bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]"
             ),
+            "--ffmpeg-location", FFMPEG_EXE,
             "--merge-output-format", "mp4",
             "--no-playlist",
             "-o", raw_mp4,
