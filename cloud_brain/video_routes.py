@@ -100,7 +100,7 @@ def _convert(job_id: str, url: str):
         r = subprocess.run([
             FFMPEG_EXE, "-y", "-i", raw_mp4,
             "-vf", "scale=320:-2",
-            "-c:v", "mjpeg", "-q:v", "15",
+            "-c:v", "mjpeg", "-q:v", "10",
             "-r", str(TARGET_FPS), "-an", temp_mjpeg,
         ], capture_output=True, timeout=600)
         if r.returncode != 0:
