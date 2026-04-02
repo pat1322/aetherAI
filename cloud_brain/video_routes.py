@@ -18,7 +18,25 @@ CACHE_DIR  = os.environ.get("VIDEO_CACHE_DIR", "/tmp/bronny_videos")
 FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
 TARGET_FPS = 15
 
+# Auto-delete converted files older than this many seconds (2 hours)
+# Railway /tmp is limited; this prevents it from filling up.
+CACHE_MAX_AGE_SEC = 7200
+
 os.makedirs(CACHE_DIR, exist_ok=True)
+
+
+def _cleanup_old_files():
+    """Delete MJPEG/MP3 pairs older than CACHE_MAX_AGE_SEC. Called after each conversion."""
+    import time
+    now = time.time()
+    for fname in os.listdir(CACHE_DIR):
+        fpath = os.path.join(CACHE_DIR, fname)
+        try:
+            if os.path.isfile(fpath) and (now - os.path.getmtime(fpath)) > CACHE_MAX_AGE_SEC:
+                os.remove(fpath)
+                print(f"[Video] Cleaned up old file: {fname}")
+        except Exception:
+            pass
 
 # ── In-memory job store ───────────────────────────────────────────────────────
 _jobs: dict  = {}
@@ -72,7 +90,7 @@ def _convert(job_id: str, url: str):
         r = subprocess.run([
             FFMPEG_EXE, "-y", "-i", raw_mp4,
             "-vf", "scale=320:-2",
-            "-c:v", "mjpeg", "-q:v", "10",
+            "-c:v", "mjpeg", "-q:v", "7",
             "-r", str(TARGET_FPS), "-an", temp_mjpeg,
         ], capture_output=True, timeout=600)
         if r.returncode != 0:
@@ -98,6 +116,9 @@ def _convert(job_id: str, url: str):
 
         with _current_lock:
             _current_job = job_id
+
+        # Clean up old files so Railway /tmp doesn't fill up
+        _cleanup_old_files()
 
         print(
             f"[Video] {job_id} ready — "
