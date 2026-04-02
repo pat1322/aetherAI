@@ -1,59 +1,54 @@
-# video_routes.py
-# FastAPI router — place this file inside cloud_brain/
-#
-# Then add TWO lines to cloud_brain/main.py (see comment at the bottom of this file).
-# Also add to the ROOT requirements.txt:
-#   yt-dlp
-#   imageio-ffmpeg
-
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
-import threading, uuid, os, struct, glob, subprocess
+import threading, uuid, os, struct, glob, subprocess, time
 import imageio_ffmpeg
 
 router = APIRouter()
 
-CACHE_DIR  = os.environ.get("VIDEO_CACHE_DIR", "/tmp/bronny_videos")
-FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
-TARGET_FPS = 24
-
-# Auto-delete converted files older than this many seconds (2 hours)
-# Railway /tmp is limited; this prevents it from filling up.
+CACHE_DIR         = os.environ.get("VIDEO_CACHE_DIR", "/tmp/bronny_videos")
+FFMPEG_EXE        = imageio_ffmpeg.get_ffmpeg_exe()
+TARGET_FPS        = 24
 CACHE_MAX_AGE_SEC = 7200
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+_jobs: dict = {}
+_jobs_lock  = threading.Lock()
+
+_current_job  = ""
+_current_lock = threading.Lock()
+
+
+def _update(job_id: str, status: str, error: str = None):
+    with _jobs_lock:
+        if job_id not in _jobs:
+            _jobs[job_id] = {}
+        _jobs[job_id]["status"] = status
+        if error:
+            _jobs[job_id]["error"] = error
+        else:
+            _jobs[job_id].pop("error", None)
+
+
+def _set_title(job_id: str, title: str):
+    with _jobs_lock:
+        if job_id in _jobs:
+            _jobs[job_id]["title"] = title
+
 
 def _cleanup_old_files():
-    """Delete MJPEG/MP3 pairs older than CACHE_MAX_AGE_SEC. Called after each conversion."""
-    import time
     now = time.time()
     for fname in os.listdir(CACHE_DIR):
         fpath = os.path.join(CACHE_DIR, fname)
         try:
             if os.path.isfile(fpath) and (now - os.path.getmtime(fpath)) > CACHE_MAX_AGE_SEC:
                 os.remove(fpath)
-                print(f"[Video] Cleaned up old file: {fname}")
+                print(f"[Video] Cleaned: {fname}")
         except Exception:
             pass
 
-# ── In-memory job store ───────────────────────────────────────────────────────
-_jobs: dict  = {}
-_jobs_lock   = threading.Lock()
 
-# ── Single-slot queue: job_id the ESP32 should play next ─────────────────────
-_current_job  = ""
-_current_lock = threading.Lock()
-
-def _update(job_id: str, status: str, error: str = None):
-    with _jobs_lock:
-        _jobs[job_id] = {"status": status}
-        if error:
-            _jobs[job_id]["error"] = error
-
-
-# ── Background conversion worker ─────────────────────────────────────────────
 def _convert(job_id: str, url: str):
     global _current_job
     raw_mp4    = os.path.join(CACHE_DIR, f"{job_id}_raw.mp4")
@@ -62,8 +57,22 @@ def _convert(job_id: str, url: str):
     out_mp3    = os.path.join(CACHE_DIR, f"{job_id}.mp3")
 
     try:
-        # 1 — Download (360p max keeps conversion fast)
         _update(job_id, "downloading")
+
+        # Fetch title quickly before the full download so the UI can show it
+        try:
+            tr = subprocess.run(
+                ["yt-dlp", "--print", "title", "--no-download", "--no-playlist", url],
+                capture_output=True, timeout=30
+            )
+            if tr.returncode == 0:
+                title = tr.stdout.decode(errors="replace").strip()
+                if title:
+                    _set_title(job_id, title)
+                    print(f"[Video] Title: {title}")
+        except Exception:
+            pass
+
         r = subprocess.run([
             "yt-dlp",
             "-f", (
@@ -85,27 +94,24 @@ def _convert(job_id: str, url: str):
                 raise FileNotFoundError("yt-dlp produced no output file")
             raw_mp4 = candidates[0]
 
-        # 2 — Video → MJPEG
-        # scale=240:-2  → 240px wide (fits ESP32 display, decode time ~14ms vs ~30ms at 320px)
-        # q:v 5         → higher quality JPEG (smaller decode time, sharper image)
-        # Smaller frame = faster SPI transfer + faster JPEGDEC = achievable 24fps
         _update(job_id, "converting")
+
+        # 320px wide — full display width, 24fps, quality 7
         r = subprocess.run([
             FFMPEG_EXE, "-y", "-i", raw_mp4,
-            "-vf", "scale=240:-2",
+            "-vf", "scale=320:-2",
             "-c:v", "mjpeg", "-q:v", "7",
             "-r", str(TARGET_FPS), "-an", temp_mjpeg,
         ], capture_output=True, timeout=600)
         if r.returncode != 0:
             raise RuntimeError("ffmpeg video: " + r.stderr.decode(errors="replace")[-400:])
 
-        # Prepend 1-byte FPS header
         with open(temp_mjpeg, "rb") as fi, open(out_mjpeg, "wb") as fo:
             fo.write(struct.pack("B", TARGET_FPS))
             fo.write(fi.read())
         os.remove(temp_mjpeg)
 
-        # 3 — Audio → MP3 (44100 Hz, mono, 96 kbps)
+        # 44100 Hz mono 96kbps — matches ESP32 codec config
         r = subprocess.run([
             FFMPEG_EXE, "-y", "-i", raw_mp4,
             "-vn", "-ac", "1", "-ar", "44100",
@@ -120,7 +126,6 @@ def _convert(job_id: str, url: str):
         with _current_lock:
             _current_job = job_id
 
-        # Clean up old files so Railway /tmp doesn't fill up
         _cleanup_old_files()
 
         print(
@@ -138,7 +143,6 @@ def _convert(job_id: str, url: str):
                 except: pass
 
 
-# ── Embedded web UI ───────────────────────────────────────────────────────────
 _HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -164,13 +168,14 @@ button{width:100%;margin-top:12px;padding:13px;border:none;border-radius:8px;
        font-size:.93rem;font-weight:600;cursor:pointer;transition:opacity .2s}
 button:disabled{opacity:.35;cursor:not-allowed}
 #st{margin-top:18px;padding:12px 14px;border-radius:8px;font-size:.83rem;
-    line-height:1.6;display:none}
+    line-height:1.7;display:none}
 .w{background:#14142a;border:1px solid #2a2a50;color:#666}
 .p{background:#00112a;border:1px solid #003366;color:#00b4d8}
 .r{background:#002418;border:1px solid #005030;color:#00e5a0}
 .e{background:#240808;border:1px solid #501010;color:#ff5555}
 .row{display:flex;align-items:center;gap:8px}
 .rd{width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0}
+.title{margin-top:6px;font-size:.75rem;opacity:.6;padding-left:14px}
 .hint{margin-top:16px;font-size:.7rem;color:#333;text-align:center}
 </style>
 </head>
@@ -187,7 +192,9 @@ button:disabled{opacity:.35;cursor:not-allowed}
 </div>
 <script>
 let t=null;
-function row(m){return'<div class="row"><div class="rd"></div>'+m+'</div>';}
+function row(m,sub){
+  return'<div class="row"><div class="rd"></div>'+m+'</div>'+(sub?'<div class="title">'+sub+'</div>':'');
+}
 function show(cls,html){const e=document.getElementById('st');e.className=cls;e.style.display='block';e.innerHTML=html;}
 async function go(){
   const u=document.getElementById('u').value.trim();
@@ -206,12 +213,12 @@ function poll(id){
   t=setInterval(async()=>{
     try{
       const d=await(await fetch('/video/status/'+id)).json();
-      const s=d.status;
-      if(s==='queued')       show('w',row('Queued &mdash; waiting'));
-      else if(s==='downloading') show('p',row('Downloading from YouTube&hellip;'));
-      else if(s==='converting')  show('p',row('Converting: MJPEG + MP3&hellip;'));
+      const s=d.status, ttl=d.title||'';
+      if(s==='queued')           show('w',row('Queued &mdash; waiting'));
+      else if(s==='downloading') show('p',row('Downloading from YouTube&hellip;',ttl));
+      else if(s==='converting')  show('p',row('Converting: MJPEG + MP3&hellip;',ttl));
       else if(s==='ready'){
-        show('r',row('Ready! ESP32 starts within 5 seconds.')+'<br><small style="opacity:.5">Job: '+id+'</small>');
+        show('r',row('&#10003; Ready! ESP32 starts within 5 s.',ttl));
         clearInterval(t);document.getElementById('btn').disabled=false;
       }else if(s==='error'){
         show('e',row('Error: '+(d.error||'check server logs')));
@@ -225,16 +232,12 @@ function poll(id){
 </html>"""
 
 
-# ── Pydantic models ───────────────────────────────────────────────────────────
 class PrepareRequest(BaseModel):
     url: str
 
 
-# ── Routes ────────────────────────────────────────────────────────────────────
-
 @router.get("/video", response_class=HTMLResponse)
 async def video_page():
-    """Open this in a browser to queue a YouTube video for the ESP32."""
     return _HTML
 
 
@@ -261,11 +264,6 @@ async def status(job_id: str):
 
 @router.get("/video/current")
 async def current():
-    """
-    ESP32 polls this every 5 s.
-    Returns {"job_id":"<id>","ready":true}  when a video is waiting.
-    Returns {"job_id":"",    "ready":false} when nothing is queued.
-    """
     with _current_lock:
         j = _current_job
     return {"job_id": j, "ready": bool(j)}
@@ -273,7 +271,6 @@ async def current():
 
 @router.post("/video/current/clear")
 async def current_clear():
-    """ESP32 calls this right after starting playback to avoid replaying."""
     global _current_job
     with _current_lock:
         _current_job = ""
@@ -296,17 +293,6 @@ async def stream_mp3(job_id: str):
     return FileResponse(path, media_type="audio/mpeg")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# HOW TO REGISTER THIS ROUTER IN cloud_brain/main.py
-# ───────────────────────────────────────────────────
-# Find the line that says:
-#
-#   app = FastAPI(...)
-#
-# Then a few lines below it (after the middleware setup), add these TWO lines:
-#
+# Register in cloud_brain/main.py:
 #   from video_routes import router as video_router
 #   app.include_router(video_router)
-#
-# That's it. No other changes needed.
-# ═══════════════════════════════════════════════════════════════════════════════
