@@ -16,7 +16,7 @@ router = APIRouter()
 
 CACHE_DIR  = os.environ.get("VIDEO_CACHE_DIR", "/tmp/bronny_videos")
 FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
-TARGET_FPS = 24
+TARGET_FPS = 15
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 
