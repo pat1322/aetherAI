@@ -85,12 +85,15 @@ def _convert(job_id: str, url: str):
                 raise FileNotFoundError("yt-dlp produced no output file")
             raw_mp4 = candidates[0]
 
-        # 2 — Video → MJPEG (320px wide, 25 fps, quality 7)
+        # 2 — Video → MJPEG
+        # scale=240:-2  → 240px wide (fits ESP32 display, decode time ~14ms vs ~30ms at 320px)
+        # q:v 5         → higher quality JPEG (smaller decode time, sharper image)
+        # Smaller frame = faster SPI transfer + faster JPEGDEC = achievable 24fps
         _update(job_id, "converting")
         r = subprocess.run([
             FFMPEG_EXE, "-y", "-i", raw_mp4,
-            "-vf", "scale=320:-2",
-            "-c:v", "mjpeg", "-q:v", "31",
+            "-vf", "scale=240:-2",
+            "-c:v", "mjpeg", "-q:v", "5",
             "-r", str(TARGET_FPS), "-an", temp_mjpeg,
         ], capture_output=True, timeout=600)
         if r.returncode != 0:
