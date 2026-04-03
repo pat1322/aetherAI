@@ -20,6 +20,11 @@
  *       update PIN_PA accordingly.
  */
 
+// TFT_eSPI MUST be included before audio-driver to avoid GPIO symbol
+// collision between ESP-IDF hardware 'GPIO' register and audio_driver::GPIO
+#include <SPI.h>
+#include <TFT_eSPI.h>
+
 #include "AudioTools.h"
 #include "AudioTools/AudioLibs/I2SCodecStream.h"
 #include "AudioTools/CoreAudio/AudioI2S/I2SStream.h"
@@ -32,11 +37,8 @@
   #error "CodecMP3Helix not found - install arduino-audio-tools"
 #endif
 
-#include <SPI.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_ST7789.h>
-#include <Adafruit_NeoPixel.h>     // ← NEW (party LED)
-#include <arduinoFFT.h>            // ← NEW (party visualiser)  v2.x
+#include <Adafruit_NeoPixel.h>
+#include <arduinoFFT.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
@@ -69,7 +71,7 @@ const char* WIFI_PASS = WIFI_PASS_CFG;
 
 #define VOL_MAIN             0.50f
 #define VOL_JINGLE           0.25f
-#define MIC_GAIN_SHIFT       14
+#define MIC_GAIN_SHIFT       12
 #define TTS_COOLDOWN_MS       800
 #define HEARTBEAT_MS         30000
 #define DG_KEEPALIVE_MS      8000
@@ -106,21 +108,15 @@ static bool     logsVisible      = false;
 #define PIN_MIC_SCK  5
 #define PIN_MIC_SD   6
 
-#define PIN_CS   47
-#define PIN_DC   39
 #define PIN_BLK  42
-#define PIN_CLK  41
-#define PIN_MOSI 40
-
-#define PIN_BOOT 0           // ← NEW: built-in BOOT button (active LOW)
+#define PIN_BOOT 0
 
 // ============================================================
 // DISPLAY + SPRITE CANVAS
 // ============================================================
-SPIClass        tftSPI(HSPI);
-Adafruit_ST7789 tft = Adafruit_ST7789(&tftSPI, PIN_CS, PIN_DC, -1);
+TFT_eSPI tft = TFT_eSPI();
 
-static GFXcanvas16* faceCanvas = nullptr;
+static TFT_eSprite* faceCanvas = nullptr;
 
 #define W  320
 #define H  240
@@ -179,7 +175,7 @@ static uint16_t gFooterColor = C_CY;
 
 static inline void blitFace() {
     if (faceCanvas)
-        tft.drawRGBBitmap(0, faceBlitY, faceCanvas->getBuffer(), W, LOG_Y);
+        faceCanvas->pushSprite(0, faceBlitY);
 }
 
 // ============================================================
@@ -1337,7 +1333,7 @@ static void drawMouthSprite(int cx, int cy, float openFrac) {
 
 void drawFaceBg() {
     if (faceCanvas) {
-        faceCanvas->fillScreen(C_BK);
+        faceCanvas->fillSprite(C_BK);
     } else {
         tft.fillRect(0, faceBlitY, W, LOG_Y, C_BK);
     }
@@ -1345,7 +1341,7 @@ void drawFaceBg() {
 
 void drawFace(bool /*full*/) {
     if (!faceCanvas) return;
-    faceCanvas->fillScreen(C_BK);
+    faceCanvas->fillSprite(C_BK);
 
     int by  = face.bobY;
     int lxi = (int)(face.lookX * LOOK_X_RANGE);
@@ -1523,14 +1519,14 @@ void stopTalk()  { setFaceIdle(); }
 // ============================================================
 // BOOT ANIMATION
 // ============================================================
-static GFXcanvas16* bootLogo = nullptr;
+static TFT_eSprite* bootLogo = nullptr;
 #define BLOGO_SZ  128
 #define BLOGO_X   ((W - BLOGO_SZ) / 2)
 #define BLOGO_Y   14
 
 static inline void blitLogo() {
     if (bootLogo)
-        tft.drawRGBBitmap(BLOGO_X, BLOGO_Y, bootLogo->getBuffer(), BLOGO_SZ, BLOGO_SZ);
+        bootLogo->pushSprite(BLOGO_X, BLOGO_Y);
 }
 
 static uint16_t dimCol(uint16_t c, int factor) {
@@ -1563,7 +1559,7 @@ static void drawBootStars() {
 
 static void logoDrawB(int sc) {
     if (!bootLogo || sc <= 0) return;
-    bootLogo->fillScreen(C_BK);
+    bootLogo->fillSprite(C_BK);
     int bh   = sc * 10;
     int bsw  = sc * 3 / 2;
     int bmpW = sc * 6;
@@ -1589,7 +1585,7 @@ static void logoDrawB(int sc) {
 
 static void logoDrawRobot(int morph) {
     if (!bootLogo) return;
-    bootLogo->fillScreen(C_BK);
+    bootLogo->fillSprite(C_BK);
     int m = min(max(morph, 0), 20);
     bootLogo->drawCircle(64, 64, 52, C_DCY);
     bootLogo->drawCircle(64, 64, 54, dimCol(C_CY, 3));
@@ -1662,13 +1658,19 @@ void drawBootBar(int pct) {
 void drawBootLogo() {
     tft.fillScreen(C_BK);
     drawBootStars();
-    bootLogo = new GFXcanvas16(BLOGO_SZ, BLOGO_SZ);
-    if (!bootLogo || !bootLogo->getBuffer()) {
+    bootLogo = new TFT_eSprite(&tft);
+    if (!bootLogo) {
         Serial.println("[Boot] Canvas alloc failed");
         bootLogo = nullptr;
     } else {
-        logoDrawB(8);
-        blitLogo();
+        bootLogo->setAttribute(PSRAM_ENABLE, true);
+        if (!bootLogo->createSprite(BLOGO_SZ, BLOGO_SZ)) {
+            Serial.println("[Boot] Sprite create failed");
+            delete bootLogo; bootLogo = nullptr;
+        } else {
+            logoDrawB(8);
+            blitLogo();
+        }
     }
     drawBootBar(0);
 }
@@ -1949,20 +1951,25 @@ void setup() {
 
     pinMode(PIN_BLK, OUTPUT); digitalWrite(PIN_BLK, HIGH);
     pinMode(PIN_PA,  OUTPUT); digitalWrite(PIN_PA,  LOW);
-    pinMode(PIN_BOOT, INPUT_PULLUP);    // ← BOOT button
+    pinMode(PIN_BOOT, INPUT_PULLUP);
 
-    tftSPI.begin(PIN_CLK, -1, PIN_MOSI, PIN_CS);
-    tft.init(240, 320); tft.setRotation(3); tft.fillScreen(C_BK);
+    tft.init(); tft.setRotation(1); tft.fillScreen(C_BK);
 
-    faceCanvas = new GFXcanvas16(W, LOG_Y);
-    if (!faceCanvas || !faceCanvas->getBuffer()) {
+    faceCanvas = new TFT_eSprite(&tft);
+    if (!faceCanvas) {
         Serial.println("[Sprite] FATAL: canvas alloc failed.");
         faceCanvas = nullptr;
     } else {
-        faceCanvas->fillScreen(C_BK);
+        faceCanvas->setAttribute(PSRAM_ENABLE, true);
+        if (!faceCanvas->createSprite(W, LOG_Y)) {
+            Serial.println("[Sprite] FATAL: sprite create failed.");
+            delete faceCanvas; faceCanvas = nullptr;
+        } else {
+            faceCanvas->fillSprite(C_BK);
+        }
     }
 
-    buildPartyBandMap();     // ← build FFT band map for party mode
+    buildPartyBandMap();  
 
     audioRestart(); i2s.setVolume(VOL_MAIN);
     if (audioOk) { auto sc = sineGen.defaultConfig(); sc.copyFrom(ainf_rec); sineGen.begin(sc); }
@@ -1974,7 +1981,7 @@ void setup() {
     playBootIntroAnim(W / 2, H / 2 - 32);
     drawBootBar(10); jingleBoot(); drawBootBar(55); delay(150); drawBootBar(100); delay(300);
 
-    delete bootLogo; bootLogo = nullptr;
+    if (bootLogo) { bootLogo->deleteSprite(); delete bootLogo; bootLogo = nullptr; }
 
     drawWifiScreen(); drawWifiStatus("Connecting...", C_YL);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -2041,7 +2048,7 @@ void loop() {
     }
 
     // ── NORMAL MODE ───────────────────────────────────────────
-    checkBootButton();   // ← BOOT button toggles log panel
+    checkBootButton();
 
     animFace();
     if (faceRedraw) { drawFace(false); faceRedraw = false; }
