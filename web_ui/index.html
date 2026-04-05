@@ -86,6 +86,7 @@
     /* ── Base ── */
     html, body {
       height: 100%;
+      height: 100dvh;
       font-family: 'IBM Plex Sans', sans-serif;
       font-size: 14px;
       line-height: 1.6;
@@ -1164,93 +1165,118 @@
 
     /* ══ MOBILE (≤ 768px) ═══════════════════════════════════════ */
     @media (max-width: 768px) {
-      /* Meta layout */
       .mobile-only  { display: flex; }
       .desktop-only { display: none !important; }
-      .layout { grid-template-columns: 1fr; }
 
-      /* Safe-area padding for notched phones */
-      .topbar {
-        padding-left:  max(12px, env(safe-area-inset-left));
-        padding-right: max(12px, env(safe-area-inset-right));
-        padding-top:   env(safe-area-inset-top);
-        height: auto;
-        min-height: 52px;
+      /* Single column layout */
+      .layout {
+        grid-template-columns: 1fr;
+        height: calc(100% - 52px - 2px); /* subtract topbar + busy bar */
+      }
+      main {
+        grid-column: 1;
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        overflow: hidden;
+      }
+      .output-area {
+        flex: 1;
+        overflow-y: auto;
+        min-height: 0;
+        padding: 12px 14px;
+        font-size: 13.5px;
       }
       .input-row {
-        padding: 8px max(10px, env(safe-area-inset-right))
-                 max(10px, env(safe-area-inset-bottom))
-                 max(10px, env(safe-area-inset-left));
-      }
-
-      /* Topbar: collapse pills to icons */
-      .status-pill { padding: 3px 7px; font-size: 10px; gap: 4px; }
-      #statusText  { display: none; }
-      .pill-device { padding: 3px 7px; }
-      #devicePillText { display: none; }
-      .logo-text { display: none; }
-
-      /* Touch-friendly icon buttons (min 44px tap target) */
-      .icon-btn { min-width: 36px; min-height: 36px; font-size: 16px; padding: 6px 8px; }
-
-      /* Slide-out sidebar */
-      .sidebar {
-        position: fixed; top: 0; left: 0; bottom: 0;
-        width: min(290px, 88vw); z-index: 50;
-        transform: translateX(-100%);
-        box-shadow: 4px 0 30px rgba(0,0,0,0.6);
-        transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
-      }
-      .sidebar.open { transform: translateX(0); }
-
-      /* Slide-out panel */
-      .panel {
-        position: fixed; top: 0; right: 0; bottom: 0;
-        width: min(290px, 88vw); z-index: 50;
-        transform: translateX(110%);
-        box-shadow: -4px 0 30px rgba(0,0,0,0.6);
-        transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
-      }
-      .panel.open { transform: translateX(0); }
-      main { grid-column: 1; display: flex; flex-direction: column; }
-      .output-area { flex: 1; min-height: 0; }
-      .input-row {
-        position: sticky;
-        bottom: 0;
-        bottom: env(safe-area-inset-bottom);
+        flex-shrink: 0;
+        padding: 8px 12px;
+        padding-bottom: max(8px, env(safe-area-inset-bottom));
+        position: relative;
         z-index: 10;
+        background: var(--bg2);
         border-top: 1px solid var(--border);
       }
 
-      /* Output area */
-      .output-area { padding: 12px 14px; font-size: 13.5px; }
+      /* Topbar */
+      .topbar {
+        padding-left:  max(10px, env(safe-area-inset-left));
+        padding-right: max(10px, env(safe-area-inset-right));
+        padding-top:   env(safe-area-inset-top);
+        min-height: 52px;
+        height: auto;
+        flex-wrap: nowrap;
+      }
+      .logo-text  { display: none; }
+      #clockDisplay { display: none; }
 
-      /* Prevent iOS auto-zoom on input focus (needs ≥16px) */
-      .cmd-input { font-size: 16px !important; }
+      /* Compact pills */
+      .status-pill { padding: 3px 7px; gap: 4px; font-size: 10px; }
+      #statusText  { display: none; }
+      .pill-device { padding: 3px 7px; }
+      #devicePillText { display: none; }
+
+      /* Touch-friendly buttons */
+      .icon-btn { min-width: 36px; min-height: 36px; font-size: 16px; padding: 6px 8px; }
+      .btn      { min-height: 40px; }
+      .mic-btn  { min-width: 40px; min-height: 40px; font-size: 16px; }
+
+      /* Prevent iOS auto-zoom on input focus */
+      .cmd-input      { font-size: 16px !important; }
       .yt-search-input { font-size: 16px !important; }
-      select, input[type="range"] { font-size: 16px; }
 
-      /* Larger send/stop buttons */
-      .btn { padding: 9px 16px; font-size: 13px; min-height: 40px; }
+      /* Sidebar: full-height slide drawer */
+      .sidebar {
+        position: fixed;
+        top: 0; left: 0; bottom: 0;
+        width: min(290px, 88vw);
+        z-index: 50;
+        transform: translateX(-100%);
+        transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
+        box-shadow: 4px 0 30px rgba(0,0,0,0.6);
+      }
+      .sidebar.open { transform: translateX(0); }
 
-      /* Mic button tap target */
-      .mic-btn { min-width: 40px; min-height: 40px; font-size: 16px; }
+      /* Sidebar header: keep compact */
+      .sidebar-header {
+        padding: 0 10px;
+        flex-wrap: wrap;
+        height: auto;
+        min-height: 42px;
+        gap: 4px;
+      }
+      .sidebar-title { display: none; } /* hide label to save space */
+      .filter-tabs { gap: 3px; }
+      .filter-tab {
+        padding: 4px 8px;
+        font-size: 9px;
+        min-height: 30px;
+      }
+      .clear-btn { padding: 3px 6px; font-size: 10px; }
 
-      /* Log entry: tighter on small screens */
-      .log-time { min-width: 58px; font-size: 10px; }
-      .log-msg.cmd-entry { font-size: 12.5px; }
+      /* Task cards */
+      .task-card { padding: 9px 10px; min-height: 52px; }
+      .log-time  { min-width: 58px; font-size: 10px; }
       .log-msg.chat { padding: 10px 12px; }
 
-      /* Task cards: reduce padding */
-      .task-card { padding: 9px 10px; }
+      /* Panel: full-height slide drawer */
+      .panel {
+        position: fixed;
+        top: 0; right: 0; bottom: 0;
+        width: min(290px, 88vw);
+        z-index: 50;
+        transform: translateX(110%);
+        transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
+        box-shadow: -4px 0 30px rgba(0,0,0,0.6);
+      }
+      .panel.open { transform: translateX(0); }
 
-      /* Intro: smaller rings + text */
+      /* Intro: smaller */
       .intro-name { font-size: 36px; }
       .intro-progress-wrap { width: 240px; }
       .intro-logo-wrap { width: 130px; height: 130px; }
       .intro-orbit-outer { width: 130px; height: 130px; }
       .intro-orbit-inner { width: 97px; height: 97px; top: 16px; left: 16px; }
-      .intro-orbit-pulse  { width: 70px; height: 70px; top: 30px; left: 30px; }
+      .intro-orbit-pulse { width: 70px; height: 70px; top: 30px; left: 30px; }
       .intro-hex-svg { width: 96px; height: 96px; }
     }
 
@@ -1785,6 +1811,16 @@
     /* Waveform bars: slightly bigger on mobile */
     @media (max-width: 768px) {
       .wave-bar { width: 4px; }
+    }
+
+    /* Bronny command pending indicator */
+    .bronny-pending-dot {
+      display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--orange); margin-left: 6px; vertical-align: middle;
+      animation: pulse 0.8s infinite;
+    }
+    .bronny-btn.pending, .bronny-slider.pending {
+      opacity: 0.7;
     }
 
   </style>
@@ -3289,6 +3325,7 @@ function updateBronnyBadge(online, version) {
 
 // ── Generic Bronny command ──
 async function bronnyCommand(payload) {
+  if (!_bronnyOnline) { showToast('Bronny is offline', 'warn'); return null; }
   try {
     const res = await fetch(`${BASE_URL}/bronny/control`, {
       method: 'POST',
@@ -3299,6 +3336,11 @@ async function bronnyCommand(payload) {
       const err = await res.json().catch(()=>({}));
       showToast(err.detail || `Bronny error: ${res.status}`, 'error');
       return null;
+    }
+    // Show brief "queued" toast for non-play commands so user knows it was received
+    const silent = ['play','stop','pause','resume','seek','next'];
+    if (!silent.includes(payload.command)) {
+      showToast(`⬡ ${payload.command} queued — delivering on next heartbeat`, 'info', 2000);
     }
     return await res.json();
   } catch(e) {
@@ -3522,31 +3564,83 @@ async function playQueueItem(idx) {
   const rainbow = document.getElementById('rainbowCheck')?.checked || false;
   const ytUrl = `https://www.youtube.com/watch?v=${v.videoId}`;
 
-  showToast(`▶ Playing: ${v.title.slice(0,40)}…`, 'info');
+  showToast(`⏳ Converting: ${v.title.slice(0,35)}…`, 'info');
   renderQueue();
 
-  // Send to backend
-  const res = await bronnyCommand({
-    command:  'play',
-    url:      ytUrl,
-    mode:     _mediaMode,
-    rainbow:  rainbow,
-    title:    v.title,
-    duration: v.duration,
-  });
-
-  // Update Now Playing UI
-  _playDuration  = v.duration || 0;
-  _playStartedAt = Date.now();
-  _paused        = false;
-  _pausedAt      = 0;
-  updateNowPlayingUI(v);
-  startProgressTicker();
-
   // Highlight card in results
-  document.querySelectorAll('.yt-result-card').forEach(c=>c.classList.remove('playing'));
+  document.querySelectorAll('.yt-result-card').forEach(c => c.classList.remove('playing'));
   const card = document.getElementById('ytcard-' + v.videoId);
   if (card) card.classList.add('playing');
+
+  // Show "Converting..." in now-playing bar immediately
+  const bar = document.getElementById('nowPlayingBar');
+  if (bar) bar.classList.remove('hidden');
+  const npTitle = document.getElementById('npTitle');
+  if (npTitle) npTitle.textContent = `⏳ Converting: ${v.title}`;
+  const npThumb = document.getElementById('npThumb');
+  if (npThumb) { npThumb.src = v.thumb || ''; npThumb.alt = v.title; }
+
+  try {
+    // Use existing /video/prepare pipeline — server converts with yt-dlp + ffmpeg,
+    // ESP32 auto-picks it up via checkCurrentJob() polling (no heartbeat delay)
+    const res = await fetch(`${BASE_URL}/video/prepare`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Api-Key': API_KEY },
+      body: JSON.stringify({ url: ytUrl }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const { job_id } = await res.json();
+
+    // If rainbow LED requested, send that command separately (still via heartbeat)
+    if (rainbow && _bronnyOnline) {
+      bronnyCommand({ command: 'led', mode: 'rainbow', speed: 7 });
+    }
+
+    // Poll job status and update UI
+    _pollVideoJob(job_id, v);
+
+  } catch(e) {
+    showToast(`Convert failed: ${e.message}`, 'error');
+    if (npTitle) npTitle.textContent = `❌ Failed: ${v.title}`;
+  }
+}
+
+// Poll conversion job until ready
+let _videoJobPollId = null;
+function _pollVideoJob(job_id, v) {
+  if (_videoJobPollId) clearInterval(_videoJobPollId);
+  const npTitle = document.getElementById('npTitle');
+  const ppBtn   = document.getElementById('npPlayPauseBtn');
+
+  _videoJobPollId = setInterval(async () => {
+    try {
+      const res  = await fetch(`${BASE_URL}/video/status/${job_id}`);
+      if (!res.ok) return;
+      const data = await res.json();
+
+      if (data.status === 'downloading') {
+        if (npTitle) npTitle.textContent = `⬇ Downloading: ${v.title}`;
+      } else if (data.status === 'converting') {
+        if (npTitle) npTitle.textContent = `🔄 Converting: ${v.title}`;
+      } else if (data.status === 'ready') {
+        clearInterval(_videoJobPollId); _videoJobPollId = null;
+        // Update now-playing bar to show playing state
+        if (npTitle) npTitle.textContent = v.title;
+        if (ppBtn)   ppBtn.textContent = '⏸';
+        // Start estimated progress ticker
+        _playDuration  = v.duration || 0;
+        _playStartedAt = Date.now();
+        _paused        = false;
+        _pausedAt      = 0;
+        startProgressTicker();
+        showToast(`▶ Playing on Bronny: ${v.title.slice(0,35)}`, 'success');
+      } else if (data.status === 'error') {
+        clearInterval(_videoJobPollId); _videoJobPollId = null;
+        if (npTitle) npTitle.textContent = `❌ Error: ${v.title}`;
+        showToast(`Conversion error: ${data.error || 'check server logs'}`, 'error');
+      }
+    } catch {}
+  }, 2500);
 }
 
 function updateNowPlayingUI(v) {
@@ -3620,12 +3714,18 @@ async function bronnyPrevTrack() {
 
 function bronnyStopMedia() {
   if (_npRafId) { cancelAnimationFrame(_npRafId); _npRafId = null; }
+  if (_videoJobPollId) { clearInterval(_videoJobPollId); _videoJobPollId = null; }
   _playStartedAt = null; _playDuration = 0; _paused = false; _pausedAt = 0;
   _ytQueueIdx = -1;
   const bar = document.getElementById('nowPlayingBar');
   if (bar) bar.classList.add('hidden');
-  document.querySelectorAll('.yt-result-card').forEach(c=>c.classList.remove('playing'));
+  document.querySelectorAll('.yt-result-card').forEach(c => c.classList.remove('playing'));
   renderQueue();
+  // Clear the current video job on the server so ESP32 stops polling it
+  fetch(`${BASE_URL}/video/current/clear`, {
+    method: 'POST', headers: { 'X-Api-Key': API_KEY }
+  }).catch(() => {});
+  // Also send stop command (for LED rainbow if active)
   bronnyCommand({ command: 'stop' });
 }
 

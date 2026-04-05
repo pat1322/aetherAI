@@ -103,7 +103,7 @@ const char* WIFI_PASS = WIFI_PASS_CFG;
 #define VOL_VIDEO            0.40f
 #define MIC_GAIN_SHIFT       14
 #define TTS_COOLDOWN_MS      800
-#define HEARTBEAT_MS         30000
+#define HEARTBEAT_MS         8000
 #define DG_KEEPALIVE_MS      8000
 #define DG_RECONNECT_MS      3000
 #define DG_CONNECT_TIMEOUT   8000
