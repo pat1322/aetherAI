@@ -2,7 +2,11 @@
 <html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="theme-color" content="#040d1a"/>
   <title>AetherAI — Command Center</title>
   <!-- Favicon: AetherAI hexagonal logo -->
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%2300e8ff'/%3E%3Cstop offset='55%25' stop-color='%237c3cff'/%3E%3Cstop offset='100%25' stop-color='%23ff3ca0'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpolygon points='16,2 28,9 28,23 16,30 4,23 4,9' fill='%23040d1a' stroke='url(%23g)' stroke-width='1.8'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='Rajdhani,sans-serif' font-size='14' font-weight='700' fill='url(%23g)'%3EA%3C/text%3E%3C/svg%3E"/>
@@ -1145,30 +1149,114 @@
     :not(pre) > code[class*="language-"] { padding: 2px 6px; border-radius: 4px; }
 
     /* ── Mobile ── */
+    /* ══ SHARED SCROLL BEHAVIOUR ══════════════════════════════ */
+    .output-area, .task-list, .steps-list, .files-body,
+    .yt-results, .yt-queue-list, .bronny-tab-body {
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
+    }
+
+    /* ══ TABLET (≤ 900px) — hide secondary topbar items ════════ */
+    @media (max-width: 900px) {
+      .pill-bronny { display: none; }
+      #clockDisplay { display: none; }
+    }
+
+    /* ══ MOBILE (≤ 768px) ═══════════════════════════════════════ */
     @media (max-width: 768px) {
-      .mobile-only { display: flex; }
+      /* Meta layout */
+      .mobile-only  { display: flex; }
       .desktop-only { display: none !important; }
       .layout { grid-template-columns: 1fr; }
+
+      /* Full-height body without address bar jumping */
+      html, body { height: 100dvh; overflow: hidden; }
+      #appRoot { height: 100dvh; }
+
+      /* Safe-area padding for notched phones */
+      .topbar {
+        padding: 0 max(12px, env(safe-area-inset-right))
+                 0 max(12px, env(safe-area-inset-left));
+        height: calc(52px + env(safe-area-inset-top));
+        padding-top: env(safe-area-inset-top);
+      }
+      .input-row {
+        padding: 8px max(10px, env(safe-area-inset-right))
+                 max(10px, env(safe-area-inset-bottom))
+                 max(10px, env(safe-area-inset-left));
+      }
+
+      /* Topbar: collapse pills to icons */
+      .status-pill { padding: 3px 7px; font-size: 10px; gap: 4px; }
+      #statusText  { display: none; }
+      .pill-device { padding: 3px 7px; }
+      #devicePillText { display: none; }
+      .logo-text { display: none; }
+
+      /* Touch-friendly icon buttons (min 44px tap target) */
+      .icon-btn { min-width: 36px; min-height: 36px; font-size: 16px; padding: 6px 8px; }
+
+      /* Slide-out sidebar */
       .sidebar {
         position: fixed; top: 0; left: 0; bottom: 0;
-        width: min(280px, 85vw); z-index: 50;
+        width: min(290px, 88vw); z-index: 50;
         transform: translateX(-100%);
         box-shadow: 4px 0 30px rgba(0,0,0,0.6);
+        transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
       }
       .sidebar.open { transform: translateX(0); }
+
+      /* Slide-out panel */
       .panel {
         position: fixed; top: 0; right: 0; bottom: 0;
-        width: min(280px, 85vw); z-index: 50;
+        width: min(290px, 88vw); z-index: 50;
         transform: translateX(110%);
         box-shadow: -4px 0 30px rgba(0,0,0,0.6);
+        transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
       }
       .panel.open { transform: translateX(0); }
       main { grid-column: 1; }
-      .logo-text { display: none; }
-      #clockDisplay { display: none; }
-      .topbar { padding: 0 12px; }
-      .output-area { padding: 12px 14px; }
-      .input-row { padding: 8px 10px; }
+
+      /* Output area */
+      .output-area { padding: 12px 14px; font-size: 13.5px; }
+
+      /* Prevent iOS auto-zoom on input focus (needs ≥16px) */
+      .cmd-input { font-size: 16px !important; }
+      .yt-search-input { font-size: 16px !important; }
+      select, input[type="range"] { font-size: 16px; }
+
+      /* Larger send/stop buttons */
+      .btn { padding: 9px 16px; font-size: 13px; min-height: 40px; }
+
+      /* Mic button tap target */
+      .mic-btn { min-width: 40px; min-height: 40px; font-size: 16px; }
+
+      /* Log entry: tighter on small screens */
+      .log-time { min-width: 58px; font-size: 10px; }
+      .log-msg.cmd-entry { font-size: 12.5px; }
+      .log-msg.chat { padding: 10px 12px; }
+
+      /* Task cards: reduce padding */
+      .task-card { padding: 9px 10px; }
+
+      /* Intro: smaller rings + text */
+      .intro-name { font-size: 36px; }
+      .intro-progress-wrap { width: 240px; }
+      .intro-logo-wrap { width: 130px; height: 130px; }
+      .intro-orbit-outer { width: 130px; height: 130px; }
+      .intro-orbit-inner { width: 97px; height: 97px; top: 16px; left: 16px; }
+      .intro-orbit-pulse  { width: 70px; height: 70px; top: 30px; left: 30px; }
+      .intro-hex-svg { width: 96px; height: 96px; }
+    }
+
+    /* ══ SMALL PHONES (≤ 420px) ════════════════════════════════ */
+    @media (max-width: 420px) {
+      .output-area { padding: 10px 11px; }
+      .topbar-right { gap: 5px; }
+      .status-pill { display: none; }
+      .filter-tab { padding: 3px 6px; font-size: 8px; }
+      .log-msg.cmd-entry::before { display: none; }
+      .intro-name { font-size: 30px; letter-spacing: 0.08em; }
     }
     /* ══════════════════════════════════════════════════════════
        BRONNY CONTROL PANEL
@@ -1280,6 +1368,7 @@
     .bronny-slider-wrap { flex: 1; display: flex; align-items: center; gap: 12px; }
     .bronny-slider {
       flex: 1; -webkit-appearance: none; height: 4px;
+      touch-action: none;
       background: var(--border); border-radius: 2px; outline: none;
       cursor: pointer;
     }
@@ -1507,6 +1596,7 @@
     .progress-bar-wrap {
       flex: 1; height: 4px; background: var(--border); border-radius: 2px;
       cursor: pointer; position: relative; overflow: hidden;
+      touch-action: none; min-height: 20px; margin: -8px 0;
     }
     .progress-bar-fill {
       height: 100%; background: linear-gradient(90deg, #ff3ca0, var(--accent2));
@@ -1534,6 +1624,161 @@
     }
     .rainbow-toggle input { cursor: pointer; accent-color: #ff3ca0; }
     .rainbow-toggle.active { color: #ff60b0; }
+
+    /* ══ BRONNY PANEL — MOBILE ══════════════════════════════════ */
+    @media (max-width: 768px) {
+      /* Drawer takes full screen height on small phones */
+      .bronny-drawer { max-height: 95dvh; border-radius: 16px 16px 0 0; }
+
+      /* Safe-area bottom padding */
+      .now-playing {
+        padding-bottom: max(14px, env(safe-area-inset-bottom));
+      }
+      .bronny-tab-body {
+        padding-bottom: max(18px, env(safe-area-inset-bottom));
+      }
+
+      /* Tabs: scroll horizontally, never wrap */
+      .bronny-tabs {
+        overflow-x: auto; -webkit-overflow-scrolling: touch;
+        flex-wrap: nowrap; padding: 6px 16px;
+        scrollbar-width: none; gap: 4px;
+      }
+      .bronny-tabs::-webkit-scrollbar { display: none; }
+      .bronny-tab { white-space: nowrap; flex-shrink: 0; }
+
+      /* Sliders: taller hit area */
+      .bronny-control-row { margin-bottom: 22px; }
+      .bronny-control-label { min-width: 80px; font-size: 11px; }
+      .bronny-slider { height: 6px; }
+      .bronny-slider::-webkit-slider-thumb { width: 22px; height: 22px; }
+      .bronny-slider::-moz-range-thumb     { width: 22px; height: 22px; }
+
+      /* Action buttons: wrap nicely */
+      .bronny-action-btns { gap: 8px; }
+      .bronny-btn { padding: 10px 14px; font-size: 12px; flex: 1; justify-content: center; min-height: 44px; }
+
+      /* Party grid: single column */
+      .party-grid { grid-template-columns: 1fr; gap: 12px; }
+
+      /* Party activate button: bigger tap target */
+      .party-activate-btn { padding: 16px; font-size: 15px; }
+
+      /* YT search: stacked */
+      .yt-search-row { flex-direction: row; gap: 6px; }
+      .yt-search-input { min-height: 44px; }
+      .yt-search-btn { min-height: 44px; padding: 9px 14px; font-size: 12px; }
+
+      /* YT results: 2 cols on mobile */
+      .yt-results { grid-template-columns: 1fr 1fr; max-height: 280px; }
+
+      /* Mode toggle: full width */
+      .media-mode-toggle { gap: 6px; }
+      .media-mode-btn { min-height: 44px; font-size: 12px; }
+
+      /* Now playing: stack info + controls */
+      .now-playing { padding: 10px 16px max(10px, env(safe-area-inset-bottom)); }
+      .now-playing-inner {
+        flex-direction: column; align-items: stretch; gap: 8px;
+      }
+      .now-playing-thumb-title {
+        display: flex; align-items: center; gap: 10px; min-width: 0;
+      }
+      .now-playing-controls {
+        justify-content: space-between; width: 100%;
+      }
+      .np-btn { min-width: 44px; min-height: 38px; font-size: 16px; padding: 6px 12px; flex: 1; justify-content: center; display: flex; align-items: center; }
+      .rainbow-toggle { font-size: 11px; }
+
+      /* Bronny header: compact */
+      .bronny-header { padding: 10px 16px 8px; }
+      .bronny-title-text { font-size: 16px; }
+    }
+
+    @media (max-width: 420px) {
+      .yt-results { grid-template-columns: 1fr 1fr; gap: 7px; }
+      .yt-result-title { font-size: 10.5px; }
+      .bronny-tab { padding: 5px 10px; font-size: 10px; }
+      .np-btn { padding: 6px 8px; font-size: 14px; }
+      .bronny-btn { padding: 9px 10px; font-size: 11px; }
+    }
+
+    /* ══ MOBILE POLISH ══════════════════════════════════════════ */
+
+    /* Tap highlight removed (we have our own hover states) */
+    * { -webkit-tap-highlight-color: transparent; }
+
+    /* Smooth scroll everywhere */
+    * { scroll-behavior: smooth; }
+
+    /* Touch-friendly task cards */
+    .task-card { min-height: 52px; }
+
+    /* Touch-friendly filter tabs */
+    .filter-tab { min-height: 30px; display: flex; align-items: center; }
+
+    /* Prevent text selection on interactive elements */
+    .bronny-tab, .filter-tab, .icon-btn, .btn, .np-btn,
+    .bronny-btn, .media-mode-btn, .yt-search-btn {
+      -webkit-user-select: none; user-select: none;
+    }
+
+    /* Larger touch area for file delete */
+    .file-x { min-width: 28px; min-height: 28px; display: flex; align-items: center; justify-content: center; }
+    .task-del-btn { min-width: 26px; min-height: 26px; }
+
+    /* Modal: full-screen on very small phones */
+    @media (max-width: 420px) {
+      .modal { width: 96vw; padding: 20px; border-radius: 12px; }
+      .modal-title { font-size: 15px; }
+      .shortcuts-grid { gap: 3px; }
+      .shortcut-row { padding: 7px 10px; }
+    }
+
+    /* Intro: reduce canvas animation complexity on mobile */
+    @media (max-width: 600px) {
+      #introCanvas { opacity: 0.4; }
+      .intro-sub { letter-spacing: 0.3em; }
+      .intro-footer { font-size: 9px; gap: 12px; }
+    }
+
+    /* YT card: bigger play icon overlay for fat fingers */
+    @media (max-width: 768px) {
+      .yt-play-icon { font-size: 32px; }
+      .yt-thumb-overlay { opacity: 0; }
+      .yt-result-card:active .yt-thumb-overlay { opacity: 1; }
+    }
+
+    /* Bronny LED swatches: bigger on mobile */
+    @media (max-width: 768px) {
+      .led-swatch { width: 36px; height: 36px; }
+    }
+
+    /* Now-playing thumb-title row: desktop unchanged */
+    .now-playing-thumb-title {
+      display: contents; /* no-op on desktop - flex children of now-playing-inner */
+    }
+    @media (max-width: 768px) {
+      .now-playing-thumb-title {
+        display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1;
+      }
+    }
+
+    /* Queue section: comfortable on mobile */
+    @media (max-width: 768px) {
+      .yt-queue-item { padding: 8px 10px; min-height: 40px; }
+      .yt-queue-title-text { font-size: 12px; }
+    }
+
+    /* Input row: ensure it sits above iOS home indicator */
+    .input-row {
+      padding-bottom: max(10px, env(safe-area-inset-bottom));
+    }
+
+    /* Waveform bars: slightly bigger on mobile */
+    @media (max-width: 768px) {
+      .wave-bar { width: 4px; }
+    }
 
   </style>
 </head>
@@ -1655,6 +1900,7 @@
       <button class="icon-btn desktop-only" onclick="toggleTheme()" id="themeBtn" title="Toggle theme">🌙</button>
       <button class="icon-btn desktop-only" onclick="openShortcuts()" title="Keyboard shortcuts (?)">⌨</button>
       <button class="icon-btn" onclick="openSettings()" title="Settings">⚙</button>
+      <button class="icon-btn mobile-only" id="bronnyMobileBtn" onclick="openBronnyPanel()" title="Bronny Control" style="display:none">⬡</button>
       <button class="icon-btn mobile-only" onclick="togglePanel()" aria-label="Detail">⊞</button>
     </div>
   </div>
@@ -1691,7 +1937,7 @@
       <div class="output-area" id="outputArea">
         <div class="log-entry">
           <span class="log-time"></span>
-          <span class="log-msg system">⬡ AetherAI Stage 7 ready...</span>
+          <span class="log-msg system">⬡ AetherAI Stage 7 ready. Built by Patrick Perez.</span>
         </div>
       </div>
       <div class="input-row">
@@ -1850,7 +2096,8 @@
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
 
-  const particles = Array.from({length: 70}, () => ({
+  const const _nParticles = window.innerWidth < 600 ? 28 : 70;
+  particles = Array.from({length: _nParticles}, () => ({
     x: Math.random() * window.innerWidth,
     y: Math.random() * window.innerHeight,
     r: Math.random() * 1.2 + 0.3,
@@ -2447,6 +2694,7 @@ async function sendCommand() {
   }
   historyIdx = -1; historyDraft = '';
   input.value = '';
+  if ('ontouchstart' in window) input.blur(); // close mobile keyboard
   document.getElementById('sendBtn').disabled = true;
   document.getElementById('stopBtn').style.display = 'inline-block';
   setBusy(true); closeDrawers(); clearOutput();
@@ -3399,6 +3647,53 @@ document.addEventListener('DOMContentLoaded', () => {
   if (inp) inp.addEventListener('keydown', e => { if (e.key==='Enter') ytSearch(); });
 });
 
+/* ═══════════════════════════════════════════════════
+   TOUCH SWIPE — close drawers by swiping
+═══════════════════════════════════════════════════ */
+(function() {
+  let _tx = 0, _ty = 0;
+  document.addEventListener('touchstart', e => {
+    _tx = e.touches[0].clientX;
+    _ty = e.touches[0].clientY;
+  }, { passive: true });
+  document.addEventListener('touchend', e => {
+    const dx = e.changedTouches[0].clientX - _tx;
+    const dy = e.changedTouches[0].clientY - _ty;
+    if (Math.abs(dx) < Math.abs(dy) * 1.5) return; // vertical — ignore
+    const sidebar = document.getElementById('sidebar');
+    const panel   = document.getElementById('panel');
+    if (dx < -60 && sidebar?.classList.contains('open')) closeDrawers();   // swipe left closes sidebar
+    if (dx >  60 && panel?.classList.contains('open'))   closeDrawers();   // swipe right closes panel
+    if (dx >  60 && !sidebar?.classList.contains('open')) toggleSidebar(); // swipe right opens sidebar from left
+    if (dx < -60 && !panel?.classList.contains('open'))   togglePanel();   // swipe left opens panel from right
+  }, { passive: true });
+  // Swipe down to close Bronny panel
+  let _bty = 0;
+  document.getElementById('bronnyDrawer')?.addEventListener('touchstart', e => {
+    _bty = e.touches[0].clientY;
+  }, { passive: true });
+  document.addEventListener('touchend', e => {
+    if (!document.getElementById('bronnyPanel')?.classList.contains('open')) return;
+    const dy = e.changedTouches[0].clientY - _bty;
+    if (dy > 80) closeBronnyPanel();
+  }, { passive: true });
+})();
+
+// Touch seeking on progress bar
+(function() {
+  const wrap = document.getElementById('npProgressWrap');
+  if (!wrap) return;
+  wrap.addEventListener('touchend', function(e) {
+    e.preventDefault();
+    const rect = wrap.getBoundingClientRect();
+    const pct  = Math.max(0, Math.min(1, (e.changedTouches[0].clientX - rect.left) / rect.width));
+    if (!_playDuration) return;
+    const seekTo = Math.floor(pct * _playDuration);
+    _pausedAt = seekTo; _playStartedAt = _paused ? null : Date.now();
+    bronnyCommand({ command: 'seek', position: seekTo });
+  }, { passive: false });
+})();
+
 fetchServerConfig();
 </script>
   <!-- ══════════════════════════════════════════════════════════
@@ -3556,15 +3851,17 @@ fetchServerConfig();
       <!-- Now Playing bar (always visible at bottom when playing) -->
       <div class="now-playing hidden" id="nowPlayingBar">
         <div class="now-playing-inner">
-          <img class="now-playing-thumb" id="npThumb" src="" alt=""/>
-          <div class="now-playing-info">
-            <div class="now-playing-title" id="npTitle">Nothing playing</div>
-            <div class="now-playing-progress">
-              <span class="progress-time" id="npTimeElapsed">0:00</span>
-              <div class="progress-bar-wrap" id="npProgressWrap" onclick="seekVideo(event)">
-                <div class="progress-bar-fill" id="npProgressFill"></div>
+          <div class="now-playing-thumb-title">
+            <img class="now-playing-thumb" id="npThumb" src="" alt=""/>
+            <div class="now-playing-info">
+              <div class="now-playing-title" id="npTitle">Nothing playing</div>
+              <div class="now-playing-progress">
+                <span class="progress-time" id="npTimeElapsed">0:00</span>
+                <div class="progress-bar-wrap" id="npProgressWrap" onclick="seekVideo(event)">
+                  <div class="progress-bar-fill" id="npProgressFill"></div>
+                </div>
+                <span class="progress-time" id="npTimeDuration">0:00</span>
               </div>
-              <span class="progress-time" id="npTimeDuration">0:00</span>
             </div>
           </div>
           <div class="now-playing-controls">
