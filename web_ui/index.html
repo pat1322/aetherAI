@@ -3586,7 +3586,9 @@ async function playQueueItem(idx) {
     const res = await fetch(`${BASE_URL}/video/prepare`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Api-Key': API_KEY },
-      body: JSON.stringify({ url: ytUrl }),
+      // mode hint: 'audio' = play MP3 only on Bronny; 'video' = full MJPEG+MP3
+      // Server converts both either way; ESP32 decides what to show
+      body: JSON.stringify({ url: ytUrl, mode: _mediaMode }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const { job_id } = await res.json();
@@ -3726,7 +3728,7 @@ function bronnyStopMedia() {
     method: 'POST', headers: { 'X-Api-Key': API_KEY }
   }).catch(() => {});
   // Also send stop command (for LED rainbow if active)
-  bronnyCommand({ command: 'stop' });
+  // Note: don't queue a 'stop' command — it could deliver after the next video starts
 }
 
 async function seekVideo(e) {

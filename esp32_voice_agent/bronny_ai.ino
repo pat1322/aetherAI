@@ -103,7 +103,7 @@ const char* WIFI_PASS = WIFI_PASS_CFG;
 #define VOL_VIDEO            0.40f
 #define MIC_GAIN_SHIFT       14
 #define TTS_COOLDOWN_MS      800
-#define HEARTBEAT_MS         8000
+#define HEARTBEAT_MS         30000
 #define DG_KEEPALIVE_MS      8000
 #define DG_RECONNECT_MS      3000
 #define DG_CONNECT_TIMEOUT   8000
@@ -731,8 +731,8 @@ static void sendHeartbeat() {
 
     int code = http.POST("{\"device\":\"bronny\",\"version\":\"2.1\"}");
 
-    // NEW v2.1 — read response and execute any queued commands
-    if (code == HTTP_CODE_OK) {
+    // v2.1 — read response and execute queued commands (skip during video/party)
+    if (code == HTTP_CODE_OK && !isVideoMode()) {
         String body = http.getString();
         hbDoc.clear();
         if (deserializeJson(hbDoc, body) == DeserializationError::Ok) {
@@ -2371,10 +2371,21 @@ static void playAudioFromUrl(const String& url) {
 
 // ── Dispatch a single remote command received in the heartbeat JSON ──────────
 static void executeBronnyCommand(JsonVariant cmd) {
+    // Skip ALL commands during video playback — executing them interrupts
+    // the audio codec (audioInitTTS, i2s.setVolume, partyLed.begin on GPIO 48)
+    // and silences the MP3 audio stream running on Core 0.
+    // Commands are already consumed from the server queue; user must resend after.
+    if (isVideoMode()) {
+        Serial.printf("[Ctrl] Skipping '%s' — video playing\n", cmd["command"] | "");
+        return;
+    }
+
     const char* command = cmd["command"] | "";
     Serial.printf("[Ctrl] %s\n", command);
 
     if (strcmp(command, "volume") == 0) {
+        // Don't change volume during party mode (disrupts audio visualiser levels)
+        if (isPartyMode()) return;
         int vol = constrain(cmd["value"] | 70, 0, 100);
         i2s.setVolume(vol / 100.0f);
         tftLogf(C_CY, "Vol: %d%%", vol);
