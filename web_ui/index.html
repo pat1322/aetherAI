@@ -2096,7 +2096,7 @@
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
 
-  const const _nParticles = window.innerWidth < 600 ? 28 : 70;
+  const _nParticles = window.innerWidth < 600 ? 28 : 70;
   particles = Array.from({length: _nParticles}, () => ({
     x: Math.random() * window.innerWidth,
     y: Math.random() * window.innerHeight,
