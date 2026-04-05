@@ -4,6 +4,9 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0"/>
   <title>AetherAI — Command Center</title>
+  <!-- Favicon: AetherAI hexagonal logo -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%2300e8ff'/%3E%3Cstop offset='55%25' stop-color='%237c3cff'/%3E%3Cstop offset='100%25' stop-color='%23ff3ca0'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpolygon points='16,2 28,9 28,23 16,30 4,23 4,9' fill='%23040d1a' stroke='url(%23g)' stroke-width='1.8'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='Rajdhani,sans-serif' font-size='14' font-weight='700' fill='url(%23g)'%3EA%3C/text%3E%3C/svg%3E"/>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%2300e8ff'/%3E%3Cstop offset='100%25' stop-color='%237c3cff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpolygon points='16,2 28,9 28,23 16,30 4,23 4,9' fill='%23040d1a' stroke='url(%23g)' stroke-width='1.8'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='sans-serif' font-size='13' font-weight='700' fill='url(%23g)'%3EA%3C/text%3E%3C/svg%3E"/>
 
   <!-- Distinctive fonts: Rajdhani · JetBrains Mono · IBM Plex Sans -->
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
@@ -1167,6 +1170,371 @@
       .output-area { padding: 12px 14px; }
       .input-row { padding: 8px 10px; }
     }
+    /* ══════════════════════════════════════════════════════════
+       BRONNY CONTROL PANEL
+    ══════════════════════════════════════════════════════════ */
+    /* Make Bronny pill clickable when online */
+    .bronny-pill { cursor: pointer !important; }
+    .bronny-pill:not(.offline):hover { 
+      background: rgba(255,60,160,0.18) !important;
+      border-color: rgba(255,60,160,0.55) !important;
+      transform: scale(1.03);
+    }
+    .bronny-pill::after { content: ' ⬡'; font-size: 9px; opacity: 0.5; }
+    .bronny-pill.offline::after { display: none; }
+
+    /* Bronny drawer — slides up from bottom */
+    #bronnyPanel {
+      position: fixed; inset: 0; z-index: 200;
+      display: none; align-items: flex-end;
+      background: var(--overlay); backdrop-filter: blur(8px);
+    }
+    #bronnyPanel.open { display: flex; }
+    .bronny-drawer {
+      width: 100%; max-height: 88vh;
+      background: var(--bg2); border-top: 1px solid var(--border2);
+      border-radius: 20px 20px 0 0;
+      display: flex; flex-direction: column; overflow: hidden;
+      animation: drawerUp 0.3s cubic-bezier(0.2,0,0,1);
+      box-shadow: 0 -20px 60px rgba(0,0,0,0.6);
+    }
+    @keyframes drawerUp {
+      from { transform: translateY(60px); opacity: 0; }
+      to   { transform: none; opacity: 1; }
+    }
+    /* Drag handle */
+    .bronny-handle {
+      width: 36px; height: 4px; background: var(--border2);
+      border-radius: 2px; margin: 10px auto 0;
+      flex-shrink: 0; cursor: grab;
+    }
+    /* Header */
+    .bronny-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 20px 10px;
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .bronny-title {
+      display: flex; align-items: center; gap: 10px;
+    }
+    .bronny-title-text {
+      font-family: 'Rajdhani', sans-serif; font-size: 18px; font-weight: 700;
+      letter-spacing: 0.1em; text-transform: uppercase;
+      background: linear-gradient(90deg, #ff60b0, #ff3ca0, var(--accent2));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .bronny-version-badge {
+      font-family: 'JetBrains Mono', monospace; font-size: 10px;
+      color: var(--muted); background: var(--bg3); border: 1px solid var(--border);
+      border-radius: 8px; padding: 2px 8px;
+    }
+    .bronny-online-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #ff60b0; animation: pulse 1.8s infinite;
+      box-shadow: 0 0 8px rgba(255,60,160,0.6);
+      flex-shrink: 0;
+    }
+    .bronny-close {
+      background: none; border: 1px solid var(--border); color: var(--muted);
+      border-radius: 8px; padding: 5px 12px; cursor: pointer; font-family: inherit;
+      font-size: 13px; transition: all 0.15s;
+    }
+    .bronny-close:hover { color: var(--warn); border-color: var(--warn); }
+
+    /* Tabs */
+    .bronny-tabs {
+      display: flex; gap: 2px; padding: 8px 20px;
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .bronny-tab {
+      font-family: 'Rajdhani', sans-serif; font-size: 12px; font-weight: 700;
+      letter-spacing: 0.1em; text-transform: uppercase;
+      padding: 6px 16px; border-radius: 8px; cursor: pointer;
+      border: 1px solid transparent; color: var(--muted);
+      transition: all 0.15s; background: none;
+    }
+    .bronny-tab:hover { color: var(--text2); border-color: var(--border); }
+    .bronny-tab.active {
+      color: #ff3ca0; border-color: rgba(255,60,160,0.4);
+      background: rgba(255,60,160,0.07);
+    }
+
+    /* Tab body */
+    .bronny-tab-body {
+      flex: 1; overflow-y: auto; padding: 18px 22px;
+      display: none;
+    }
+    .bronny-tab-body.active { display: block; }
+
+    /* ── Controls Tab ── */
+    .bronny-control-row {
+      display: flex; align-items: center; gap: 14px;
+      margin-bottom: 18px;
+    }
+    .bronny-control-label {
+      font-family: 'Rajdhani', sans-serif; font-size: 13px; font-weight: 600;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--text2); min-width: 100px; flex-shrink: 0;
+    }
+    .bronny-slider-wrap { flex: 1; display: flex; align-items: center; gap: 12px; }
+    .bronny-slider {
+      flex: 1; -webkit-appearance: none; height: 4px;
+      background: var(--border); border-radius: 2px; outline: none;
+      cursor: pointer;
+    }
+    .bronny-slider::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 16px; height: 16px;
+      border-radius: 50%; background: linear-gradient(135deg, #ff3ca0, var(--accent2));
+      cursor: pointer; box-shadow: 0 0 8px rgba(255,60,160,0.5);
+      border: 2px solid var(--bg2);
+    }
+    .bronny-slider::-moz-range-thumb {
+      width: 16px; height: 16px; border-radius: 50%;
+      background: linear-gradient(135deg, #ff3ca0, var(--accent2));
+      cursor: pointer; border: 2px solid var(--bg2);
+    }
+    .bronny-val {
+      font-family: 'JetBrains Mono', monospace; font-size: 12px;
+      color: var(--accent); min-width: 36px; text-align: right;
+    }
+    .bronny-action-btns {
+      display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px;
+    }
+    .bronny-btn {
+      display: flex; align-items: center; gap: 7px;
+      font-family: 'Rajdhani', sans-serif; font-size: 13px; font-weight: 700;
+      letter-spacing: 0.07em; text-transform: uppercase;
+      padding: 9px 18px; border-radius: 9px; cursor: pointer;
+      border: 1px solid var(--border); color: var(--text2);
+      background: var(--card); transition: all 0.15s;
+    }
+    .bronny-btn:hover { border-color: var(--border2); color: var(--text); background: var(--card2, var(--bg3)); }
+    .bronny-btn.danger  { border-color: rgba(255,56,96,0.3); color: var(--warn); }
+    .bronny-btn.danger:hover  { background: rgba(255,56,96,0.1); border-color: var(--warn); }
+    .bronny-btn.pink    { border-color: rgba(255,60,160,0.35); color: #ff60b0; }
+    .bronny-btn.pink:hover    { background: rgba(255,60,160,0.1); border-color: #ff3ca0; }
+    .bronny-btn.active  {
+      background: rgba(255,60,160,0.12);
+      border-color: rgba(255,60,160,0.6); color: #ff3ca0;
+      box-shadow: 0 0 12px rgba(255,60,160,0.2);
+    }
+    .bronny-btn.active.cyan  {
+      background: rgba(0,232,255,0.1); border-color: var(--accent); color: var(--accent);
+      box-shadow: 0 0 12px rgba(0,232,255,0.2);
+    }
+
+    /* ── Party Mode Tab ── */
+    .party-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+      margin-bottom: 20px;
+    }
+    @media(max-width:640px){ .party-grid { grid-template-columns: 1fr; } }
+    .party-select-group label {
+      display: block; font-family: 'Rajdhani', sans-serif; font-size: 11px;
+      font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--text2); margin-bottom: 7px;
+    }
+    .bronny-select {
+      width: 100%; padding: 8px 12px; border-radius: 8px;
+      background: var(--bg3); border: 1px solid var(--border);
+      color: var(--text); font-family: 'IBM Plex Sans', sans-serif; font-size: 13px;
+      outline: none; cursor: pointer; transition: border-color 0.15s;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23324e65' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 10px center;
+      padding-right: 32px;
+    }
+    .bronny-select:focus { border-color: #ff3ca0; }
+    .party-speed-row { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+    .party-activate-btn {
+      width: 100%; padding: 14px; border-radius: 12px;
+      font-family: 'Rajdhani', sans-serif; font-size: 16px; font-weight: 700;
+      letter-spacing: 0.14em; text-transform: uppercase;
+      cursor: pointer; border: none;
+      background: linear-gradient(135deg, #ff3ca0, var(--accent2));
+      color: #fff; transition: all 0.2s;
+      box-shadow: 0 4px 20px rgba(255,60,160,0.25);
+    }
+    .party-activate-btn:hover { filter: brightness(1.12); transform: translateY(-1px); box-shadow: 0 8px 30px rgba(255,60,160,0.35); }
+    .party-activate-btn.active {
+      background: linear-gradient(135deg, var(--warn), #c01040);
+      box-shadow: 0 4px 20px rgba(255,56,96,0.3);
+      animation: partyGlow 2s ease-in-out infinite;
+    }
+    @keyframes partyGlow {
+      0%,100% { box-shadow: 0 0 20px rgba(255,60,160,0.4), 0 0 40px rgba(124,60,255,0.2); }
+      33%      { box-shadow: 0 0 20px rgba(0,232,255,0.4), 0 0 40px rgba(255,60,160,0.2); }
+      66%      { box-shadow: 0 0 20px rgba(124,60,255,0.4), 0 0 40px rgba(0,232,255,0.2); }
+    }
+
+    /* LED color swatches */
+    .led-swatches {
+      display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; margin-bottom: 18px;
+    }
+    .led-swatch {
+      width: 28px; height: 28px; border-radius: 50%; cursor: pointer;
+      border: 2px solid transparent; transition: all 0.15s; flex-shrink: 0;
+    }
+    .led-swatch:hover, .led-swatch.active { border-color: var(--text); transform: scale(1.15); }
+    .led-swatch.active { box-shadow: 0 0 12px currentColor; }
+
+    /* ── Media Player Tab ── */
+    .media-mode-toggle {
+      display: flex; gap: 4px; margin-bottom: 18px;
+    }
+    .media-mode-btn {
+      flex: 1; padding: 9px; border-radius: 9px;
+      font-family: 'Rajdhani', sans-serif; font-size: 13px; font-weight: 700;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      cursor: pointer; border: 1px solid var(--border);
+      color: var(--muted); background: var(--card); transition: all 0.15s;
+    }
+    .media-mode-btn.active {
+      background: rgba(0,232,255,0.08); border-color: var(--accent); color: var(--accent);
+    }
+
+    /* Search bar */
+    .yt-search-row {
+      display: flex; gap: 8px; margin-bottom: 16px;
+    }
+    .yt-search-input {
+      flex: 1; background: var(--bg3); border: 1px solid var(--border);
+      border-radius: 9px; padding: 9px 14px; color: var(--text);
+      font-family: 'IBM Plex Sans', sans-serif; font-size: 14px; outline: none;
+      transition: border-color 0.15s;
+    }
+    .yt-search-input:focus { border-color: var(--accent); }
+    .yt-search-input::placeholder { color: var(--muted); }
+    .yt-search-btn {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #000; border: none; border-radius: 9px;
+      padding: 9px 20px; cursor: pointer;
+      font-family: 'Rajdhani', sans-serif; font-size: 13px; font-weight: 700;
+      letter-spacing: 0.08em; text-transform: uppercase; transition: all 0.15s;
+      flex-shrink: 0;
+    }
+    .yt-search-btn:hover { filter: brightness(1.1); }
+    .yt-search-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Results grid */
+    .yt-results {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 10px; margin-bottom: 16px; max-height: 320px; overflow-y: auto;
+    }
+    @media(max-width:520px) { .yt-results { grid-template-columns: 1fr 1fr; } }
+    .yt-result-card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 9px; overflow: hidden; cursor: pointer;
+      transition: all 0.15s; position: relative;
+    }
+    .yt-result-card:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: 0 4px 16px var(--shadow); }
+    .yt-result-card.playing { border-color: rgba(255,60,160,0.6); box-shadow: 0 0 0 2px rgba(255,60,160,0.15); }
+    .yt-thumb-wrap { position: relative; width: 100%; aspect-ratio: 16/9; overflow: hidden; background: var(--bg); }
+    .yt-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .yt-thumb-overlay {
+      position: absolute; inset: 0;
+      background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center;
+      opacity: 0; transition: opacity 0.15s;
+    }
+    .yt-result-card:hover .yt-thumb-overlay { opacity: 1; }
+    .yt-play-icon { font-size: 26px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.6)); }
+    .yt-duration {
+      position: absolute; bottom: 4px; right: 5px;
+      background: rgba(0,0,0,0.75); color: #fff;
+      font-family: 'JetBrains Mono', monospace; font-size: 10px;
+      padding: 1px 5px; border-radius: 4px;
+    }
+    .yt-result-info { padding: 8px 9px; }
+    .yt-result-title {
+      font-size: 11.5px; color: var(--text); line-height: 1.4;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden; margin-bottom: 3px;
+    }
+    .yt-result-channel { font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .yt-spinner {
+      grid-column: 1/-1; text-align: center; padding: 24px;
+      font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--muted);
+    }
+    .yt-empty { grid-column: 1/-1; text-align: center; padding: 28px 0;
+      font-size: 12px; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
+
+    /* Queue list */
+    .yt-queue-section { margin-top: 12px; }
+    .yt-queue-title {
+      font-family: 'Rajdhani', sans-serif; font-size: 11px; font-weight: 700;
+      letter-spacing: 0.14em; text-transform: uppercase; color: var(--text2);
+      margin-bottom: 8px;
+    }
+    .yt-queue-list { display: flex; flex-direction: column; gap: 4px; max-height: 130px; overflow-y: auto; }
+    .yt-queue-item {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 7px; padding: 6px 10px; font-size: 11.5px; cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .yt-queue-item:hover { border-color: var(--accent); }
+    .yt-queue-item.playing { border-color: rgba(255,60,160,0.5); color: #ff60b0; }
+    .yt-queue-num { font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--muted); min-width: 14px; }
+    .yt-queue-title-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .yt-queue-dur { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted); flex-shrink: 0; }
+    .yt-queue-x { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 11px; padding: 0 2px; transition: color 0.15s; }
+    .yt-queue-x:hover { color: var(--warn); }
+
+    /* Now Playing bar */
+    .now-playing {
+      border-top: 1px solid var(--border);
+      padding: 14px 22px; flex-shrink: 0;
+      background: var(--bg2);
+    }
+    .now-playing.hidden { display: none; }
+    .now-playing-inner {
+      max-width: 900px; margin: 0 auto;
+      display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    }
+    .now-playing-thumb {
+      width: 60px; height: 34px; object-fit: cover;
+      border-radius: 5px; flex-shrink: 0; background: var(--bg3);
+      border: 1px solid var(--border);
+    }
+    .now-playing-info { flex: 1; min-width: 0; }
+    .now-playing-title {
+      font-size: 12.5px; color: var(--text); white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis; font-weight: 500;
+      margin-bottom: 4px;
+    }
+    .now-playing-progress { display: flex; align-items: center; gap: 8px; }
+    .progress-bar-wrap {
+      flex: 1; height: 4px; background: var(--border); border-radius: 2px;
+      cursor: pointer; position: relative; overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%; background: linear-gradient(90deg, #ff3ca0, var(--accent2));
+      border-radius: 2px; width: 0%; transition: width 0.5s linear;
+    }
+    .progress-bar-wrap:hover .progress-bar-fill { filter: brightness(1.2); }
+    .progress-time {
+      font-family: 'JetBrains Mono', monospace; font-size: 10px;
+      color: var(--muted); white-space: nowrap; flex-shrink: 0;
+    }
+    .now-playing-controls {
+      display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+    }
+    .np-btn {
+      background: none; border: 1px solid var(--border); color: var(--text2);
+      border-radius: 7px; padding: 5px 10px; cursor: pointer; font-size: 14px;
+      transition: all 0.15s; line-height: 1;
+    }
+    .np-btn:hover { color: var(--accent); border-color: var(--accent); }
+    .np-btn.active { color: #ff3ca0; border-color: rgba(255,60,160,0.5); background: rgba(255,60,160,0.08); }
+    .rainbow-toggle {
+      display: flex; align-items: center; gap: 6px;
+      font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted);
+      cursor: pointer; user-select: none;
+    }
+    .rainbow-toggle input { cursor: pointer; accent-color: #ff3ca0; }
+    .rainbow-toggle.active { color: #ff60b0; }
+
   </style>
 </head>
 <body>
@@ -1279,10 +1647,10 @@
         <span class="pill-dot"></span>
         <span id="devicePillText">No device</span>
       </div>
-      <div class="bronny-pill offline" id="bronnyPill" title="Bronny AI ESP32">
+      <button class="bronny-pill offline" id="bronnyPill" title="Click to control Bronny (offline)" onclick="openBronnyPanel()">
         <span class="pill-dot"></span>
         <span id="bronnyPillText">Bronny offline</span>
-      </div>
+      </button>
       <span id="clockDisplay" class="desktop-only"></span>
       <button class="icon-btn desktop-only" onclick="toggleTheme()" id="themeBtn" title="Toggle theme">🌙</button>
       <button class="icon-btn desktop-only" onclick="openShortcuts()" title="Keyboard shortcuts (?)">⌨</button>
@@ -2341,7 +2709,7 @@ async function refreshDevices() {
   } catch {}
 }
 
-function updateBronnyBadge(online, version) {
+function _updateBronnyBadgeLegacy(online, version) {
   const pill = document.getElementById('bronnyPill');
   const txt  = document.getElementById('bronnyPillText');
   if (!pill) return;
@@ -2359,7 +2727,7 @@ async function refreshBronnyStatus() {
     const res = await fetch(`${BASE_URL}/bronny/status`);
     if (!res.ok) return;
     const d = await res.json();
-    updateBronnyBadge(d.online, d.version);
+    updateBronnyBadge(d.online, d.version); // calls the new Bronny panel version
   } catch {}
 }
 
@@ -2584,7 +2952,636 @@ document.addEventListener('keydown', e => {
 });
 
 /* ── Kick off ── */
+
+/* ══════════════════════════════════════════════════════════
+   BRONNY CONTROL PANEL
+══════════════════════════════════════════════════════════ */
+let _bronnyOnline  = false;
+let _bronnyVersion = '';
+let _partyActive   = false;
+let _mediaMode     = 'video'; // 'video' | 'audio'
+let _ytQueue       = [];      // [{videoId, title, channel, duration, thumb}]
+let _ytQueueIdx    = -1;
+let _playStartedAt = null;    // Date.now() when playback started
+let _playDuration  = 0;       // total seconds
+let _paused        = false;
+let _pausedAt      = 0;       // how many seconds elapsed when paused
+let _npRafId       = null;
+
+// ── Party swatches ──
+(function initSwatches() {
+  const colors = ['#ff3ca0','#ff8c1a','#ffeb3b','#00ffa3','#00e8ff','#7c3cff','#ffffff','#ff3860'];
+  const wrap = document.getElementById('partyColorSwatches');
+  if (!wrap) return;
+  colors.forEach((col, i) => {
+    const s = document.createElement('div');
+    s.className = 'led-swatch' + (i===0?' active':'');
+    s.style.background = col;
+    s.dataset.color = col;
+    s.onclick = () => {
+      wrap.querySelectorAll('.led-swatch').forEach(x=>x.classList.remove('active'));
+      s.classList.add('active');
+    };
+    wrap.appendChild(s);
+  });
+})();
+
+// ── Panel open/close ──
+function openBronnyPanel() {
+  if (!_bronnyOnline) { showToast('Bronny is offline', 'warn'); return; }
+  document.getElementById('bronnyPanel').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+function closeBronnyPanel() {
+  document.getElementById('bronnyPanel').classList.remove('open');
+  document.body.style.overflow = '';
+}
+function closeBronnyOnBg(e) {
+  if (e.target.id === 'bronnyPanel') closeBronnyPanel();
+}
+
+// ── Tab switching ──
+function setBronnyTab(name, btn) {
+  document.querySelectorAll('.bronny-tab').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.bronny-tab-body').forEach(b=>b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  const body = document.getElementById('bronny-tab-' + name);
+  if (body) body.classList.add('active');
+}
+
+// ── Update badge (enhanced) ──
+function updateBronnyBadge(online, version) {
+  _bronnyOnline  = online;
+  _bronnyVersion = version || '';
+  const pill = document.getElementById('bronnyPill');
+  const txt  = document.getElementById('bronnyPillText');
+  const dot  = document.getElementById('bronnyPanelDot');
+  const ver  = document.getElementById('bronnyPanelVersion');
+  if (!pill) return;
+  if (online) {
+    pill.className = 'bronny-pill';
+    txt.textContent = version ? `Bronny v${version}` : 'Bronny online';
+    pill.title = 'Click to control Bronny';
+    if (dot) dot.style.background = '#ff60b0';
+    if (ver && version) ver.textContent = `v${version}`;
+  } else {
+    pill.className = 'bronny-pill offline';
+    txt.textContent = 'Bronny offline';
+    pill.title = 'Bronny AI offline';
+    closeBronnyPanel();
+  }
+}
+
+// ── Generic Bronny command ──
+async function bronnyCommand(payload) {
+  try {
+    const res = await fetch(`${BASE_URL}/bronny/control`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Api-Key': API_KEY },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(()=>({}));
+      showToast(err.detail || `Bronny error: ${res.status}`, 'error');
+      return null;
+    }
+    return await res.json();
+  } catch(e) {
+    showToast(`Bronny unreachable: ${e.message}`, 'error');
+    return null;
+  }
+}
+
+// ── Volume ──
+async function bronnySetVolume(val) {
+  await bronnyCommand({ command: 'volume', value: parseInt(val) });
+}
+
+// ── Brightness ──
+async function bronnySetBrightness(val) {
+  await bronnyCommand({ command: 'brightness', value: parseInt(val) });
+}
+
+// ── LED ──
+async function bronnySetLed() {
+  const mode  = document.getElementById('bronnyLedMode').value;
+  const color = document.getElementById('bronnyLedColor').value;
+  const speed = parseInt(document.getElementById('bronnyLedSpeed').value);
+  await bronnyCommand({ command: 'led', mode, color, speed });
+}
+
+// ── Sleep ──
+async function bronnySleep() {
+  showConfirm('Put Bronny to sleep?', '💤', async () => {
+    await bronnyCommand({ command: 'sleep' });
+    showToast('Bronny going to sleep…', 'info');
+    closeBronnyPanel();
+  });
+}
+
+// ── Restart ──
+async function bronnyRestart() {
+  showConfirm('Restart Bronny?', '↺', async () => {
+    await bronnyCommand({ command: 'restart' });
+    showToast('Bronny restarting…', 'info');
+    closeBronnyPanel();
+  });
+}
+
+// ── Party Mode ──
+async function togglePartyMode() {
+  _partyActive = !_partyActive;
+  const btn     = document.getElementById('partyActivateBtn');
+  const status  = document.getElementById('partyStatus');
+  const vis     = document.getElementById('partyVisualizer').value;
+  const led     = document.getElementById('partyLed').value;
+  const speed   = parseInt(document.getElementById('partySpeed').value);
+  const swatches = document.getElementById('partyColorSwatches');
+  const active  = swatches ? swatches.querySelector('.led-swatch.active') : null;
+  const color   = active ? active.dataset.color : '#ff3ca0';
+
+  if (_partyActive) {
+    btn.textContent = '⏹ DEACTIVATE PARTY MODE';
+    btn.classList.add('active');
+    status.textContent = `Visualizer: ${vis} · LED: ${led} · Speed: ${speed}`;
+    await bronnyCommand({ command: 'party', active: true, visualizer: vis, led_mode: led, speed, color });
+    showToast('🎉 Party mode activated!', 'success');
+  } else {
+    btn.textContent = '🎉 ACTIVATE PARTY MODE';
+    btn.classList.remove('active');
+    status.textContent = '';
+    await bronnyCommand({ command: 'party', active: false });
+    showToast('Party mode deactivated', 'info');
+  }
+}
+
+/* ══════════════════════════════════════════════════════════
+   YOUTUBE SEARCH & PLAYER
+══════════════════════════════════════════════════════════ */
+// Invidious fallback instances (tried in order)
+const INVIDIOUS = [
+  'https://invidious.privacyredirect.com',
+  'https://inv.nadeko.net',
+  'https://yewtu.be',
+];
+let _invidiousIdx = 0;
+
+function fmtDuration(secs) {
+  if (!secs) return '';
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  if (h) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  return `${m}:${String(s).padStart(2,'0')}`;
+}
+
+async function ytSearch() {
+  const q = document.getElementById('ytSearchInput').value.trim();
+  if (!q) return;
+  const btn = document.getElementById('ytSearchBtn');
+  const results = document.getElementById('ytResults');
+  btn.disabled = true;
+  btn.textContent = '…';
+  results.innerHTML = '<div class="yt-spinner">🔍 Searching…</div>';
+
+  let videos = null;
+
+  // 1. Try backend endpoint first
+  try {
+    const res = await fetch(`${BASE_URL}/youtube/search?q=${encodeURIComponent(q)}&limit=12`, {
+      headers: { 'X-Api-Key': API_KEY }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      videos = data.videos || data || null;
+    }
+  } catch {}
+
+  // 2. Fallback: Invidious API
+  if (!videos || !videos.length) {
+    for (let attempt = 0; attempt < INVIDIOUS.length; attempt++) {
+      const base = INVIDIOUS[(_invidiousIdx + attempt) % INVIDIOUS.length];
+      try {
+        const res = await fetch(
+          `${base}/api/v1/search?q=${encodeURIComponent(q)}&fields=videoId,title,author,videoThumbnails,lengthSeconds&type=video`,
+          { signal: AbortSignal.timeout(6000) }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          videos = data.map(v => ({
+            videoId: v.videoId,
+            title: v.title,
+            channel: v.author,
+            duration: v.lengthSeconds,
+            thumb: `https://img.youtube.com/vi/${v.videoId}/mqdefault.jpg`,
+          })).filter(v => v.videoId);
+          _invidiousIdx = (_invidiousIdx + attempt) % INVIDIOUS.length;
+          break;
+        }
+      } catch {}
+    }
+  }
+
+  btn.disabled = false;
+  btn.textContent = '🔍 Search';
+
+  if (!videos || !videos.length) {
+    results.innerHTML = '<div class="yt-empty">No results found. Try a different query.</div>';
+    return;
+  }
+
+  results.innerHTML = videos.map((v,i) => `
+    <div class="yt-result-card" data-idx="${i}" onclick="addToQueue(${i})"
+         id="ytcard-${escHtml(v.videoId)}">
+      <div class="yt-thumb-wrap">
+        <img class="yt-thumb" src="${escHtml(v.thumb || 'https://img.youtube.com/vi/'+v.videoId+'/mqdefault.jpg')}"
+          alt="" loading="lazy" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22160%22 height=%2290%22%3E%3Crect fill=%22%230a1d35%22 width=%22160%22 height=%2290%22/%3E%3Ctext x=%2280%22 y=%2250%22 text-anchor=%22middle%22 fill=%22%23324e65%22 font-size=%2220%22%3E▶%3C/text%3E%3C/svg%3E'"/>
+        <div class="yt-thumb-overlay"><span class="yt-play-icon">▶</span></div>
+        ${v.duration ? `<span class="yt-duration">${fmtDuration(v.duration)}</span>` : ''}
+      </div>
+      <div class="yt-result-info">
+        <div class="yt-result-title">${escHtml(v.title)}</div>
+        <div class="yt-result-channel">${escHtml(v.channel || '')}</div>
+      </div>
+    </div>`).join('');
+
+  // Store search results for addToQueue reference
+  window._ytLastResults = videos;
+}
+
+function setMediaMode(mode, btn) {
+  _mediaMode = mode;
+  document.querySelectorAll('.media-mode-btn').forEach(b=>b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+}
+
+// Add video to queue and auto-play if nothing is playing
+function addToQueue(idx) {
+  const videos = window._ytLastResults || [];
+  const v = videos[idx];
+  if (!v) return;
+  // If clicking a video already in queue, jump to it
+  const existing = _ytQueue.findIndex(q => q.videoId === v.videoId);
+  if (existing >= 0) {
+    playQueueItem(existing);
+    return;
+  }
+  _ytQueue.push(v);
+  renderQueue();
+  if (_ytQueueIdx < 0) {
+    playQueueItem(_ytQueue.length - 1);
+  } else {
+    showToast(`Added to queue: ${v.title.slice(0,40)}`, 'info');
+  }
+}
+
+function renderQueue() {
+  const sec   = document.getElementById('ytQueueSection');
+  const list  = document.getElementById('ytQueueList');
+  const count = document.getElementById('ytQueueCount');
+  if (!_ytQueue.length) { if(sec)sec.style.display='none'; return; }
+  if (sec) sec.style.display = '';
+  if (count) count.textContent = _ytQueue.length;
+  if (!list) return;
+  list.innerHTML = _ytQueue.map((v,i) => `
+    <div class="yt-queue-item${i===_ytQueueIdx?' playing':''}" onclick="playQueueItem(${i})">
+      <span class="yt-queue-num">${i===_ytQueueIdx?'▶':i+1}</span>
+      <span class="yt-queue-title-text">${escHtml(v.title)}</span>
+      <span class="yt-queue-dur">${fmtDuration(v.duration)}</span>
+      <button class="yt-queue-x" onclick="removeFromQueue(${i},event)">✕</button>
+    </div>`).join('');
+}
+
+function removeFromQueue(i, e) {
+  e.stopPropagation();
+  if (i === _ytQueueIdx) bronnyStopMedia();
+  _ytQueue.splice(i, 1);
+  if (_ytQueueIdx >= _ytQueue.length) _ytQueueIdx = _ytQueue.length - 1;
+  renderQueue();
+}
+
+async function playQueueItem(idx) {
+  if (idx < 0 || idx >= _ytQueue.length) return;
+  _ytQueueIdx = idx;
+  const v = _ytQueue[idx];
+  const rainbow = document.getElementById('rainbowCheck')?.checked || false;
+  const ytUrl = `https://www.youtube.com/watch?v=${v.videoId}`;
+
+  showToast(`▶ Playing: ${v.title.slice(0,40)}…`, 'info');
+  renderQueue();
+
+  // Send to backend
+  const res = await bronnyCommand({
+    command:  'play',
+    url:      ytUrl,
+    mode:     _mediaMode,
+    rainbow:  rainbow,
+    title:    v.title,
+    duration: v.duration,
+  });
+
+  // Update Now Playing UI
+  _playDuration  = v.duration || 0;
+  _playStartedAt = Date.now();
+  _paused        = false;
+  _pausedAt      = 0;
+  updateNowPlayingUI(v);
+  startProgressTicker();
+
+  // Highlight card in results
+  document.querySelectorAll('.yt-result-card').forEach(c=>c.classList.remove('playing'));
+  const card = document.getElementById('ytcard-' + v.videoId);
+  if (card) card.classList.add('playing');
+}
+
+function updateNowPlayingUI(v) {
+  const bar = document.getElementById('nowPlayingBar');
+  if (bar) bar.classList.remove('hidden');
+  const thumb = document.getElementById('npThumb');
+  if (thumb) { thumb.src = v.thumb || ''; thumb.alt = v.title; }
+  const title = document.getElementById('npTitle');
+  if (title) title.textContent = v.title;
+  const dur = document.getElementById('npTimeDuration');
+  if (dur) dur.textContent = fmtDuration(v.duration);
+  const ppBtn = document.getElementById('npPlayPauseBtn');
+  if (ppBtn) ppBtn.textContent = '⏸';
+}
+
+function startProgressTicker() {
+  if (_npRafId) cancelAnimationFrame(_npRafId);
+  function tick() {
+    if (!_playStartedAt || _playDuration <= 0) return;
+    const elapsed = _paused
+      ? _pausedAt
+      : Math.min((Date.now() - _playStartedAt) / 1000 + _pausedAt, _playDuration);
+    const pct = Math.min((elapsed / _playDuration) * 100, 100);
+    const fill = document.getElementById('npProgressFill');
+    if (fill) fill.style.width = pct + '%';
+    const el = document.getElementById('npTimeElapsed');
+    if (el) el.textContent = fmtDuration(Math.floor(elapsed));
+    if (elapsed >= _playDuration && !_paused) {
+      // Auto-play next
+      bronnyNextTrack();
+      return;
+    }
+    _npRafId = requestAnimationFrame(tick);
+  }
+  _npRafId = requestAnimationFrame(tick);
+}
+
+async function bronnyPlayPause() {
+  if (!_bronnyOnline) return;
+  _paused = !_paused;
+  if (_paused) {
+    _pausedAt = Math.min((Date.now() - _playStartedAt) / 1000 + _pausedAt, _playDuration);
+    _playStartedAt = null;
+    await bronnyCommand({ command: 'pause' });
+  } else {
+    _playStartedAt = Date.now();
+    await bronnyCommand({ command: 'resume' });
+  }
+  const btn = document.getElementById('npPlayPauseBtn');
+  if (btn) btn.textContent = _paused ? '▶' : '⏸';
+}
+
+async function bronnyNextTrack() {
+  if (_ytQueueIdx < _ytQueue.length - 1) {
+    await playQueueItem(_ytQueueIdx + 1);
+  } else {
+    bronnyStopMedia();
+    showToast('Queue finished', 'info');
+  }
+}
+
+async function bronnyPrevTrack() {
+  const elapsed = _playStartedAt ? (Date.now() - _playStartedAt) / 1000 + _pausedAt : _pausedAt;
+  if (elapsed > 5 && _ytQueueIdx >= 0) {
+    // Restart current track if > 5s in
+    await playQueueItem(_ytQueueIdx);
+  } else if (_ytQueueIdx > 0) {
+    await playQueueItem(_ytQueueIdx - 1);
+  }
+}
+
+function bronnyStopMedia() {
+  if (_npRafId) { cancelAnimationFrame(_npRafId); _npRafId = null; }
+  _playStartedAt = null; _playDuration = 0; _paused = false; _pausedAt = 0;
+  _ytQueueIdx = -1;
+  const bar = document.getElementById('nowPlayingBar');
+  if (bar) bar.classList.add('hidden');
+  document.querySelectorAll('.yt-result-card').forEach(c=>c.classList.remove('playing'));
+  renderQueue();
+  bronnyCommand({ command: 'stop' });
+}
+
+async function seekVideo(e) {
+  if (!_playDuration) return;
+  const wrap  = e.currentTarget;
+  const rect  = wrap.getBoundingClientRect();
+  const pct   = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  const seekTo = Math.floor(pct * _playDuration);
+  _pausedAt      = seekTo;
+  _playStartedAt = _paused ? null : Date.now();
+  await bronnyCommand({ command: 'seek', position: seekTo });
+}
+
+function toggleRainbow(on) {
+  const label = document.getElementById('rainbowToggle');
+  if (label) label.classList.toggle('active', on);
+  if (_ytQueueIdx >= 0) {
+    bronnyCommand({ command: 'led', mode: on ? 'rainbow' : 'off', speed: 7 });
+  }
+}
+
+// Allow Enter to search
+document.addEventListener('DOMContentLoaded', () => {
+  const inp = document.getElementById('ytSearchInput');
+  if (inp) inp.addEventListener('keydown', e => { if (e.key==='Enter') ytSearch(); });
+});
+
 fetchServerConfig();
 </script>
+  <!-- ══════════════════════════════════════════════════════════
+       BRONNY CONTROL PANEL
+  ══════════════════════════════════════════════════════════ -->
+  <div id="bronnyPanel" onclick="closeBronnyOnBg(event)">
+    <div class="bronny-drawer" id="bronnyDrawer">
+      <div class="bronny-handle"></div>
+
+      <!-- Header -->
+      <div class="bronny-header">
+        <div class="bronny-title">
+          <div class="bronny-online-dot" id="bronnyPanelDot"></div>
+          <span class="bronny-title-text">Bronny Control</span>
+          <span class="bronny-version-badge" id="bronnyPanelVersion">v2.0</span>
+        </div>
+        <button class="bronny-close" onclick="closeBronnyPanel()">✕ Close</button>
+      </div>
+
+      <!-- Tabs -->
+      <div class="bronny-tabs">
+        <button class="bronny-tab active" data-tab="controls"  onclick="setBronnyTab('controls',this)">⚙ Controls</button>
+        <button class="bronny-tab"        data-tab="party"     onclick="setBronnyTab('party',this)">🎉 Party Mode</button>
+        <button class="bronny-tab"        data-tab="media"     onclick="setBronnyTab('media',this)">▶ Media</button>
+      </div>
+
+      <!-- ── Tab: Controls ── -->
+      <div class="bronny-tab-body active" id="bronny-tab-controls">
+        <div class="bronny-control-row">
+          <span class="bronny-control-label">🔊 Volume</span>
+          <div class="bronny-slider-wrap">
+            <input type="range" class="bronny-slider" id="bronnyVolume" min="0" max="100" value="70"
+              oninput="document.getElementById('bronnyVolumeVal').textContent=this.value+'%'"
+              onchange="bronnySetVolume(this.value)"/>
+            <span class="bronny-val" id="bronnyVolumeVal">70%</span>
+          </div>
+        </div>
+        <div class="bronny-control-row">
+          <span class="bronny-control-label">☀️ Brightness</span>
+          <div class="bronny-slider-wrap">
+            <input type="range" class="bronny-slider" id="bronnyBrightness" min="0" max="100" value="60"
+              oninput="document.getElementById('bronnyBrightnessVal').textContent=this.value+'%'"
+              onchange="bronnySetBrightness(this.value)"/>
+            <span class="bronny-val" id="bronnyBrightnessVal">60%</span>
+          </div>
+        </div>
+        <div class="bronny-control-row">
+          <span class="bronny-control-label">💡 LED</span>
+          <div style="flex:1">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+              <select class="bronny-select" id="bronnyLedMode" onchange="bronnySetLed()" style="max-width:160px">
+                <option value="off">Off</option>
+                <option value="rainbow" selected>Rainbow</option>
+                <option value="pulse">Pulse</option>
+                <option value="breathe">Breathe</option>
+                <option value="strobe">Strobe</option>
+                <option value="chase">Chase</option>
+                <option value="solid">Solid Color</option>
+                <option value="meteor">Meteor</option>
+                <option value="sparkle">Sparkle</option>
+              </select>
+              <input type="color" id="bronnyLedColor" value="#ff3ca0" 
+                onchange="bronnySetLed()" 
+                style="width:36px;height:36px;border:1px solid var(--border);border-radius:7px;background:none;cursor:pointer;padding:2px"/>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted)">Speed</span>
+              <input type="range" class="bronny-slider" id="bronnyLedSpeed" min="1" max="10" value="5"
+                oninput="document.getElementById('bronnyLedSpeedVal').textContent=this.value"
+                onchange="bronnySetLed()" style="max-width:140px"/>
+              <span class="bronny-val" id="bronnyLedSpeedVal">5</span>
+            </div>
+          </div>
+        </div>
+        <div class="bronny-action-btns">
+          <button class="bronny-btn danger" onclick="bronnySleep()">💤 Sleep</button>
+          <button class="bronny-btn" onclick="bronnyRestart()">↺ Restart</button>
+          <button class="bronny-btn pink" onclick="setBronnyTab('party',document.querySelector('[data-tab=party]'))">🎉 Party Mode →</button>
+          <button class="bronny-btn pink" onclick="setBronnyTab('media',document.querySelector('[data-tab=media]'))">▶ Media →</button>
+        </div>
+      </div>
+
+      <!-- ── Tab: Party Mode ── -->
+      <div class="bronny-tab-body" id="bronny-tab-party">
+        <div class="party-grid">
+          <div class="party-select-group">
+            <label>🎵 Visualizer</label>
+            <select class="bronny-select" id="partyVisualizer">
+              <option value="bars">Bars</option>
+              <option value="wave">Wave</option>
+              <option value="spectrum">Spectrum</option>
+              <option value="circle">Circle</option>
+              <option value="matrix">Matrix</option>
+              <option value="dots">Dots</option>
+              <option value="spiral">Spiral</option>
+              <option value="fireworks">Fireworks</option>
+            </select>
+          </div>
+          <div class="party-select-group">
+            <label>💡 LED Form</label>
+            <select class="bronny-select" id="partyLed">
+              <option value="rainbow">Rainbow Cycle</option>
+              <option value="chase">Color Chase</option>
+              <option value="strobe">Strobe Sync</option>
+              <option value="pulse">Beat Pulse</option>
+              <option value="meteor">Meteor Rain</option>
+              <option value="sparkle">Sparkle</option>
+              <option value="fire">Fire</option>
+              <option value="breathe">Breathe</option>
+            </select>
+          </div>
+        </div>
+        <div class="party-speed-row">
+          <span class="bronny-control-label" style="min-width:80px">⚡ Speed</span>
+          <input type="range" class="bronny-slider" id="partySpeed" min="1" max="10" value="6"
+            oninput="document.getElementById('partySpeedVal').textContent=this.value"/>
+          <span class="bronny-val" id="partySpeedVal">6</span>
+        </div>
+        <div class="led-swatches" id="partyColorSwatches">
+          <!-- filled by JS -->
+        </div>
+        <button class="party-activate-btn" id="partyActivateBtn" onclick="togglePartyMode()">
+          🎉 ACTIVATE PARTY MODE
+        </button>
+        <div style="margin-top:14px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);text-align:center" id="partyStatus"></div>
+      </div>
+
+      <!-- ── Tab: Media Player ── -->
+      <div class="bronny-tab-body" id="bronny-tab-media">
+        <!-- Mode toggle -->
+        <div class="media-mode-toggle">
+          <button class="media-mode-btn active" id="modeVideoBtn" onclick="setMediaMode('video',this)">🎬 Video</button>
+          <button class="media-mode-btn" id="modeAudioBtn" onclick="setMediaMode('audio',this)">🎵 Audio Only</button>
+        </div>
+
+        <!-- YouTube search -->
+        <div class="yt-search-row">
+          <input class="yt-search-input" id="ytSearchInput" placeholder="Search YouTube…"
+            onkeydown="if(event.key==='Enter')ytSearch()"/>
+          <button class="yt-search-btn" id="ytSearchBtn" onclick="ytSearch()">🔍 Search</button>
+        </div>
+
+        <!-- Results -->
+        <div class="yt-results" id="ytResults">
+          <div class="yt-empty">Search for a video or song to play on Bronny 🎵</div>
+        </div>
+
+        <!-- Queue -->
+        <div class="yt-queue-section" id="ytQueueSection" style="display:none">
+          <div class="yt-queue-title">Queue (<span id="ytQueueCount">0</span>)</div>
+          <div class="yt-queue-list" id="ytQueueList"></div>
+        </div>
+      </div>
+
+      <!-- Now Playing bar (always visible at bottom when playing) -->
+      <div class="now-playing hidden" id="nowPlayingBar">
+        <div class="now-playing-inner">
+          <img class="now-playing-thumb" id="npThumb" src="" alt=""/>
+          <div class="now-playing-info">
+            <div class="now-playing-title" id="npTitle">Nothing playing</div>
+            <div class="now-playing-progress">
+              <span class="progress-time" id="npTimeElapsed">0:00</span>
+              <div class="progress-bar-wrap" id="npProgressWrap" onclick="seekVideo(event)">
+                <div class="progress-bar-fill" id="npProgressFill"></div>
+              </div>
+              <span class="progress-time" id="npTimeDuration">0:00</span>
+            </div>
+          </div>
+          <div class="now-playing-controls">
+            <button class="np-btn" onclick="bronnyPrevTrack()" title="Previous">⏮</button>
+            <button class="np-btn" id="npPlayPauseBtn" onclick="bronnyPlayPause()" title="Play/Pause">⏸</button>
+            <button class="np-btn" onclick="bronnyNextTrack()" title="Next">⏭</button>
+            <button class="np-btn" onclick="bronnyStopMedia()" title="Stop">⏹</button>
+            <label class="rainbow-toggle" id="rainbowToggle">
+              <input type="checkbox" id="rainbowCheck" onchange="toggleRainbow(this.checked)"/>
+              🌈 LED
+            </label>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /bronny-drawer -->
+  </div><!-- /bronnyPanel -->
+
 </body>
 </html>
