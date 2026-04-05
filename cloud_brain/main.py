@@ -3,24 +3,11 @@ AetherAI Cloud Brain — Stage 7.1 (Bronny Control Panel)
 
 Stage 7.1 additions
 ────────────────────
-BRONNY 3  POST /bronny/control  — queue a command for Bronny (volume, brightness,
-          LED, sleep, restart, party, play, pause, resume, next, stop, seek).
-          Commands are delivered to the device on its next /bronny/heartbeat call.
-BRONNY 4  GET  /youtube/search  — search YouTube via yt-dlp, returns video list.
-          Falls back gracefully if yt-dlp is unavailable (UI uses Invidious then).
-BRONNY 5  GET  /bronny/media    — stream audio/video from a YouTube URL to the
-          caller (ESP32 or browser).  mode=audio → MP3, mode=video → best ≤480p.
-UPDATED   POST /bronny/heartbeat — response now includes a `commands` list that
-          the ESP32 must parse and execute, then clear.
-
-Stage 7 retained
-─────────────────
-BRONNY 1  POST /bronny/heartbeat — device keepalive + task-list entry on connect
-BRONNY 2  GET  /bronny/status   — online/offline badge poll
-VOICE 2   GET  /tts/voices      — list edge-tts voices
-VOICE 3   POST /voice/text      — pre-transcribed text → LLM → TTS → MP3
-SSE 1     POST /stream          — SSE streaming for chat commands
-All Stage 5/6 fixes retained.
+BRONNY 3  POST /bronny/control  — queue a command for Bronny; delivered on next heartbeat
+BRONNY 4  GET  /youtube/search  — YouTube search via yt-dlp (501 if not installed)
+BRONNY 5  GET  /bronny/media    — stream audio/video from YouTube URL to ESP32
+UPDATED   POST /bronny/heartbeat — response now includes `commands` list for the ESP32
+UPDATED   /youtube added to _PUBLIC_PREFIXES
 """
 
 from contextlib import asynccontextmanager
@@ -56,13 +43,13 @@ ws_manager   = WebSocketManager()
 memory       = MemoryManager()
 orchestrator = Orchestrator(memory=memory, ws_manager=ws_manager)
 
-_UI_SESSION_TOKEN   = secrets.token_urlsafe(24)
+_UI_SESSION_TOKEN    = secrets.token_urlsafe(24)
 MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "5"))
 
-# ── Bronny device status (updated by /bronny/heartbeat) ──────────────────────
-_bronny_status: dict = {"online": False, "last_seen": None, "version": None, "device": None}
+# ── Bronny device status ──────────────────────────────────────────────────────
+_bronny_status: dict = {"online": False, "last_seen": None, "version": None}
 
-# ── Bronny pending command queue (flushed on next heartbeat) ─────────────────
+# ── Bronny pending command queue (flushed on next heartbeat) ──────────────────
 _bronny_cmd_queue: deque = deque(maxlen=10)
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -89,11 +76,9 @@ app.add_middleware(
 
 # ── API key middleware ────────────────────────────────────────────────────────
 
-_PUBLIC_PREFIXES = (
-    "/ui", "/health", "/docs", "/openapi", "/redoc",
-    "/files/download", "/bronny", "/video", "/youtube",
-)
-_PUBLIC_EXACT = frozenset(["/", "/health", "/ui/config"])
+_PUBLIC_PREFIXES = ("/ui", "/health", "/docs", "/openapi", "/redoc",
+                    "/files/download", "/bronny", "/video", "/youtube")
+_PUBLIC_EXACT    = frozenset(["/", "/health", "/ui/config"])
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -105,10 +90,8 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         if request.headers.get("upgrade", "").lower() == "websocket":
             return await call_next(request)
         if request.headers.get("X-Api-Key", "") != settings.API_KEY:
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Invalid or missing API key. Set X-Api-Key header."},
-            )
+            return JSONResponse(status_code=401,
+                                content={"detail": "Invalid or missing API key. Set X-Api-Key header."})
         return await call_next(request)
 
 app.add_middleware(ApiKeyMiddleware)
@@ -151,18 +134,18 @@ class BronnyHeartbeatRequest(BaseModel):
 
 class BronnyControlRequest(BaseModel):
     command:    str
-    value:      Optional[int]  = None   # volume 0-100, brightness 0-100, seek seconds
-    mode:       Optional[str]  = None   # led mode string, or media mode "audio"/"video"
-    color:      Optional[str]  = None   # hex e.g. "#ff3ca0"
-    speed:      Optional[int]  = None   # 1-10
-    active:     Optional[bool] = None   # party on/off
-    visualizer: Optional[str]  = None   # "bars","wave","spectrum","circle",…
-    led_mode:   Optional[str]  = None   # party LED mode
-    url:        Optional[str]  = None   # YouTube URL for play command
-    rainbow:    Optional[bool] = None   # rainbow LED during playback
+    value:      Optional[int]  = None
+    mode:       Optional[str]  = None
+    color:      Optional[str]  = None
+    speed:      Optional[int]  = None
+    active:     Optional[bool] = None
+    visualizer: Optional[str]  = None
+    led_mode:   Optional[str]  = None
+    url:        Optional[str]  = None
+    rainbow:    Optional[bool] = None
     title:      Optional[str]  = None
-    duration:   Optional[int]  = None   # seconds
-    position:   Optional[int]  = None   # seek position in seconds
+    duration:   Optional[int]  = None
+    position:   Optional[int]  = None
 
 # ── Core endpoints ────────────────────────────────────────────────────────────
 
@@ -187,18 +170,14 @@ async def ui_config():
 async def receive_command(req: CommandRequest):
     stats = memory.get_task_stats()
     if (stats.get("running", 0) + stats.get("planning", 0)) >= MAX_CONCURRENT_TASKS:
-        raise HTTPException(
-            status_code=429,
-            detail="Too many tasks in progress. Wait for one to finish.",
-        )
+        raise HTTPException(status_code=429,
+                            detail="Too many tasks in progress. Wait for one to finish.")
     task_id    = str(uuid.uuid4())
     session_id = req.session_id or ""
     memory.create_task(task_id, req.command, req.source)
     asyncio.create_task(orchestrator.run_task(task_id, req.command, session_id))
-    return CommandResponse(
-        task_id=task_id, status="started",
-        message=f"Task received: '{req.command}'",
-    )
+    return CommandResponse(task_id=task_id, status="started",
+                           message=f"Task received: '{req.command}'")
 
 # ── SSE streaming endpoint ────────────────────────────────────────────────────
 
@@ -211,19 +190,14 @@ def _load_user_ctx() -> str:
 
 @app.post("/stream")
 async def stream_command(req: CommandRequest):
-    """SSE endpoint — streams chat tokens or returns task_id for task commands."""
     async def generate() -> AsyncGenerator[str, None]:
         user_ctx     = _load_user_ctx()
-        command_type = await orchestrator.qwen.classify_command(
-            req.command, user_context=user_ctx
-        )
+        command_type = await orchestrator.qwen.classify_command(req.command, user_context=user_ctx)
         if command_type == "chat":
             yield f"data: {json.dumps({'type': 'stream_start'})}\n\n"
             full = ""
             try:
-                async for chunk in orchestrator.qwen.stream_answer(
-                    req.command, user_context=user_ctx
-                ):
+                async for chunk in orchestrator.qwen.stream_answer(req.command, user_context=user_ctx):
                     full += chunk
                     yield f"data: {json.dumps({'type': 'chunk', 'text': chunk})}\n\n"
             except Exception as e:
@@ -236,22 +210,16 @@ async def stream_command(req: CommandRequest):
             asyncio.create_task(orchestrator.run_task(task_id, req.command, session_id))
             yield f"data: {json.dumps({'type': 'task_created', 'task_id': task_id})}\n\n"
 
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 # ── Voice endpoints ───────────────────────────────────────────────────────────
 
 @app.post("/voice/text")
 async def voice_text_chat(req: VoiceTextRequest):
     """
-    VOICE 3 — ESP32 sends pre-transcribed text (Deepgram streaming ASR on-device).
-    Skips STT entirely. Runs: text → Qwen LLM → edge-tts → MP3 bytes.
-
-    Special trigger "bootup_intro": returns a Bronny self-introduction directly,
-    skipping classify/plan. Sent by firmware doBootIntro() on first power-on.
+    VOICE 3 - ESP32 sends pre-transcribed text, returns TTS MP3.
+    Always uses bronny_answer() so Bronny never identifies as AetherAI.
     """
     from urllib.parse import quote as urlquote
     from agents.voice_agent import _voice_summarize, _safe_synthesize
@@ -265,7 +233,7 @@ async def voice_text_chat(req: VoiceTextRequest):
     memory.update_task_status(task_id, "running")
     await ws_manager.broadcast_task_update(task_id, {
         "status":  "running",
-        "message": f"🎙️ Voice: {transcript[:60]}",
+        "message": f"[Voice] {transcript[:60]}",
     })
 
     try:
@@ -285,20 +253,9 @@ async def voice_text_chat(req: VoiceTextRequest):
                 user_context=user_context,
             )
         else:
-            command_type = await orchestrator.qwen.classify_command(
+            response_text = await orchestrator.qwen.bronny_answer(
                 transcript, user_context=user_context
             )
-            if command_type == "chat":
-                response_text = await orchestrator.qwen.bronny_answer(
-                    transcript, user_context=user_context
-                )
-            else:
-                agent_task_id = str(uuid.uuid4())
-                memory.create_task(agent_task_id, transcript, "voice")
-                asyncio.create_task(
-                    orchestrator.run_task(agent_task_id, transcript, "")
-                )
-                response_text = "I'm working on that for you now."
 
         if not response_text:
             response_text = "I wasn't able to get an answer for that. Please try again."
@@ -308,10 +265,8 @@ async def voice_text_chat(req: VoiceTextRequest):
 
     except Exception as e:
         memory.update_task_status(task_id, "failed", result=str(e))
-        await ws_manager.broadcast_task_update(task_id, {
-            "status":  "failed",
-            "message": f"Voice text error: {e}",
-        })
+        await ws_manager.broadcast_task_update(task_id, {"status": "failed",
+                                                          "message": f"Voice text error: {e}"})
         raise HTTPException(status_code=500, detail=f"Voice text error: {e}")
 
     if not mp3_bytes:
@@ -321,152 +276,83 @@ async def voice_text_chat(req: VoiceTextRequest):
     voice_summary = f"Heard: {transcript}\n\nResponse: {spoken_text}"
     memory.update_task_status(task_id, "completed", result=voice_summary)
     await ws_manager.broadcast_task_update(task_id, {
-        "status":      "completed",
-        "message":     f"🎙️ {transcript}",
-        "step_status": "completed",
-        "output":      voice_summary,
-        "result":      voice_summary,
+        "status": "completed", "message": f"[Voice] {transcript}",
+        "step_status": "completed", "output": voice_summary, "result": voice_summary,
     })
-
-    return Response(
-        content=mp3_bytes,
-        media_type="audio/mpeg",
-        headers={
-            "X-Response-Text": urlquote(spoken_text[:300]),
-            "Cache-Control":   "no-cache",
-        },
-    )
+    return Response(content=mp3_bytes, media_type="audio/mpeg",
+                    headers={"X-Response-Text": urlquote(spoken_text[:300]),
+                             "Cache-Control": "no-cache"})
 
 @app.get("/tts/voices")
 async def tts_voices():
-    """VOICE 2 — List all available edge-tts voices."""
     from utils.tts_client import list_voices
     voices = await list_voices()
-    return {
-        "current_voice": settings.TTS_VOICE,
-        "voices":        voices,
-    }
+    return {"current_voice": settings.TTS_VOICE, "voices": voices}
 
 # ── Bronny device endpoints ───────────────────────────────────────────────────
 
 @app.post("/bronny/heartbeat")
 async def bronny_heartbeat(req: BronnyHeartbeatRequest):
-    """
-    BRONNY 1 — Called by the ESP32 on boot and every 30s.
-    On offline → online transition, creates a task entry in the command center.
-    Response now includes a `commands` array that the ESP32 must execute then clear.
-    """
     was_offline = not _bronny_status["online"]
-
     _bronny_status["online"]    = True
     _bronny_status["last_seen"] = datetime.utcnow().isoformat()
     _bronny_status["version"]   = req.version
     _bronny_status["device"]    = req.device
 
     await ws_manager.broadcast_ui_event({
-        "type":    "bronny_status",
-        "online":  True,
-        "version": req.version,
+        "type": "bronny_status", "online": True, "version": req.version,
     })
 
     if was_offline:
         conn_task_id = str(uuid.uuid4())
         label = f"[Bronny] Device connected — v{req.version}"
         memory.create_task(conn_task_id, label, "device")
-        memory.update_task_status(
-            conn_task_id, "completed",
-            result=f"Bronny v{req.version} online at {_bronny_status['last_seen']}",
-        )
+        memory.update_task_status(conn_task_id, "completed",
+                                  result=f"Bronny v{req.version} online")
         await ws_manager.broadcast_task_update(conn_task_id, {
-            "status":      "completed",
-            "message":     f"🤖 {label}",
+            "status": "completed", "message": f"[Bronny] {label}",
             "step_status": "completed",
-            "output":      f"Bronny v{req.version} is now online.",
-            "result":      f"Bronny v{req.version} is now online.",
+            "output": f"Bronny v{req.version} is now online.",
+            "result": f"Bronny v{req.version} is now online.",
         })
 
-    # Flush pending commands — ESP32 reads this list and executes each one
     commands = list(_bronny_cmd_queue)
     _bronny_cmd_queue.clear()
-
-    return {
-        "ok":       True,
-        "device":   req.device,
-        "commands": commands,
-    }
+    return {"ok": True, "device": req.device, "commands": commands}
 
 
 @app.get("/bronny/status")
 async def bronny_status():
-    """
-    BRONNY 2 — Returns Bronny online/offline status.
-    Bronny is considered offline if last heartbeat is > 60s ago.
-    """
     if _bronny_status["last_seen"]:
         last = datetime.fromisoformat(_bronny_status["last_seen"])
-        age  = (datetime.utcnow() - last).total_seconds()
-        if age > 60:
+        if (datetime.utcnow() - last).total_seconds() > 60:
             _bronny_status["online"] = False
     return _bronny_status
 
 
 @app.post("/bronny/control")
 async def bronny_control(req: BronnyControlRequest):
-    """
-    BRONNY 3 — Queue a control command for Bronny.
-    Delivered to the device on its next /bronny/heartbeat call (within 30s).
-
-    Supported commands:
-      volume      {value: 0-100}
-      brightness  {value: 0-100}
-      sleep       {}
-      restart     {}
-      party       {active: bool, visualizer: str, led_mode: str, speed: 1-10, color: "#hex"}
-      led         {mode: str, color: "#hex", speed: 1-10}
-      play        {url: str, mode: "audio"|"video", rainbow: bool, title: str, duration: int}
-      pause       {}
-      resume      {}
-      next        {}
-      stop        {}
-      seek        {position: int}  (seconds; best-effort — stream restarts from 0)
-    """
     if not _bronny_status["online"]:
         raise HTTPException(status_code=503, detail="Bronny is offline")
-
     cmd = req.dict(exclude_none=True)
     _bronny_cmd_queue.append(cmd)
-
-    # Notify UI that the command was queued
-    await ws_manager.broadcast_ui_event({
-        "type":    "bronny_command_queued",
-        "command": cmd["command"],
-    })
-
+    await ws_manager.broadcast_ui_event({"type": "bronny_command_queued",
+                                          "command": cmd["command"]})
     return {"ok": True, "queued": True, "queue_depth": len(_bronny_cmd_queue)}
 
 
 @app.get("/youtube/search")
 async def youtube_search(q: str, limit: int = 12):
-    """
-    BRONNY 4 — Search YouTube using yt-dlp's ytsearch.
-    Returns {videos: [{videoId, title, channel, duration, thumb}], count: N}.
-    Returns 501 if yt-dlp is not installed (UI will fall back to Invidious API).
-    """
     if not shutil.which("yt-dlp"):
         raise HTTPException(status_code=501, detail="yt-dlp not installed on server")
-
     try:
         proc = await asyncio.create_subprocess_exec(
-            "yt-dlp",
-            f"ytsearch{limit}:{q}",
-            "--flat-playlist",
+            "yt-dlp", f"ytsearch{limit}:{q}", "--flat-playlist",
             "--print",
             '{"videoId":"%(id)s","title":"%(title)s","channel":"%(uploader)s",'
             '"duration":%(duration)s,"thumb":"https://img.youtube.com/vi/%(id)s/mqdefault.jpg"}',
-            "--no-warnings",
-            "--quiet",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            "--no-warnings", "--quiet",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
         videos = []
@@ -478,7 +364,6 @@ async def youtube_search(q: str, limit: int = 12):
             except Exception:
                 pass
         return {"videos": videos, "count": len(videos)}
-
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="YouTube search timed out")
     except Exception as e:
@@ -487,44 +372,21 @@ async def youtube_search(q: str, limit: int = 12):
 
 @app.get("/bronny/media")
 async def bronny_media(url: str, mode: str = "audio"):
-    """
-    BRONNY 5 — Download and stream a YouTube URL as audio or video.
-
-    mode=audio  → yt-dlp extracts best audio, re-encodes to MP3 (128 kbps).
-                  ESP32 feeds the MP3 stream through CodecMP3Helix → ES8311.
-    mode=video  → best video ≤ 480p (for browser preview; ESP32 won't call this).
-
-    The ESP32 calls this URL exactly like it calls /voice/text response audio —
-    reads the HTTP stream and pipes it through the existing MP3 decoder pipeline.
-    """
     if not shutil.which("yt-dlp"):
         raise HTTPException(status_code=501, detail="yt-dlp not installed on server")
-
     if mode == "audio":
-        args = [
-            "yt-dlp", url,
-            "-f", "bestaudio[ext=mp3]/bestaudio/best",
-            "-x", "--audio-format", "mp3",
-            "--audio-quality", "5",   # ~128 kbps — good balance for ESP32 decoder
-            "-o", "-",
-            "--no-playlist", "--quiet", "--no-warnings",
-        ]
+        args = ["yt-dlp", url, "-f", "bestaudio[ext=mp3]/bestaudio/best",
+                "-x", "--audio-format", "mp3", "--audio-quality", "5",
+                "-o", "-", "--no-playlist", "--quiet", "--no-warnings"]
         media_type = "audio/mpeg"
     else:
-        args = [
-            "yt-dlp", url,
-            "-f", "best[height<=480]/best",
-            "-o", "-",
-            "--no-playlist", "--quiet", "--no-warnings",
-        ]
+        args = ["yt-dlp", url, "-f", "best[height<=480]/best",
+                "-o", "-", "--no-playlist", "--quiet", "--no-warnings"]
         media_type = "video/mp4"
 
     async def stream_media():
         proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
         try:
             while True:
                 chunk = await proc.stdout.read(8192)
@@ -537,12 +399,8 @@ async def bronny_media(url: str, mode: str = "audio"):
             except Exception:
                 pass
 
-    return StreamingResponse(
-        stream_media(),
-        media_type=media_type,
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
+    return StreamingResponse(stream_media(), media_type=media_type,
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 # ── Task endpoints ────────────────────────────────────────────────────────────
 
@@ -583,12 +441,10 @@ async def list_files():
     files = []
     for f in sorted(output_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
         if f.is_file():
-            files.append({
-                "name":    f.name,
-                "size_kb": round(f.stat().st_size / 1024, 1),
-                "created": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-                "url":     f"/files/download/{f.name}",
-            })
+            files.append({"name": f.name,
+                           "size_kb": round(f.stat().st_size / 1024, 1),
+                           "created": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                           "url": f"/files/download/{f.name}"})
     return {"files": files}
 
 @app.get("/files/download/{filename}")
@@ -615,34 +471,62 @@ async def delete_file(filename: str):
 @app.delete("/files/all/clear")
 async def clear_all_files():
     output_dir = Path(__file__).parent.parent / "output"
+    output_dir.mkdir(exist_ok=True)
     count = 0
-    if output_dir.exists():
-        for f in output_dir.iterdir():
-            if f.is_file():
-                f.unlink()
-                count += 1
+    for f in output_dir.iterdir():
+        if f.is_file():
+            f.unlink()
+            count += 1
     return {"deleted_count": count}
 
 # ── Preferences endpoints ─────────────────────────────────────────────────────
 
 @app.get("/preferences")
 async def list_preferences():
-    return memory.list_preferences()
+    try:
+        from agents.memory_agent import MemoryAgent, _INDEX_KEY
+        index = memory.get_preference(_INDEX_KEY, default=[])
+        prefs = []
+        if isinstance(index, list):
+            for key in index:
+                val = memory.get_preference(key)
+                if val is not None:
+                    prefs.append({"key": key, "value": val})
+        return {"preferences": prefs}
+    except Exception as e:
+        return {"preferences": [], "error": str(e)}
 
 @app.post("/preferences")
 async def save_preference(req: PrefRequest):
-    memory.save_preference(req.label, req.value)
-    return {"label": req.label, "value": req.value, "saved": True}
+    from agents.memory_agent import _INDEX_KEY
+    key = req.label.lower().replace(" ", "_")
+    memory.set_preference(key, {"label": req.label, "value": req.value})
+    index = memory.get_preference(_INDEX_KEY, default=[])
+    if not isinstance(index, list):
+        index = []
+    if key not in index:
+        index.append(key)
+        memory.set_preference(_INDEX_KEY, index)
+    return {"key": key, "label": req.label, "value": req.value, "saved": True}
 
 @app.delete("/preferences/all")
 async def clear_all_preferences():
-    return {"deleted_count": memory.clear_all_preferences()}
+    from agents.memory_agent import _INDEX_KEY
+    index = memory.get_preference(_INDEX_KEY, default=[])
+    if isinstance(index, list):
+        for key in index:
+            memory.delete_preference(key)
+    memory.set_preference(_INDEX_KEY, [])
+    return {"cleared": True}
 
-@app.delete("/preferences/{key}")
+@app.delete("/preferences/{key:path}")
 async def delete_preference(key: str):
-    deleted = memory.delete_preference(key)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Preference not found")
+    from agents.memory_agent import _INDEX_KEY
+    memory.delete_preference(key)
+    index = memory.get_preference(_INDEX_KEY, default=[])
+    if isinstance(index, list) and key in index:
+        index.remove(key)
+        memory.set_preference(_INDEX_KEY, index)
     return {"key": key, "deleted": True}
 
 # ── Devices endpoint ──────────────────────────────────────────────────────────
@@ -651,34 +535,44 @@ async def delete_preference(key: str):
 async def list_devices():
     return {"devices": ws_manager.list_devices()}
 
-# ── WebSocket endpoints ───────────────────────────────────────────────────────
+# ── WebSocket — Device Agents ─────────────────────────────────────────────────
 
 @app.websocket("/ws/device/{device_id}")
-async def device_ws(websocket: WebSocket, device_id: str):
-    await ws_manager.connect_device(websocket, device_id)
+async def device_websocket(websocket: WebSocket, device_id: str):
+    if settings.API_KEY:
+        if websocket.query_params.get("api_key", "") != settings.API_KEY:
+            await websocket.close(code=4401, reason="Invalid API key")
+            return
+    await ws_manager.connect_device(device_id, websocket)
     try:
         while True:
-            data = await websocket.receive_text()
+            data = json.loads(await websocket.receive_text())
             await ws_manager.handle_device_message(device_id, data)
     except WebSocketDisconnect:
         ws_manager.disconnect_device(device_id)
 
+# ── WebSocket — Web UI ────────────────────────────────────────────────────────
+
 @app.websocket("/ws/ui/{session_id}")
-async def ui_ws(websocket: WebSocket, session_id: str, token: Optional[str] = None):
-    if _UI_SESSION_TOKEN and token != _UI_SESSION_TOKEN:
-        await websocket.close(code=4401)
+async def ui_websocket(websocket: WebSocket, session_id: str):
+    if websocket.query_params.get("token", "") != _UI_SESSION_TOKEN:
+        await websocket.close(code=4401, reason="Invalid session token")
         return
-    await ws_manager.connect_ui(websocket, session_id)
+    await ws_manager.connect_ui(session_id, websocket)
     try:
         while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
+            await asyncio.sleep(30)
+            await websocket.send_text(json.dumps({"type": "ping"}))
+    except (WebSocketDisconnect, RuntimeError):
         ws_manager.disconnect_ui(session_id)
 
-# ── Static UI files ───────────────────────────────────────────────────────────
+# ── Static files ──────────────────────────────────────────────────────────────
 
-app.mount(
-    "/ui",
-    StaticFiles(directory=Path(__file__).parent.parent / "web_ui", html=True),
-    name="ui",
-)
+try:
+    app.mount("/ui", StaticFiles(directory="../web_ui", html=True), name="ui")
+except Exception:
+    pass
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

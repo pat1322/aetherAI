@@ -1169,16 +1169,13 @@
       .desktop-only { display: none !important; }
       .layout { grid-template-columns: 1fr; }
 
-      /* Full-height body without address bar jumping */
-      html, body { height: 100dvh; overflow: hidden; }
-      #appRoot { height: 100dvh; }
-
       /* Safe-area padding for notched phones */
       .topbar {
-        padding: 0 max(12px, env(safe-area-inset-right))
-                 0 max(12px, env(safe-area-inset-left));
-        height: calc(52px + env(safe-area-inset-top));
-        padding-top: env(safe-area-inset-top);
+        padding-left:  max(12px, env(safe-area-inset-left));
+        padding-right: max(12px, env(safe-area-inset-right));
+        padding-top:   env(safe-area-inset-top);
+        height: auto;
+        min-height: 52px;
       }
       .input-row {
         padding: 8px max(10px, env(safe-area-inset-right))
@@ -1215,7 +1212,15 @@
         transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
       }
       .panel.open { transform: translateX(0); }
-      main { grid-column: 1; }
+      main { grid-column: 1; display: flex; flex-direction: column; }
+      .output-area { flex: 1; min-height: 0; }
+      .input-row {
+        position: sticky;
+        bottom: 0;
+        bottom: env(safe-area-inset-bottom);
+        z-index: 10;
+        border-top: 1px solid var(--border);
+      }
 
       /* Output area */
       .output-area { padding: 12px 14px; font-size: 13.5px; }
@@ -1596,7 +1601,7 @@
     .progress-bar-wrap {
       flex: 1; height: 4px; background: var(--border); border-radius: 2px;
       cursor: pointer; position: relative; overflow: hidden;
-      touch-action: none; min-height: 20px; margin: -8px 0;
+      touch-action: none; min-height: 20px;
     }
     .progress-bar-fill {
       height: 100%; background: linear-gradient(90deg, #ff3ca0, var(--accent2));
@@ -1636,6 +1641,8 @@
       }
       .bronny-tab-body {
         padding-bottom: max(18px, env(safe-area-inset-bottom));
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
       }
 
       /* Tabs: scroll horizontally, never wrap */
