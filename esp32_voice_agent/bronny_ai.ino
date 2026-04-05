@@ -1,6 +1,6 @@
 /*
  * ═══════════════════════════════════════════════════════════════
- *  BRONNY AI  v2.0
+ *  BRONNY AI  v2.1
  *  by Patrick Perez
  * ═══════════════════════════════════════════════════════════════
  *
@@ -86,6 +86,9 @@ static void audioInitTTS();
 static void audioInitVideo();
 static void micInit();
 static void enterPartyMode();
+static void executeBronnyCommand(JsonVariant cmd);  // NEW v2.1
+static void playAudioFromUrl(const String& url);    // NEW v2.1
+static void tickStandaloneLed(uint32_t now);        // NEW v2.1
 static void exitPartyMode();
 static void enterVideoMode(const char* jobId);
 
@@ -247,6 +250,7 @@ static WiFiClientSecure gHttpCli;      // heartbeat + TTS Railway stream
 static WiFiClientSecure gVideoCli;     // video poll (checkCurrentJob etc.)
 static WiFiClientSecure gVidMjpegCli;  // MJPEG video stream in playVideo()
 static WiFiClientSecure gVidAudioCli;  // MP3 audio stream in videoAudioTaskFn()
+static WiFiClientSecure gMediaCli;     // NEW v2.1 — /bronny/media YouTube streaming
 
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  AUDIO ENGINE                                                ║
@@ -275,6 +279,29 @@ static StreamCopy                    sineCopy(i2s, sineSrc);
 static bool audioOk   = false;
 static bool micOk     = false;
 static bool inTtsMode = false;
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  REMOTE CONTROL STATE  (NEW v2.1)                            ║
+// ╚══════════════════════════════════════════════════════════════╝
+// Set by executeBronnyCommand() when the /bronny/control panel
+// sends a command.  Delivered via the heartbeat response JSON.
+
+static uint8_t  remoteVizMode    = 0;       // 0=spectrum, 1=mirror
+static uint8_t  remoteLedMode    = 0;       // 0-3 maps to partyLedMode
+static uint8_t  remoteSpeed      = 6;       // 1-10
+static uint32_t remoteLedColor   = 0xFF3CA0; // packed 0xRRGGBB
+static bool     autoPartyCycle   = true;    // false = hold UI selection, no auto-cycle
+
+// Standalone LED — active outside party mode (from 'led' command)
+static bool     ledStandaloneActive = false;
+static uint8_t  ledStandaloneMode   = 0;    // 1=rainbow,2=pulse,3=breathe,4=strobe,5=solid
+static float    ledStandaloneHue    = 0.f;
+static uint32_t ledStandaloneLastMs = 0;
+
+// Media playback state (play/pause/stop)
+static bool     mediaPlaying     = false;
+static bool     mediaPaused      = false;
+static String   mediaCurrentUrl  = "";
 
 static inline int16_t inmp441Sample(int32_t raw) {
     int32_t s = raw >> MIC_GAIN_SHIFT;
@@ -690,6 +717,9 @@ static bool isNoise(const char* t) {
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  HEARTBEAT                                                   ║
 // ╚══════════════════════════════════════════════════════════════╝
+// Separate JSON doc for heartbeat (keeps it off dgJsonDoc)
+static StaticJsonDocument<2048> hbDoc;
+
 static void sendHeartbeat() {
     if (WiFi.status() != WL_CONNECTED) return;
     gHttpCli.setInsecure();
@@ -698,10 +728,25 @@ static void sendHeartbeat() {
     http.begin(gHttpCli, baseUrl() + "/bronny/heartbeat");
     http.setTimeout(8000);
     http.addHeader("Content-Type","application/json");
-    http.POST("{\"device\":\"bronny\",\"version\":\"2.0\"}");
+
+    int code = http.POST("{\"device\":\"bronny\",\"version\":\"2.1\"}");
+
+    // NEW v2.1 — read response and execute any queued commands
+    if (code == HTTP_CODE_OK) {
+        String body = http.getString();
+        hbDoc.clear();
+        if (deserializeJson(hbDoc, body) == DeserializationError::Ok) {
+            JsonArray cmds = hbDoc["commands"].as<JsonArray>();
+            for (JsonVariant cmd : cmds) {
+                executeBronnyCommand(cmd);
+            }
+        }
+    }
+
     http.end();
     gHttpCli.stop();
 }
+
 
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  DEEPGRAM STREAMING ASR                                      ║
@@ -1758,6 +1803,9 @@ void loop() {
         }
     }
 
+    // ── STANDALONE LED TICK (NEW v2.1) — defined after party section ──
+    tickStandaloneLed(now);
+
     // ── Serial debug shortcuts ────────────────────────────
     if (Serial.available()) {
         char c = Serial.read();
@@ -2109,7 +2157,10 @@ static void enterPartyMode() {
     if (!bandMapReady) { buildPartyBandMap(); bandMapReady = true; }
 
     setState(ST_PARTY);
-    partyVizMode = 0;  partyLedMode = 0;  partyModeTs = millis();
+    // Use UI-selected modes when autoPartyCycle is off, else start from 0
+    partyVizMode = autoPartyCycle ? 0 : remoteVizMode;
+    partyLedMode = autoPartyCycle ? 0 : remoteLedMode;
+    partyModeTs  = millis();
 
     memset(pSmBand,  0, sizeof(pSmBand));
     memset(pSmPeak,  0, sizeof(pSmPeak));
@@ -2165,8 +2216,8 @@ static void partyLoop() {
 
     pHueBase = fmodf(pHueBase + 0.55f, 360.f);
 
-    // Cycle visualiser + LED mode every PARTY_MODE_SEC seconds
-    if ((millis() - partyModeTs) > (uint32_t)PARTY_MODE_SEC * 1000UL) {
+    // Cycle visualiser + LED mode every PARTY_MODE_SEC seconds (only in auto mode)
+    if (autoPartyCycle && (millis() - partyModeTs) > (uint32_t)PARTY_MODE_SEC * 1000UL) {
         partyVizMode = (partyVizMode + 1) % 2;
         partyLedMode = (partyLedMode + 1) % 4;
         partyModeTs  = millis();
@@ -2202,6 +2253,269 @@ static int checkPartyCommand(const char* t) {
     if (strstr(low, "end party")  != nullptr) return -1;
     return 0;
 }
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  REMOTE CONTROL — HELPERS (NEW v2.1)                         ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+static String urlEncode(const String& s) {
+    String out; out.reserve(s.length() * 3);
+    for (int i = 0; i < (int)s.length(); i++) {
+        char ch = s[i];
+        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+            (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' ||
+            ch == '.' || ch == '~') {
+            out += ch;
+        } else {
+            char hex[4];
+            snprintf(hex, sizeof(hex), "%%%02X", (unsigned char)ch);
+            out += hex;
+        }
+    }
+    return out;
+}
+
+// Map UI visualizer string → partyVizMode index
+static uint8_t vizNameToMode(const char* name) {
+    if (!name) return 0;
+    if (strcmp(name,"mirror")==0 || strcmp(name,"wave")==0) return 1;
+    return 0;  // spectrum / bars / default
+}
+
+// Map UI LED mode string → partyLedMode index (0-3)
+static uint8_t ledNameToMode(const char* name) {
+    if (!name) return 0;
+    if (strcmp(name,"strobe")==0 || strcmp(name,"strobe sync")==0) return 1;
+    if (strcmp(name,"rgb")==0    || strcmp(name,"chase")==0)        return 2;
+    if (strcmp(name,"random")==0 || strcmp(name,"sparkle")==0)      return 3;
+    return 0;  // rainbow cycle
+}
+
+// Parse "#rrggbb" hex colour string → uint32_t 0xRRGGBB
+static uint32_t hexColorToU32(const char* hex) {
+    if (!hex || !*hex) return 0xFF3CA0;
+    const char* p = (hex[0] == '#') ? hex + 1 : hex;
+    return (uint32_t)strtol(p, nullptr, 16);
+}
+
+// ── Stream MP3 from an HTTPS URL — same pipeline as callRailwayStream() ─────
+// Used by the 'play' command to fetch audio from /bronny/media.
+static void playAudioFromUrl(const String& url) {
+    if (url.isEmpty()) return;
+    Serial.printf("[Media] %s\n", url.c_str());
+    mediaPlaying = true; mediaPaused = false; mediaCurrentUrl = url;
+
+    audioInitTTS();
+    setCrashPoint("media:http");
+    gMediaCli.setInsecure();
+    gMediaCli.setConnectionTimeout(15000);
+    HTTPClient http;
+    http.begin(gMediaCli, url);
+    http.addHeader("X-Api-Key", AETHER_API_KEY);
+    http.setTimeout(600000);
+
+    int code = http.GET();
+    Serial.printf("[Media] HTTP %d\n", code);
+    if (code != HTTP_CODE_OK) {
+        tftLogf(C_RD, "Media: HTTP %d", code);
+        http.end(); gMediaCli.stop();
+        audioInitRec(); micInit();
+        mediaPlaying = false; mediaCurrentUrl = "";
+        return;
+    }
+
+    setCrashPoint("media:decode");
+    gMp3Dec.begin(); gTtsDecoded.begin();
+    WiFiClient* stream  = http.getStreamPtr();
+    uint32_t deadline   = millis() + 600000UL;
+    bool     started    = false;
+    uint32_t lastDataMs = 0;
+
+    setState(ST_SPEAK);
+    tftLog(C_PNK, "Media: streaming...");
+
+    static uint8_t mediaBuf[512];
+    while (millis() < deadline && mediaPlaying) {
+        if (mediaPaused) { delay(50); maintainDeepgram(); yield(); continue; }
+        size_t avail = (size_t)stream->available();
+        if (avail > 0) {
+            size_t got = stream->readBytes(mediaBuf, min(avail, (size_t)sizeof(mediaBuf)));
+            if (got > 0) {
+                if (!started) { startTalk(); started = true; }
+                gTtsDecoded.write(mediaBuf, got);
+                lastDataMs = millis();
+            }
+        } else { delay(2); }
+        if (started && lastDataMs > 0 && millis() - lastDataMs > STREAM_DATA_GAP_MS * 3) break;
+        if (!http.connected() && stream->available() == 0) break;
+        maintainDeepgram(); roboEyes.update(); yield();
+    }
+
+    setCrashPoint("media:done");
+    stopTalk(); forceDrawFace();
+    gTtsDecoded.end();
+    const uint8_t sil[16] = {};
+    i2s.write(sil, sizeof(sil));
+    http.end(); gMediaCli.stop();
+    mediaPlaying = false; mediaCurrentUrl = "";
+    audioInitRec(); micInit();
+    if (micOk) {
+        static uint8_t localDrain[512];
+        uint32_t e = millis() + 300;
+        while (millis() < e) { mic_stream.readBytes(localDrain, sizeof(localDrain)); roboEyes.update(); yield(); }
+    }
+    clearCrashPoint();
+    setFaceListen(); setStatus("Listening...", C_CY); setState(ST_LISTEN);
+    tftLog(C_GR, "Media: done");
+}
+
+// ── Dispatch a single remote command received in the heartbeat JSON ──────────
+static void executeBronnyCommand(JsonVariant cmd) {
+    const char* command = cmd["command"] | "";
+    Serial.printf("[Ctrl] %s\n", command);
+
+    if (strcmp(command, "volume") == 0) {
+        int vol = constrain(cmd["value"] | 70, 0, 100);
+        i2s.setVolume(vol / 100.0f);
+        tftLogf(C_CY, "Vol: %d%%", vol);
+    }
+
+    else if (strcmp(command, "brightness") == 0) {
+        // Most ESP32-S3 devkits tie TFT backlight to 3.3V with no PWM pin.
+        // If yours has a backlight GPIO, do: analogWrite(PIN_TFT_BL, map(pct,0,100,0,255));
+        int pct = constrain(cmd["value"] | 100, 0, 100);
+        tftLogf(C_CY, "Brightness: %d%%", pct);
+    }
+
+    else if (strcmp(command, "sleep") == 0) {
+        setStatus("Going to sleep...", C_CY); delay(700);
+        setFaceSleep(); roboEyes.update();
+        setState(ST_STANDBY); setStatus("Standby...", C_DCY);
+        dgStreaming = false;
+        tftLog(C_DCY, "Remote sleep");
+    }
+
+    else if (strcmp(command, "restart") == 0) {
+        setStatus("Restarting...", C_CY);
+        tftLog(C_YL, "Remote restart"); delay(500);
+        ESP.restart();
+    }
+
+    else if (strcmp(command, "party") == 0) {
+        bool active = cmd["active"] | false;
+        if (active) {
+            remoteVizMode  = vizNameToMode(cmd["visualizer"] | "bars");
+            remoteLedMode  = ledNameToMode(cmd["led_mode"]   | "rainbow");
+            remoteSpeed    = constrain(cmd["speed"] | 6, 1, 10);
+            remoteLedColor = hexColorToU32(cmd["color"] | "#ff3ca0");
+            autoPartyCycle = false;
+            partyVizMode   = remoteVizMode;
+            partyLedMode   = remoteLedMode;
+            if (!isPartyMode()) { jingleParty(); enterPartyMode(); }
+        } else {
+            autoPartyCycle = true;
+            if (isPartyMode()) exitPartyMode();
+        }
+    }
+
+    else if (strcmp(command, "led") == 0) {
+        const char* mode  = cmd["mode"]  | "off";
+        remoteLedColor    = hexColorToU32(cmd["color"] | "#ff3ca0");
+        remoteSpeed       = constrain(cmd["speed"] | 5, 1, 10);
+        if (strcmp(mode, "off") == 0) {
+            ledStandaloneActive = false;
+            if (!isPartyMode()) { partyLed.setPixelColor(0, 0); partyLed.show(); }
+        } else {
+            if (!ledStandaloneActive && !isPartyMode()) {
+                partyLed.begin(); partyLed.setBrightness(PARTY_LED_BRIGHT);
+            }
+            ledStandaloneActive = true;
+            if      (strcmp(mode,"rainbow")==0 || strcmp(mode,"meteor")==0) ledStandaloneMode = 1;
+            else if (strcmp(mode,"pulse")  ==0)                             ledStandaloneMode = 2;
+            else if (strcmp(mode,"breathe")==0 || strcmp(mode,"sparkle")==0) ledStandaloneMode = 3;
+            else if (strcmp(mode,"strobe") ==0)                             ledStandaloneMode = 4;
+            else if (strcmp(mode,"solid")  ==0)                             ledStandaloneMode = 5;
+            else                                                             ledStandaloneMode = 1;
+        }
+        tftLogf(C_PNK, "LED: %s spd=%d", mode, remoteSpeed);
+    }
+
+    else if (strcmp(command, "play") == 0) {
+        const char* ytUrl   = cmd["url"]     | "";
+        const char* mode    = cmd["mode"]    | "audio";
+        bool        rainbow = cmd["rainbow"] | false;
+        if (strlen(ytUrl) > 0) {
+            String fetchUrl = String(baseUrl()) + "/bronny/media?url=" +
+                              urlEncode(String(ytUrl)) + "&mode=" + String(mode);
+            tftLogf(C_PNK, "Play: %.28s", ytUrl);
+            if (rainbow && !isPartyMode()) {
+                remoteLedColor = 0xFF3CA0; remoteSpeed = 7;
+                ledStandaloneActive = true; ledStandaloneMode = 1;
+                partyLed.begin(); partyLed.setBrightness(PARTY_LED_BRIGHT);
+            }
+            playAudioFromUrl(fetchUrl);
+        }
+    }
+
+    else if (strcmp(command, "pause") == 0)  { mediaPaused = true;  tftLog(C_YL, "Media: paused"); }
+    else if (strcmp(command, "resume") == 0) { mediaPaused = false; tftLog(C_GR, "Media: resumed"); }
+
+    else if (strcmp(command, "stop") == 0) {
+        mediaPlaying = false; mediaPaused = false;
+        if (ledStandaloneActive) { partyLed.setPixelColor(0,0); partyLed.show(); ledStandaloneActive = false; }
+        tftLog(C_YL, "Media: stopped");
+    }
+
+    else if (strcmp(command, "seek") == 0) {
+        // Streams can't be seeked; restart from beginning
+        if (!mediaCurrentUrl.isEmpty()) { tftLog(C_CY, "Media: seek→restart"); playAudioFromUrl(mediaCurrentUrl); }
+    }
+}
+
+
+// ── Standalone LED tick — called from loop() every frame (NEW v2.1) ──────────
+// Defined here (after party section) because it uses p_neoHSV and partyLed.
+static void tickStandaloneLed(uint32_t now) {
+    if (!ledStandaloneActive || isPartyMode()) return;
+    uint32_t intervalMs = (uint32_t)map(remoteSpeed, 1, 10, 80, 8);
+    if (now - ledStandaloneLastMs < intervalMs) return;
+    ledStandaloneLastMs = now;
+    uint32_t color = 0;
+    float t;
+    uint8_t lr, lg, lb;
+    switch (ledStandaloneMode) {
+        case 1: // Rainbow
+            ledStandaloneHue = fmodf(ledStandaloneHue + 2.5f, 360.f);
+            color = p_neoHSV(ledStandaloneHue, 1.f, 1.f);
+            break;
+        case 2: // Pulse — hue cycles, brightness sine-waves
+            ledStandaloneHue = fmodf(ledStandaloneHue + 1.5f, 360.f);
+            t = 0.5f + 0.5f * sinf(now * 0.003f);
+            color = p_neoHSV(ledStandaloneHue, 1.f, t);
+            break;
+        case 3: // Breathe — solid colour, brightness fades
+            t  = 0.5f + 0.5f * sinf(now * 0.002f);
+            lr = (uint8_t)(((remoteLedColor >> 16) & 0xFF) * t);
+            lg = (uint8_t)(((remoteLedColor >>  8) & 0xFF) * t);
+            lb = (uint8_t)(( remoteLedColor        & 0xFF) * t);
+            color = partyLed.Color(lr, lg, lb);
+            break;
+        case 4: // Strobe
+            color = ((now % (uint32_t)map(remoteSpeed, 1, 10, 500, 50)) < 30)
+                     ? 0xFFFFFF : 0;
+            break;
+        case 5: // Solid colour from picker
+            color = partyLed.Color(
+                (remoteLedColor >> 16) & 0xFF,
+                (remoteLedColor >>  8) & 0xFF,
+                 remoteLedColor        & 0xFF);
+            break;
+        default: color = 0; break;
+    }
+    partyLed.setPixelColor(0, color);
+    partyLed.show();
+}
+
 
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  VIDEO MODE                                                  ║
