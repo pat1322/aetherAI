@@ -353,6 +353,7 @@
     ════════════════════════════════════════════ */
     #appRoot {
       height: 100vh;
+      height: 100dvh;
       display: flex;
       flex-direction: column;
       transition: opacity 0.5s ease;
@@ -455,6 +456,7 @@
       border-radius: 50%; background: var(--green); flex-shrink: 0;
       animation: statusPulse 2s ease-in-out infinite;
       box-shadow: 0 0 6px var(--green);
+      transition: background-color 0.4s ease, box-shadow 0.4s ease;
     }
     .status-dot.offline    { background: var(--warn);   box-shadow: none; animation: none; }
     .status-dot.error      { background: var(--orange); box-shadow: none; animation: none; }
@@ -756,7 +758,8 @@
       flex-shrink: 0; align-self: flex-start; margin-top: 2px;
     }
     .copy-result-btn:hover { color: var(--accent); border-color: rgba(0,232,255,0.4); }
-
+    .copy-result-btn.copied, .code-copy-btn.copied { color: var(--green) !important; border-color: rgba(0,255,163,0.5) !important; }
+    
     /* ── Code blocks ── */
     .code-block-wrapper { width: 100%; margin: 6px 0; }
     .code-block-header {
@@ -799,8 +802,8 @@
       animation: cursorBlink 0.9s ease-in-out infinite;
     }
     @keyframes cursorBlink {
-      0%,44%  { opacity: 1; }
-      56%,100%{ opacity: 0; }
+      0%, 100% { opacity: 1; }
+      50%      { opacity: 0; }
     }
 
     /* ── Input row ── */
@@ -809,6 +812,7 @@
       display: flex; gap: 8px; align-items: center;
       background: var(--bg2); flex-shrink: 0;
       position: relative;
+      transition: transform 0.2s ease;
     }
     .input-row::before {
       content: '';
@@ -1003,10 +1007,14 @@
     ════════════════════════════════════════════ */
     .modal-overlay {
       position: fixed; inset: 0; background: var(--overlay);
-      display: none; align-items: center; justify-content: center;
+      display: flex; align-items: center; justify-content: center;
       z-index: 100; backdrop-filter: blur(6px);
+      opacity: 0; visibility: hidden; pointer-events: none;
+      transition: opacity 0.22s ease, visibility 0.22s ease;
     }
-    .modal-overlay.open { display: flex; }
+    .modal-overlay.open {
+      opacity: 1; visibility: visible; pointer-events: auto;
+    }
     .modal {
       background: var(--bg2); border: 1px solid var(--border2);
       border-radius: 10px; padding: 24px; width: 400px; max-width: 92vw;
@@ -1096,10 +1104,12 @@
     /* Confirm dialog */
     .confirm-overlay {
       position: fixed; inset: 0; background: var(--overlay);
-      display: none; align-items: center; justify-content: center;
+      display: flex; align-items: center; justify-content: center;
       z-index: 110; backdrop-filter: blur(6px);
+      opacity: 0; visibility: hidden; pointer-events: none;
+      transition: opacity 0.22s ease, visibility 0.22s ease;
     }
-    .confirm-overlay.open { display: flex; }
+    .confirm-overlay.open { opacity: 1; visibility: visible; pointer-events: auto; }
     .confirm-box {
       background: var(--bg2); border: 1px solid var(--border2);
       border-radius: 10px; padding: 28px; width: 320px; max-width: 92vw; text-align: center;
@@ -1172,6 +1182,7 @@
       .layout {
         grid-template-columns: 1fr;
         height: calc(100% - 52px - 2px); /* subtract topbar + busy bar */
+        height: calc(100dvh - 52px - 2px);
       }
       main {
         grid-column: 1;
@@ -1215,10 +1226,13 @@
       .pill-device { padding: 3px 7px; }
       #devicePillText { display: none; }
 
-      /* Touch-friendly buttons */
-      .icon-btn { min-width: 36px; min-height: 36px; font-size: 16px; padding: 6px 8px; }
-      .btn      { min-height: 40px; }
-      .mic-btn  { min-width: 40px; min-height: 40px; font-size: 16px; }
+      * Touch-friendly buttons — 44px minimum per Apple/Google guidelines */
+      .icon-btn { min-width: 44px; min-height: 44px; font-size: 16px; padding: 6px 8px; }
+      .btn      { min-height: 44px; }
+      .mic-btn  { min-width: 44px; min-height: 44px; font-size: 16px; }
+ 
+      /* Prevent iOS auto-zoom on select elements */
+      select, #synthRate { font-size: 16px !important; }
 
       /* Prevent iOS auto-zoom on input focus */
       .cmd-input      { font-size: 16px !important; }
@@ -1305,10 +1319,10 @@
     /* Bronny drawer — slides up from bottom */
     #bronnyPanel {
       position: fixed; inset: 0; z-index: 200;
-      display: none; align-items: flex-end;
+      display: flex; align-items: flex-end;
       background: var(--overlay); backdrop-filter: blur(8px);
+      /* animation handled by enhanced-animations block below */
     }
-    #bronnyPanel.open { display: flex; }
     .bronny-drawer {
       width: 100%; max-height: 88vh;
       background: var(--bg2); border-top: 1px solid var(--border2);
@@ -1720,7 +1734,7 @@
       .now-playing-controls {
         justify-content: space-between; width: 100%;
       }
-      .np-btn { min-width: 44px; min-height: 38px; font-size: 16px; padding: 6px 12px; flex: 1; justify-content: center; display: flex; align-items: center; }
+      .np-btn { min-width: 44px; min-height: 44px; font-size: 16px; padding: 6px 12px; flex: 1; justify-content: center; display: flex; align-items: center; }
       .rainbow-toggle { font-size: 11px; }
 
       /* Bronny header: compact */
@@ -1741,8 +1755,9 @@
     /* Tap highlight removed (we have our own hover states) */
     * { -webkit-tap-highlight-color: transparent; }
 
-    /* Smooth scroll everywhere */
-    * { scroll-behavior: smooth; }
+    /* Smooth scroll on specific containers only (not *, which causes jank) */
+    .output-area, .task-list, .steps-list, .bronny-tab-body,
+    .yt-results, .yt-queue-list { scroll-behavior: smooth; }
 
     /* Touch-friendly task cards */
     .task-card { min-height: 52px; }
@@ -1823,6 +1838,143 @@
       opacity: 0.7;
     }
 
+    /* ══ ENHANCED ANIMATIONS ═══════════════════════════════════ */
+ 
+    /* Message bubbles — slide up + fade in */
+    .log-entry {
+      animation: msgSlideIn 0.22s cubic-bezier(0.2,0,0.2,1) both;
+    }
+    @keyframes msgSlideIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+ 
+    /* Task card shimmer on first load */
+    .task-card {
+      transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+    }
+    @keyframes cardFadeIn {
+      from { opacity: 0; transform: translateX(-6px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+ 
+    /* Topbar logo pulse on connect */
+    @keyframes logoPulse {
+      0%, 100% { filter: drop-shadow(0 0 6px rgba(0,232,255,0.5)); }
+      50%       { filter: drop-shadow(0 0 14px rgba(0,232,255,0.9)); }
+    }
+    #appRoot.visible .logo-hex svg {
+      animation: logoPulse 3s ease-in-out infinite;
+    }
+ 
+    /* Button press ripple */
+    .btn, .icon-btn, .bronny-btn, .np-btn {
+      position: relative;
+      overflow: hidden;
+    }
+    .btn::after, .icon-btn::after, .bronny-btn::after, .np-btn::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: rgba(255,255,255,0.06);
+      opacity: 0;
+      transition: opacity 0.15s ease;
+      border-radius: inherit;
+      pointer-events: none;
+    }
+    .btn:active::after, .icon-btn:active::after,
+    .bronny-btn:active::after, .np-btn:active::after {
+      opacity: 1;
+      transition: none;
+    }
+ 
+    /* Bronny pill transition */
+    .bronny-pill {
+      transition: background 0.35s ease, border-color 0.35s ease, color 0.35s ease;
+    }
+ 
+    /* Device pill transition */
+    .device-pill {
+      transition: background 0.35s ease, border-color 0.35s ease;
+    }
+ 
+    /* Filter tab active transition */
+    .filter-tab {
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    }
+ 
+    /* Step dot color transitions */
+    .step-dot {
+      transition: background-color 0.3s ease, box-shadow 0.3s ease;
+    }
+ 
+    /* Input glow on focus */
+    .input-inner {
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+ 
+    /* Waveform mic animation enhancement */
+    .wave-bar {
+      animation: waveAnim var(--dur, 0.8s) ease-in-out infinite alternate var(--delay, 0s);
+    }
+ 
+    /* Busy bar shimmer */
+    .busy-bar-inner.active::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.3) 50%, transparent 100%);
+      animation: busyShimmer 1.4s ease-in-out infinite;
+    }
+    @keyframes busyShimmer {
+      from { transform: translateX(-100%); }
+      to   { transform: translateX(100%); }
+    }
+ 
+    /* Sidebar + panel open/close animation (add will-change for GPU) */
+    .sidebar, .panel {
+      will-change: transform;
+    }
+ 
+    /* Toast container safe-area */
+    #toastContainer {
+      top: max(60px, calc(env(safe-area-inset-top) + 60px));
+    }
+ 
+    /* Toast dismiss on swipe */
+    .toast { transition: opacity 0.25s ease, transform 0.15s ease, max-height 0.25s ease, padding 0.25s ease; }
+ 
+    /* Bronny drawer backdrop blur animation */
+    #bronnyPanel {
+      transition: opacity 0.22s ease, visibility 0.22s ease;
+      opacity: 0; visibility: hidden; pointer-events: none;
+    }
+    #bronnyPanel.open {
+      opacity: 1; visibility: visible; pointer-events: auto;
+    }
+ 
+    /* Landscape mode: compact the layout on mobile */
+    @media (max-height: 500px) and (orientation: landscape) {
+      .topbar { height: 42px; min-height: 42px; }
+      .output-area { padding: 8px 12px; }
+      .input-row { padding: 6px 10px; }
+      .intro-logo-wrap { width: 80px; height: 80px; }
+      .intro-orbit-outer { width: 80px; height: 80px; }
+      .intro-orbit-inner { width: 58px; height: 58px; top: 11px; left: 11px; }
+      .intro-orbit-pulse { width: 42px; height: 42px; top: 19px; left: 19px; }
+      .intro-hex-svg { width: 58px; height: 58px; }
+      .intro-name { font-size: 28px; }
+      .intro-center { gap: 14px; }
+      .intro-sub { display: none; }
+    }
+ 
+    /* ── 480-768px gap (tablets portrait / large phones) ── */
+    @media (min-width: 421px) and (max-width: 600px) {
+      .output-area { padding: 10px 12px; font-size: 13px; }
+      .sidebar { width: min(280px, 82vw); }
+      .panel   { width: min(280px, 82vw); }
+    }
+ 
   </style>
 </head>
 <body>
@@ -1899,7 +2051,7 @@
 <!-- ════════════════════════════════════════════════
      APP ROOT
 ════════════════════════════════════════════════ -->
-<div id="appRoot" style="opacity:0;pointer-events:none;display:flex;flex-direction:column;height:100vh">
+<div id="appRoot" style="opacity:0;pointer-events:none;display:flex;flex-direction:column;height:100vh;height:100dvh">
 
   <!-- Toast notifications -->
   <div id="toastContainer"></div>
@@ -2411,9 +2563,9 @@ document.addEventListener('click', e => {
   navigator.clipboard.writeText(text).then(() => {
     const prev = btn.textContent;
     btn.textContent = '✓ Copied';
-    btn.style.color = 'var(--green)';
-    setTimeout(() => { btn.textContent = prev; btn.style.color = ''; }, 1500);
-  });
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = prev; btn.classList.remove('copied'); }, 1500);
+  }).catch(() => showToast('Copy failed — check browser permissions', 'error'));
 });
 // Code-block copy (delegated)
 document.addEventListener('click', e => {
@@ -2424,8 +2576,9 @@ document.addEventListener('click', e => {
   if (!pre) return;
   navigator.clipboard.writeText(pre.textContent).then(() => {
     btn.textContent = 'Copied!';
-    setTimeout(() => btn.textContent = 'Copy', 1600);
-  });
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1600);
+  }).catch(() => showToast('Copy failed — check browser permissions', 'error'));
 });
 
 function log(msg, cls = 'info') {
@@ -2972,7 +3125,7 @@ async function refreshFiles() {
       return;
     }
     el.innerHTML = files.map(f => {
-      const ext     = f.name.split('.').pop().toLowerCase();
+      const ext     = (f.name.split('.').pop() || '').toLowerCase();
       const sz      = f.size_kb != null ? fmtSize(f.size_kb) : '';
       const isImage = ['jpg','jpeg','png','gif','webp'].includes(ext);
       const safeFilename = f.name.replace(/'/g, "\\'");
@@ -3280,8 +3433,17 @@ let _npRafId       = null;
 // ── Panel open/close ──
 function openBronnyPanel() {
   if (!_bronnyOnline) { showToast('Bronny is offline', 'warn'); return; }
-  document.getElementById('bronnyPanel').classList.add('open');
+  const panel = document.getElementById('bronnyPanel');
+  panel.classList.add('open');
   document.body.style.overflow = 'hidden';
+  // Drawer slides up from closed state
+  const drawer = document.getElementById('bronnyDrawer');
+  if (drawer) {
+    drawer.style.animation = 'none';
+    requestAnimationFrame(() => {
+      drawer.style.animation = '';
+    });
+  }
 }
 function closeBronnyPanel() {
   document.getElementById('bronnyPanel').classList.remove('open');
@@ -3369,7 +3531,7 @@ async function bronnySetLed() {
 
 // ── Sleep ──
 async function bronnySleep() {
-  showConfirm('Put Bronny to sleep?', '💤', async () => {
+  showConfirm('Put Bronny to sleep? 💤', async () => {
     await bronnyCommand({ command: 'sleep' });
     showToast('Bronny going to sleep…', 'info');
     closeBronnyPanel();
@@ -3378,7 +3540,7 @@ async function bronnySleep() {
 
 // ── Restart ──
 async function bronnyRestart() {
-  showConfirm('Restart Bronny?', '↺', async () => {
+  showConfirm('Restart Bronny? ↺', async () => {
     await bronnyCommand({ command: 'restart' });
     showToast('Bronny restarting…', 'info');
     closeBronnyPanel();
@@ -3804,6 +3966,51 @@ document.addEventListener('DOMContentLoaded', () => {
 })();
 
 fetchServerConfig();
+  
+/* ═══════════════════════════════════════════════════
+   SOFT KEYBOARD — scroll input into view on Android
+═══════════════════════════════════════════════════ */
+if ('visualViewport' in window) {
+  window.visualViewport.addEventListener('resize', () => {
+    const inputRow = document.querySelector('.input-row');
+    if (!inputRow) return;
+    // When keyboard opens, viewport height shrinks — nudge input into view
+    const vvh = window.visualViewport.height;
+    const wh  = window.innerHeight;
+    if (wh - vvh > 100) {
+      // keyboard is open
+      inputRow.style.transform = `translateY(-${wh - vvh}px)`;
+    } else {
+      inputRow.style.transform = '';
+    }
+  });
+}
+ 
+/* ═══════════════════════════════════════════════════
+   TOAST — swipe up to dismiss
+═══════════════════════════════════════════════════ */
+  document.getElementById('toastContainer').addEventListener('touchstart', function(e) {
+  const toast = e.target.closest('.toast');
+  if (!toast) return;
+  const startY = e.touches[0].clientY;
+  const onMove = (ev) => {
+    const dy = ev.touches[0].clientY - startY;
+    if (dy < -10) toast.style.transform = `translateY(${dy}px)`;
+  };
+  const onEnd = (ev) => {
+    const dy = ev.changedTouches[0].clientY - startY;
+    if (dy < -40) {
+      toast.classList.add('removing');
+      setTimeout(() => toast.remove(), 300);
+    } else {
+      toast.style.transform = '';
+    }
+    toast.removeEventListener('touchmove', onMove);
+    toast.removeEventListener('touchend', onEnd);
+  };
+  toast.addEventListener('touchmove', onMove, { passive: true });
+  toast.addEventListener('touchend', onEnd, { passive: true });
+    }, { passive: true });
 </script>
   <!-- ══════════════════════════════════════════════════════════
        BRONNY CONTROL PANEL
