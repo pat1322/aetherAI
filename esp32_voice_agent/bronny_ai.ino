@@ -257,7 +257,7 @@ static WiFiClientSecure gMediaCli;     // NEW v2.1 — /bronny/media YouTube str
 // ╚══════════════════════════════════════════════════════════════╝
 static AudioInfo ainf_rec(16000, 2, 16);
 static AudioInfo ainf_tts(24000, 2, 16);
-static AudioInfo ainf_vid(44100, 1, 16);
+static AudioInfo ainf_vid(44100, 2, 16);  // stereo — ES8311 I2S needs both channels
 
 DriverPins     brdPins;
 AudioBoard     brdDrv(AudioDriverES8311, brdPins);
@@ -2394,10 +2394,21 @@ static void executeBronnyCommand(JsonVariant cmd) {
     }
 
     else if (strcmp(command, "brightness") == 0) {
-        // Most ESP32-S3 devkits tie TFT backlight to 3.3V with no PWM pin.
-        // If yours has a backlight GPIO, do: analogWrite(PIN_TFT_BL, map(pct,0,100,0,255));
         int pct = constrain(cmd["value"] | 100, 0, 100);
+        // PIN_BLK (42) is the TFT backlight pin — analogWrite uses LEDC internally
+        analogWrite(PIN_BLK, map(pct, 0, 100, 0, 255));
         tftLogf(C_CY, "Brightness: %d%%", pct);
+    }
+
+    else if (strcmp(command, "wake") == 0) {
+        if (isStandby()) {
+            setState(ST_LISTEN);
+            setFaceListen();
+            dgStreaming     = dgConnected;
+            lastRailwayMs   = millis();
+            setStatus("Listening...", C_CY);
+            tftLog(C_GR, "Remote wake");
+        }
     }
 
     else if (strcmp(command, "sleep") == 0) {
@@ -2959,8 +2970,12 @@ static void exitVideoMode() {
     tft.setSwapBytes(false);
     tft.fillScreen(C_BK);
 
-    // Restore audio codec to 16000 Hz stereo receive mode
+    // Restore audio codec to 16000 Hz stereo receive mode.
+    // audioInitRec() has an idempotency guard (if inTtsMode || !audioOk).
+    // After audioInitVideo() both flags are false/true, making it a no-op.
+    // Force the reinit by setting inTtsMode=true first.
     setCrashPoint("video:exitAudio");
+    inTtsMode = true;
     audioInitRec();
     delay(80);
 

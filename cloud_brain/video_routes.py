@@ -111,11 +111,11 @@ def _convert(job_id: str, url: str):
             fo.write(fi.read())
         os.remove(temp_mjpeg)
 
-        # 44100 Hz mono 96kbps — matches ESP32 codec config
+        # 44100 Hz stereo 128kbps — matches ES8311 I2S stereo config on ESP32
         r = subprocess.run([
             FFMPEG_EXE, "-y", "-i", raw_mp4,
-            "-vn", "-ac", "1", "-ar", "44100",
-            "-b:a", "96k", out_mp3,
+            "-vn", "-ac", "2", "-ar", "44100",
+            "-b:a", "128k", out_mp3,
         ], capture_output=True, timeout=300)
         if r.returncode != 0:
             raise RuntimeError("ffmpeg audio: " + r.stderr.decode(errors="replace")[-400:])

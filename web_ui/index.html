@@ -504,7 +504,8 @@
     #clockDisplay {
       font-family: 'JetBrains Mono', monospace;
       font-size: 11px; color: var(--muted);
-      letter-spacing: 0.08em; min-width: 70px; text-align: right;
+      letter-spacing: 0.05em; min-width: 110px; text-align: right;
+      line-height: 1.4;
     }
 
     .icon-btn {
@@ -581,10 +582,12 @@
       display: flex; gap: 4px;
     }
     .filter-tab {
-      flex: 1; text-align: center;
+      flex: 1;
+      display: inline-flex; align-items: center; justify-content: center;
       padding: 4px 0;
       font-family: 'JetBrains Mono', monospace;
       font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+      text-indent: 0.06em; /* compensate trailing letter-spacing so text looks centred */
       color: var(--muted); background: none; border: 1px solid transparent;
       border-radius: 4px; cursor: pointer;
       transition: color 0.15s, border-color 0.15s, background 0.15s;
@@ -2469,7 +2472,11 @@ function setBusy(on) { document.getElementById('busyBar').classList.toggle('acti
 ═══════════════════════════════════════════════════ */
 function updateClock() {
   const el = document.getElementById('clockDisplay');
-  if (el) el.textContent = new Date().toLocaleTimeString('en-GB',{hour12:false});
+  if (!el) return;
+  const now  = new Date();
+  const time = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true });
+  const date = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  el.innerHTML = `${time}<br><span style="font-size:9px;opacity:0.6">${date}</span>`;
 }
 updateClock(); setInterval(updateClock, 1000);
 
@@ -2783,7 +2790,7 @@ function connectWS() {
     if (data.type === 'task_update')         handleTaskUpdate(data);
     if (data.type === 'device_connected')    refreshDevices();
     if (data.type === 'device_disconnected') refreshDevices();
-    if (data.type === 'bronny_status')       updateBronnyBadge(data.online, data.version);
+    if (data.type === 'bronny_status')       { updateBronnyBadge(data.online, data.version); if (data.online) _recordHeartbeat(); }
     if (data.type === 'ping')                ws.send(JSON.stringify({type:'pong'}));
     if (data.type === 'stream_chunk')        handleStreamChunk(data.task_id, data.chunk);
   };
@@ -3171,7 +3178,8 @@ async function refreshBronnyStatus() {
     const res = await fetch(`${BASE_URL}/bronny/status`);
     if (!res.ok) return;
     const d = await res.json();
-    updateBronnyBadge(d.online, d.version); // calls the new Bronny panel version
+    updateBronnyBadge(d.online, d.version);
+    if (d.online) _recordHeartbeat();
   } catch {}
 }
 
@@ -3529,6 +3537,43 @@ async function bronnySetLed() {
   await bronnyCommand({ command: 'led', mode, color, speed });
 }
 
+// ── Heartbeat countdown ──
+let _lastHbTimestamp  = 0;
+const HB_INTERVAL_MS  = 30000;   // ESP32 heartbeat every 30 s
+
+function _startHbTimer() {
+  setInterval(() => {
+    const el  = document.getElementById('bronnyHbTimer');
+    const dot = document.getElementById('bronnyHbDot');
+    if (!el) return;
+    if (!_bronnyOnline || !_lastHbTimestamp) {
+      el.textContent = '—';
+      if (dot) dot.style.background = 'var(--muted)';
+      return;
+    }
+    const elapsed = Date.now() - _lastHbTimestamp;
+    const remaining = Math.max(0, HB_INTERVAL_MS - elapsed);
+    const s = Math.ceil(remaining / 1000);
+    el.textContent = `Next HB in ${s}s`;
+    // Pulse green for 2 s right after a heartbeat arrives, then fade to muted
+    if (dot) dot.style.background = elapsed < 2000 ? '#00ffa3' : remaining < 5000 ? '#ff8c1a' : 'var(--muted)';
+  }, 500);
+}
+_startHbTimer();
+
+// Called from WS onmessage when bronny_status arrives
+function _recordHeartbeat() {
+  _lastHbTimestamp = Date.now();
+  const dot = document.getElementById('bronnyHbDot');
+  if (dot) dot.style.background = '#00ffa3';
+}
+
+// ── Wake ──
+async function bronnyWake() {
+  await bronnyCommand({ command: 'wake' });
+  showToast('⚡ Wake signal sent to Bronny', 'info');
+}
+
 // ── Sleep ──
 async function bronnySleep() {
   showConfirm('Put Bronny to sleep? 💤', async () => {
@@ -3742,30 +3787,47 @@ async function playQueueItem(idx) {
   const npThumb = document.getElementById('npThumb');
   if (npThumb) { npThumb.src = v.thumb || ''; npThumb.alt = v.title; }
 
-  try {
-    // Use existing /video/prepare pipeline — server converts with yt-dlp + ffmpeg,
-    // ESP32 auto-picks it up via checkCurrentJob() polling (no heartbeat delay)
-    const res = await fetch(`${BASE_URL}/video/prepare`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Api-Key': API_KEY },
-      // mode hint: 'audio' = play MP3 only on Bronny; 'video' = full MJPEG+MP3
-      // Server converts both either way; ESP32 decides what to show
-      body: JSON.stringify({ url: ytUrl, mode: _mediaMode }),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const { job_id } = await res.json();
-
-    // If rainbow LED requested, send that command separately (still via heartbeat)
-    if (rainbow && _bronnyOnline) {
-      bronnyCommand({ command: 'led', mode: 'rainbow', speed: 7 });
+  if (_mediaMode === 'audio') {
+    // ── Audio-only path ─────────────────────────────────────────────
+    // Bypass the MJPEG pipeline entirely.  Send a 'play' command to Bronny
+    // via the heartbeat queue — Bronny streams the MP3 directly from
+    // /bronny/media without ever entering video mode.
+    try {
+      if (rainbow && _bronnyOnline) {
+        bronnyCommand({ command: 'led', mode: 'rainbow', speed: 7 });
+      }
+      await bronnyCommand({ command: 'play', url: ytUrl, mode: 'audio' });
+      if (npTitle) npTitle.textContent = `🎵 ${v.title}`;
+      _playDuration  = v.duration || 0;
+      _playStartedAt = Date.now() + 5000;  // small offset for heartbeat delivery
+      _paused = false; _pausedAt = 0;
+      if (_playDuration > 0) startProgressTicker();
+      showToast(`🎵 Audio queued for Bronny: ${v.title.slice(0,35)}`, 'success');
+    } catch(e) {
+      showToast(`Audio queue failed: ${e.message}`, 'error');
+      if (npTitle) npTitle.textContent = `❌ Failed: ${v.title}`;
     }
+  } else {
+    // ── Video path ───────────────────────────────────────────────────
+    // Server converts to MJPEG + stereo MP3; ESP32 picks up via checkCurrentJob()
+    try {
+      const res = await fetch(`${BASE_URL}/video/prepare`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Api-Key': API_KEY },
+        body: JSON.stringify({ url: ytUrl }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const { job_id } = await res.json();
 
-    // Poll job status and update UI
-    _pollVideoJob(job_id, v);
+      if (rainbow && _bronnyOnline) {
+        bronnyCommand({ command: 'led', mode: 'rainbow', speed: 7 });
+      }
 
-  } catch(e) {
-    showToast(`Convert failed: ${e.message}`, 'error');
-    if (npTitle) npTitle.textContent = `❌ Failed: ${v.title}`;
+      _pollVideoJob(job_id, v);
+    } catch(e) {
+      showToast(`Convert failed: ${e.message}`, 'error');
+      if (npTitle) npTitle.textContent = `❌ Failed: ${v.title}`;
+    }
   }
 }
 
@@ -4033,6 +4095,11 @@ if ('visualViewport' in window) {
         </div>
         <button class="bronny-close" onclick="closeBronnyPanel()">✕ Close</button>
       </div>
+      <!-- Heartbeat status row -->
+      <div style="padding:4px 18px 6px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);display:flex;gap:14px;align-items:center;border-bottom:1px solid var(--border)">
+        <span>💓 <span id="bronnyHbTimer">—</span></span>
+        <span id="bronnyHbDot" style="width:6px;height:6px;border-radius:50%;background:var(--muted);display:inline-block;flex-shrink:0"></span>
+      </div>
 
       <!-- Tabs -->
       <div class="bronny-tabs">
@@ -4090,9 +4157,10 @@ if ('visualViewport' in window) {
           </div>
         </div>
         <div class="bronny-action-btns">
+          <button class="bronny-btn" onclick="bronnyWake()">⚡ Wake</button>
           <button class="bronny-btn danger" onclick="bronnySleep()">💤 Sleep</button>
           <button class="bronny-btn" onclick="bronnyRestart()">↺ Restart</button>
-          <button class="bronny-btn pink" onclick="setBronnyTab('party',document.querySelector('[data-tab=party]'))">🎉 Party Mode →</button>
+          <button class="bronny-btn pink" onclick="setBronnyTab('party',document.querySelector('[data-tab=party]'))">🎉 Party →</button>
           <button class="bronny-btn pink" onclick="setBronnyTab('media',document.querySelector('[data-tab=media]'))">▶ Media →</button>
         </div>
       </div>
@@ -4103,27 +4171,17 @@ if ('visualViewport' in window) {
           <div class="party-select-group">
             <label>🎵 Visualizer</label>
             <select class="bronny-select" id="partyVisualizer">
-              <option value="bars">Bars</option>
-              <option value="wave">Wave</option>
-              <option value="spectrum">Spectrum</option>
-              <option value="circle">Circle</option>
-              <option value="matrix">Matrix</option>
-              <option value="dots">Dots</option>
-              <option value="spiral">Spiral</option>
-              <option value="fireworks">Fireworks</option>
+              <option value="bars">Spectrum Bars</option>
+              <option value="mirror">Mirror</option>
             </select>
           </div>
           <div class="party-select-group">
             <label>💡 LED Form</label>
             <select class="bronny-select" id="partyLed">
               <option value="rainbow">Rainbow Cycle</option>
-              <option value="chase">Color Chase</option>
               <option value="strobe">Strobe Sync</option>
-              <option value="pulse">Beat Pulse</option>
-              <option value="meteor">Meteor Rain</option>
-              <option value="sparkle">Sparkle</option>
-              <option value="fire">Fire</option>
-              <option value="breathe">Breathe</option>
+              <option value="chase">RGB Chase</option>
+              <option value="sparkle">Random Sparkle</option>
             </select>
           </div>
         </div>
