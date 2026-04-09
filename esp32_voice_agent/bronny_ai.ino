@@ -1,6 +1,6 @@
 /*
  * ═══════════════════════════════════════════════════════════════
- *  BRONNY AI  v2.1
+ *  BRONNY AI  v2.2
  *  by Patrick Perez
  * ═══════════════════════════════════════════════════════════════
  *
@@ -30,7 +30,9 @@
  *    ✔ Crash breadcrumbs in RTC RAM survive reboots
  *
  *  NOTE: GPIO 48 is shared between PA enable and the WS2812B.
- *        PA is disabled during party / video mode.
+ *        v2.2: gpio_reset_pin() reclaims GPIO 48 from NeoPixel RMT
+ *        in audioInitVideo() and exitPartyMode() so PA is properly
+ *        enabled for video audio output.
  * ═══════════════════════════════════════════════════════════════
  */
 
@@ -61,6 +63,7 @@
 #include <ArduinoJson.h>
 #include <math.h>
 #include "esp_system.h"
+#include "driver/gpio.h"
 #include "voice_config.h"
 
 // ╔══════════════════════════════════════════════════════════════╗
@@ -374,7 +377,7 @@ static void audioInitTTS() {
     }
 }
 
-// audioInitVideo — 44100 Hz / mono for MJPEG MP3 audio task
+// audioInitVideo — 44100 Hz / stereo for MJPEG MP3 audio task
 static void audioInitVideo() {
     i2s.end(); delay(100);
     audioPinsSetup();
@@ -383,6 +386,15 @@ static void audioInitVideo() {
     cfg.output_device = DAC_OUTPUT_ALL;
     audioOk = i2s.begin(cfg);
     i2s.setVolume(VOL_VIDEO);
+    // GPIO 48 is shared between PA enable and WS2812B (NeoPixel).
+    // After partyLed.begin() the RMT peripheral owns the GPIO-matrix
+    // routing for pin 48, making digitalWrite() ineffective.
+    // gpio_reset_pin() disconnects any peripheral from the matrix and
+    // restores direct GPIO control, then we drive the pin HIGH to
+    // enable the power-amplifier for video audio output.
+    gpio_reset_pin((gpio_num_t)PIN_PA);
+    gpio_set_direction((gpio_num_t)PIN_PA, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)PIN_PA, 1);
     inTtsMode = false;
 }
 
@@ -2187,6 +2199,9 @@ static void enterPartyMode() {
 static void exitPartyMode() {
     partyLed.setPixelColor(0, 0);
     partyLed.show();
+    // Release GPIO 48 from NeoPixel's RMT peripheral so the PA amplifier
+    // can be re-enabled by audioInitVideo() / audioInitRec() later.
+    gpio_reset_pin((gpio_num_t)PARTY_LED_PIN);
 
     tft.fillScreen(C_BK);
     if (logsVisible) {
@@ -2750,6 +2765,12 @@ static bool playVideo() {
 
     uint32_t t0 = millis();
     while (!g_vidAudioReady && millis() - t0 < 8000) { delay(50); yield(); }
+
+    // taskDecoded.begin() on Core 0 calls setAudioInfo() on i2s, which may
+    // reset the codec volume and PA state. Re-assert both from Core 1 now
+    // that the audio task has finished its begin() sequence.
+    gpio_set_level((gpio_num_t)PIN_PA, 1);
+    i2s.setVolume(VOL_VIDEO);
 
     tft.fillScreen(TFT_BLACK);
     g_vidStartPlayback = true;
