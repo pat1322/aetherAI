@@ -731,8 +731,10 @@ static void sendHeartbeat() {
 
     int code = http.POST("{\"device\":\"bronny\",\"version\":\"2.1\"}");
 
-    // v2.1 — read response and execute queued commands (skip during video/party)
-    if (code == HTTP_CODE_OK && !isVideoMode()) {
+    // Always consume the response body so the server's command queue is
+    // properly drained.  executeBronnyCommand() guards against executing
+    // unsafe commands during video/party mode internally.
+    if (code == HTTP_CODE_OK) {
         String body = http.getString();
         hbDoc.clear();
         if (deserializeJson(hbDoc, body) == DeserializationError::Ok) {
@@ -2743,13 +2745,24 @@ static bool playVideo() {
     delay(VIDEO_PRIME_MS);   // let audio fill its pipeline before first frame
 
     // ── Main decode loop ─────────────────────────────────────
-    uint32_t playStartMs = millis();
-    uint32_t frameCount  = 0;
-    uint32_t lastByteMs  = millis();
-    uint32_t fpsFrames   = 0;
-    uint32_t fpsWindowMs = millis();
+    uint32_t playStartMs   = millis();
+    uint32_t frameCount    = 0;
+    uint32_t lastByteMs    = millis();
+    uint32_t fpsFrames     = 0;
+    uint32_t fpsWindowMs   = millis();
+    uint32_t lastHbVideoMs = millis();  // heartbeat timer for video session
 
     while (g_vidPlaying) {
+
+        // ── Periodic heartbeat ────────────────────────────────
+        // playVideo() blocks loop() for the entire video duration, so the
+        // normal 30-second heartbeat in loop() never fires.  After 60 s
+        // the cloud brain marks Bronny offline and the web UI shows offline.
+        // Sending every 25 s keeps last_seen fresh on the server.
+        if (millis() - lastHbVideoMs >= 25000) {
+            lastHbVideoMs = millis();
+            sendHeartbeat();
+        }
 
         // Top-up buffer from HTTP stream
         int avail = vs->available();
@@ -2802,6 +2815,9 @@ static bool playVideo() {
                 Serial.printf("[Video] %.1f fps\n", fpsFrames / 5.0f);
                 fpsFrames = 0;  fpsWindowMs = millis();
             }
+            // Yield after every decoded frame — feeds the Task WDT and lets
+            // the WiFi stack service its TX/RX queues between frames.
+            yield();
 
         } else {
             // No complete frame in buffer — check for end-of-stream or stall
@@ -2899,13 +2915,16 @@ static void enterVideoMode(const char* jobId) {
     // causes two tasks to write to i2s simultaneously → immediate panic.
     if (!ok) {
         g_vidPlaying = false;
-        uint32_t wt = millis();
-        while (g_audioTaskRunning && millis() - wt < 3000) vTaskDelay(10);
-
-        // Fully close both stream clients before reusing them
-        gVidMjpegCli.stop();
+        // Close the audio stream client BEFORE waiting for the task — this
+        // makes the audio task's readBytes() / http.connected() checks fail
+        // immediately, so it exits within milliseconds instead of waiting
+        // for the TCP timeout.  Closing AFTER the wait left the task alive
+        // past the 3-second timeout, causing two tasks to write to i2s.
         gVidAudioCli.stop();
-        delay(1500);
+        gVidMjpegCli.stop();
+        uint32_t wt = millis();
+        while (g_audioTaskRunning && millis() - wt < 4000) vTaskDelay(10);
+        delay(800);
 
         tft.fillScreen(C_BK);
         tft.setTextSize(1); tft.setTextColor(C_YL, C_BK);

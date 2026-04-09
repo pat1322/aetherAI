@@ -3791,9 +3791,12 @@ function _pollVideoJob(job_id, v) {
         // Update now-playing bar to show playing state
         if (npTitle) npTitle.textContent = v.title;
         if (ppBtn)   ppBtn.textContent = '⏸';
-        // Start estimated progress ticker
+        // Start estimated progress ticker.
+        // The ESP32 needs ~15 s after "ready" before it actually starts playing
+        // (up to 5 s video-poll + 8 s pre-fill + startup).  We subtract that
+        // from Date.now() so the progress bar begins at 0 when Bronny starts.
         _playDuration  = v.duration || 0;
-        _playStartedAt = Date.now();
+        _playStartedAt = Date.now() + 15000;   // offset so timer starts ~when Bronny starts
         _paused        = false;
         _pausedAt      = 0;
         startProgressTicker();
@@ -3824,16 +3827,18 @@ function startProgressTicker() {
   if (_npRafId) cancelAnimationFrame(_npRafId);
   function tick() {
     if (!_playStartedAt || _playDuration <= 0) return;
-    const elapsed = _paused
+    // _playStartedAt may be in the future (startup offset) — clamp to ≥ 0
+    const rawElapsed = _paused
       ? _pausedAt
-      : Math.min((Date.now() - _playStartedAt) / 1000 + _pausedAt, _playDuration);
+      : (Date.now() - _playStartedAt) / 1000 + _pausedAt;
+    const elapsed = Math.max(0, Math.min(rawElapsed, _playDuration));
     const pct = Math.min((elapsed / _playDuration) * 100, 100);
     const fill = document.getElementById('npProgressFill');
     if (fill) fill.style.width = pct + '%';
     const el = document.getElementById('npTimeElapsed');
     if (el) el.textContent = fmtDuration(Math.floor(elapsed));
-    if (elapsed >= _playDuration && !_paused) {
-      // Auto-play next
+    if (rawElapsed >= _playDuration && !_paused) {
+      // Auto-play next (use rawElapsed so startup offset doesn't defer it)
       bronnyNextTrack();
       return;
     }
