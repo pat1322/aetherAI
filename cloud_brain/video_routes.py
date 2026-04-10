@@ -111,10 +111,10 @@ def _convert(job_id: str, url: str):
             fo.write(fi.read())
         os.remove(temp_mjpeg)
 
-        # 44100 Hz stereo 128kbps — matches ES8311 I2S stereo config on ESP32
+        # 44100 Hz mono 128 kbps — matches ainf_vid(44100,1,16) on ESP32
         r = subprocess.run([
             FFMPEG_EXE, "-y", "-i", raw_mp4,
-            "-vn", "-ac", "2", "-ar", "44100",
+            "-vn", "-ac", "1", "-ar", "44100",
             "-b:a", "128k", out_mp3,
         ], capture_output=True, timeout=300)
         if r.returncode != 0:

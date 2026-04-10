@@ -23,7 +23,7 @@
  *    ✔ jEscBuf() — JSON escape into a fixed char buffer, no String
  *    ✔ audioInitVideo() — 44100 Hz / 1-ch init for MJPEG audio
  *    ✔ MJPEG video mode with full enter/exit lifecycle
- *    ✔ g_audioTaskRunning flag — safe Core-0 audio task coordination
+ *    ✔ Single-core video+audio decode — no FreeRTOS task, no I2S races
  *    ✔ setSwapBytes(true/false) toggle for JPEGDEC compatibility
  *    ✔ dgWs.disconnect() before reconnect — prevents TLS state leak
  *    ✔ Watchdog-safe yield() in all long-running loops
@@ -252,7 +252,7 @@ static void clearCrashPoint() { rtcCrashMagic = 0; rtcCrashMsg[0] = '\0'; }
 static WiFiClientSecure gHttpCli;      // heartbeat + TTS Railway stream
 static WiFiClientSecure gVideoCli;     // video poll (checkCurrentJob etc.)
 static WiFiClientSecure gVidMjpegCli;  // MJPEG video stream in playVideo()
-static WiFiClientSecure gVidAudioCli;  // MP3 audio stream in videoAudioTaskFn()
+static WiFiClientSecure gVidAudioCli;  // MP3 audio stream in playVideo()
 static WiFiClientSecure gMediaCli;     // NEW v2.1 — /bronny/media YouTube streaming
 
 // ╔══════════════════════════════════════════════════════════════╗
@@ -260,7 +260,7 @@ static WiFiClientSecure gMediaCli;     // NEW v2.1 — /bronny/media YouTube str
 // ╚══════════════════════════════════════════════════════════════╝
 static AudioInfo ainf_rec(16000, 2, 16);
 static AudioInfo ainf_tts(24000, 2, 16);
-static AudioInfo ainf_vid(44100, 2, 16);  // stereo — ES8311 I2S needs both channels
+static AudioInfo ainf_vid(44100, 1, 16);  // mono — MJPEG audio track is mono
 
 DriverPins     brdPins;
 AudioBoard     brdDrv(AudioDriverES8311, brdPins);
@@ -377,7 +377,7 @@ static void audioInitTTS() {
     }
 }
 
-// audioInitVideo — 44100 Hz / stereo for MJPEG MP3 audio task
+// audioInitVideo — 44100 Hz mono for MJPEG inline audio decode
 static void audioInitVideo() {
     i2s.end(); delay(100);
     audioPinsSetup();
@@ -465,12 +465,9 @@ static void jingleParty() {
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  VIDEO MODE GLOBALS                                          ║
 // ╚══════════════════════════════════════════════════════════════╝
-static uint8_t*      mjpegBuf            = nullptr; // 256 KB PSRAM
-static char          gVidJobId[32]       = {0};
-static volatile bool g_vidPlaying        = false;
-static volatile bool g_vidAudioReady     = false;
-static volatile bool g_vidStartPlayback  = false;
-static volatile bool g_audioTaskRunning  = false;
+static uint8_t* mjpegBuf      = nullptr; // 256 KB PSRAM
+static char     gVidJobId[32] = {0};
+static bool     g_vidPlaying  = false;   // single-core — no volatile needed
 
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  UTILITIES                                                   ║
@@ -2619,84 +2616,12 @@ static void clearCurrentJob() {
     http.end(); gVideoCli.stop();
 }
 
-// ── Core-0 audio streaming task ──────────────────────────────────
-// Runs on Core 0 while Core 1 decodes video frames.
-// gVidAudioCli is a global — no TLS state bleed between plays.
-static void videoAudioTaskFn(void*) {
-    g_audioTaskRunning = true;
-
-    static MP3DecoderHelix    taskMp3;
-    static EncodedAudioStream taskDecoded(&i2s, &taskMp3);
-    static uint8_t            audioBuf[2048];
-
-    gVidAudioCli.setInsecure();
-    gVidAudioCli.setConnectionTimeout(15000);
-
-    HTTPClient http;
-    String url = baseUrl() + "/video/stream/" + String(gVidJobId) + ".mp3";
-    http.begin(gVidAudioCli, url);
-    http.addHeader("X-Api-Key", AETHER_API_KEY);
-    http.setTimeout(600000);
-
-    int code = http.GET();
-    Serial.printf("[VidAudio] HTTP %d\n", code);
-
-    if (code == 200) {
-        taskMp3.begin();
-        // Prime with correct format BEFORE begin() so the internal
-        // setAudioInfo() call uses {44100,2,16} instead of {0,0,0}.
-        // Passing {0,0,0} corrupts the ES8311 codec state and silences audio.
-        taskDecoded.setAudioInfo(ainf_vid);
-        taskDecoded.begin();
-        WiFiClient* s = http.getStreamPtr();
-
-        g_vidAudioReady = true;
-        while (!g_vidStartPlayback && g_vidPlaying) vTaskDelay(1);
-
-        // Re-assert volume + PA after the first write: the MP3 decoder fires
-        // setAudioInfo({44100,2,16}) synchronously on the first frame, which
-        // reinitialises the codec and resets the volume register to its
-        // post-reset default (potentially muted). Do this from the audio task
-        // so it happens after the codec re-init, not before.
-        bool volSet = false;
-        while (g_vidPlaying) {
-            int avail = s->available();
-            if (avail > 0) {
-                int got = s->readBytes(audioBuf,
-                              min(avail, (int)sizeof(audioBuf)));
-                if (got > 0) {
-                    taskDecoded.write(audioBuf, got);
-                    if (!volSet) {
-                        i2s.setVolume(VOL_VIDEO);
-                        gpio_set_level((gpio_num_t)PIN_PA, 1);
-                        volSet = true;
-                    }
-                }
-            } else {
-                if (!http.connected() && s->available() == 0) break;
-                vTaskDelay(1);
-            }
-        }
-        taskDecoded.end();
-        // Audio stream ended — tell video loop to stop
-        g_vidPlaying = false;
-    } else {
-        // ── CRITICAL FIX ─────────────────────────────────────────
-        // Previous code set g_vidPlaying = false here, which killed
-        // the video loop before a single frame was decoded — this is
-        // why video almost always returned to the face immediately.
-        // Now we signal ready but leave g_vidPlaying alone so the
-        // video continues to play silently.
-        Serial.println("[VidAudio] HTTP fail — video plays silently");
-        g_vidAudioReady = true;
-    }
-
-    http.end();
-    gVidAudioCli.stop();
-    g_audioTaskRunning = false;
-    Serial.println("[VidAudio] Task exit");
-    vTaskDelete(NULL);
-}
+// ── MP3 audio decoder (module-level statics — kept off the stack) ──
+// Using static avoids heap fragmentation from repeated alloc/free.
+// EncodedAudioStream is constructed once; begin()/end() reinitialise it.
+static MP3DecoderHelix    vidMp3;
+static EncodedAudioStream vidDecoded(&i2s, &vidMp3);
+static uint8_t            vidAudioBuf[2048];
 
 // ── Buffering progress bar ───────────────────────────────────────
 static void drawVidBufferBar(int filled, int total) {
@@ -2711,45 +2636,72 @@ static void drawVidBufferBar(int filled, int total) {
     tft.print(pct);
 }
 
-// ── Core video decode loop ───────────────────────────────────────
-// Opens the MJPEG stream, pre-fills the buffer, spawns the audio
-// task, then decodes and displays frames until the stream ends.
-// Blocks until complete. Called from enterVideoMode().
+// ── Single-core video + audio decode ────────────────────────────
+// Both the MJPEG and MP3 streams are opened here and serviced
+// in the same loop on Core 1.  No FreeRTOS task is spawned,
+// eliminating all dual-core I2S race conditions that caused
+// random crashes.  The I2S DMA runs independently in the
+// background so audio plays continuously even while the CPU is
+// busy decoding a JPEG frame.
 static bool playVideo() {
     if (!mjpegBuf) return false;
 
-    // Use global gVidMjpegCli — no stale TLS state from previous plays.
+    // ── Open MJPEG stream ────────────────────────────────────
     gVidMjpegCli.setInsecure();
     gVidMjpegCli.setConnectionTimeout(20000);
-
     HTTPClient vhttp;
-    vhttp.begin(gVidMjpegCli, baseUrl() + "/video/stream/" + String(gVidJobId) + ".mjpeg");
+    vhttp.begin(gVidMjpegCli,
+                baseUrl() + "/video/stream/" + String(gVidJobId) + ".mjpeg");
     vhttp.addHeader("X-Api-Key", AETHER_API_KEY);
     vhttp.setTimeout(600000);
 
-    int code = vhttp.GET();
-    Serial.printf("[Video] MJPEG HTTP %d\n", code);
-    if (code != 200) {
+    int vcode = vhttp.GET();
+    Serial.printf("[Video] MJPEG HTTP %d\n", vcode);
+    if (vcode != 200) {
         tft.fillScreen(TFT_BLACK);
         tft.setTextSize(1); tft.setTextColor(C_RD, TFT_BLACK);
-        char msg[32]; snprintf(msg, sizeof(msg), "HTTP error %d", code);
+        char msg[32]; snprintf(msg, sizeof(msg), "HTTP error %d", vcode);
         tft.setCursor(W/2 - (int)strlen(msg)*3, H/2);
         tft.print(msg);
         vhttp.end(); gVidMjpegCli.stop();
-        g_vidPlaying = false;
         return false;
     }
-
     WiFiClient* vs = vhttp.getStreamPtr();
 
-    // Server prepends a 1-byte FPS header (see video_routes.py)
+    // ── Open MP3 audio stream ────────────────────────────────
+    gVidAudioCli.setInsecure();
+    gVidAudioCli.setConnectionTimeout(15000);
+    HTTPClient ahttp;
+    ahttp.begin(gVidAudioCli,
+                baseUrl() + "/video/stream/" + String(gVidJobId) + ".mp3");
+    ahttp.addHeader("X-Api-Key", AETHER_API_KEY);
+    ahttp.setTimeout(600000);
+
+    int acode = ahttp.GET();
+    Serial.printf("[VidAudio] HTTP %d\n", acode);
+    bool hasAudio = (acode == 200);
+    WiFiClient* as_ = hasAudio ? ahttp.getStreamPtr() : nullptr;
+
+    // ── Initialise MP3 decoder ───────────────────────────────
+    // audioInitVideo() already set i2s to {44100,1,16}.
+    // setAudioInfo before begin() so the internal setAudioInfo
+    // call inside begin() sees the correct format and takes the
+    // early-return path — the codec is NOT restarted and the
+    // volume/PA set by audioInitVideo() are preserved.
+    if (hasAudio) {
+        vidMp3.begin();
+        vidDecoded.setAudioInfo(ainf_vid);
+        vidDecoded.begin();
+    }
+
+    // ── Read FPS byte from MJPEG header ─────────────────────
     uint8_t streamFps = VIDEO_TARGET_FPS;
     vs->readBytes(&streamFps, 1);
     if (streamFps == 0 || streamFps > 60) streamFps = VIDEO_TARGET_FPS;
     const uint32_t frameMs = 1000 / streamFps;
     Serial.printf("[Video] %u fps  frameMs=%u ms\n", streamFps, frameMs);
 
-    // ── Pre-fill ────────────────────────────────────────────
+    // ── Pre-fill MJPEG buffer ────────────────────────────────
     int bytesInBuf = 0;
     tft.fillScreen(TFT_BLACK);
     tft.setTextSize(2); tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -2759,6 +2711,15 @@ static bool playVideo() {
     int lastPct = -1;
     uint32_t prefillEnd = millis() + 8000;
     while (bytesInBuf < (int)VIDEO_PREFILL_BYTES && millis() < prefillEnd) {
+        // Drain audio TCP buffer during pre-fill so it doesn't stall the server
+        if (hasAudio && as_) {
+            int aa = as_->available();
+            if (aa > 0) {
+                int ag = as_->readBytes(vidAudioBuf,
+                             min(aa, (int)sizeof(vidAudioBuf)));
+                if (ag > 0) vidDecoded.write(vidAudioBuf, ag);
+            }
+        }
         int avail = vs->available();
         if (avail > 0) {
             int toRead = min(avail, (int)VIDEO_MJPEG_BUF - bytesInBuf);
@@ -2766,110 +2727,111 @@ static bool playVideo() {
                 bytesInBuf += vs->readBytes(mjpegBuf + bytesInBuf, toRead);
         }
         int pct = (int)((float)bytesInBuf / VIDEO_PREFILL_BYTES * 100);
-        if (pct != lastPct) { drawVidBufferBar(bytesInBuf, VIDEO_PREFILL_BYTES); lastPct=pct; }
+        if (pct != lastPct) {
+            drawVidBufferBar(bytesInBuf, VIDEO_PREFILL_BYTES);
+            lastPct = pct;
+        }
         yield();
     }
-    Serial.printf("[Video] Pre-filled %d bytes\n", bytesInBuf);
-
-    // ── Spawn Core-0 audio task ──────────────────────────────
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextSize(1); tft.setTextColor(C_CY, TFT_BLACK);
-    tft.setCursor(W/2 - 42, H/2);
-    tft.print("Starting audio...");
-
-    xTaskCreatePinnedToCore(videoAudioTaskFn, "vid_audio",
-                            32768, NULL, 2, NULL, 0);
-
-    uint32_t t0 = millis();
-    while (!g_vidAudioReady && millis() - t0 < 8000) { delay(50); yield(); }
-
-    // taskDecoded.begin() on Core 0 calls setAudioInfo() on i2s, which may
-    // reset the codec volume and PA state. Re-assert both from Core 1 now
-    // that the audio task has finished its begin() sequence.
-    gpio_set_level((gpio_num_t)PIN_PA, 1);
-    i2s.setVolume(VOL_VIDEO);
+    Serial.printf("[Video] Pre-filled %d bytes  hasAudio=%d\n",
+                  bytesInBuf, (int)hasAudio);
 
     tft.fillScreen(TFT_BLACK);
-    g_vidStartPlayback = true;
-    delay(VIDEO_PRIME_MS);   // let audio fill its pipeline before first frame
+    delay(VIDEO_PRIME_MS);   // let audio DMA fill before first frame
 
     // ── Main decode loop ─────────────────────────────────────
+    g_vidPlaying       = true;
     uint32_t playStartMs   = millis();
     uint32_t frameCount    = 0;
     uint32_t lastByteMs    = millis();
     uint32_t fpsFrames     = 0;
     uint32_t fpsWindowMs   = millis();
-    uint32_t lastHbVideoMs = millis();  // heartbeat timer for video session
+    uint32_t lastHbVideoMs = millis();
 
     while (g_vidPlaying) {
 
-        // ── Periodic heartbeat ────────────────────────────────
-        // playVideo() blocks loop() for the entire video duration, so the
-        // normal 30-second heartbeat in loop() never fires.  After 60 s
-        // the cloud brain marks Bronny offline and the web UI shows offline.
-        // Sending every 25 s keeps last_seen fresh on the server.
+        // ── Heartbeat (playVideo blocks loop() for the full duration) ──
         if (millis() - lastHbVideoMs >= 25000) {
             lastHbVideoMs = millis();
             sendHeartbeat();
         }
 
-        // Top-up buffer from HTTP stream
-        int avail = vs->available();
-        if (avail > 0) {
-            int toRead = min(avail, (int)VIDEO_MJPEG_BUF - bytesInBuf);
-            if (toRead > 0) {
-                int got = vs->readBytes(mjpegBuf + bytesInBuf, toRead);
-                bytesInBuf += got;
-                if (got > 0) lastByteMs = millis();
+        // ── Drain audio stream ────────────────────────────────
+        // Feed at most 512 bytes per iteration — keeps write time
+        // short so JPEG decode is not starved and WDT is fed.
+        if (hasAudio && as_) {
+            int aa = min(as_->available(), 512);
+            if (aa > 0) {
+                int ag = as_->readBytes(vidAudioBuf, aa);
+                if (ag > 0) vidDecoded.write(vidAudioBuf, ag);
+            }
+            // Audio finished before video — continue silently
+            if (!ahttp.connected() && as_->available() == 0) {
+                Serial.println("[VidAudio] Stream ended");
+                vidDecoded.end();
+                ahttp.end(); gVidAudioCli.stop();
+                hasAudio = false; as_ = nullptr;
             }
         }
 
-        // Search for JPEG SOI (FF D8) and EOI (FF D9) markers.
-        // CRITICAL FIX: only capture the FIRST SOI found (frameStart == -1 guard).
-        // Previous code overwrote frameStart on every FF D8, so an embedded
-        // JFIF/APP marker inside compressed data would point frameStart at a
-        // mid-frame offset, causing JPEGDEC to try decoding a partial frame → crash.
+        // ── Top-up MJPEG buffer ───────────────────────────────
+        {
+            int avail = vs->available();
+            if (avail > 0) {
+                int toRead = min(avail, (int)VIDEO_MJPEG_BUF - bytesInBuf);
+                if (toRead > 0) {
+                    int got = vs->readBytes(mjpegBuf + bytesInBuf, toRead);
+                    bytesInBuf += got;
+                    if (got > 0) lastByteMs = millis();
+                }
+            }
+        }
+
+        // ── Find next complete JPEG frame ─────────────────────
+        // Only latch the FIRST FF D8 SOI marker — an embedded JFIF/
+        // APP marker inside Huffman-coded data also looks like FF D8
+        // and would corrupt the frame pointer if we let it overwrite.
         int frameStart = -1, frameEnd = -1;
         for (int i = 0; i < bytesInBuf - 1; i++) {
             if (mjpegBuf[i] != 0xFF) continue;
-            if      (mjpegBuf[i+1] == 0xD8 && frameStart == -1) { frameStart = i; }
+            if      (mjpegBuf[i+1] == 0xD8 && frameStart == -1) frameStart = i;
             else if (mjpegBuf[i+1] == 0xD9 && frameStart != -1) { frameEnd = i + 1; break; }
         }
 
         if (frameStart != -1 && frameEnd != -1) {
-            frameCount++;  fpsFrames++;
+            frameCount++; fpsFrames++;
 
-            // Frame-rate pacing: keep video in sync with audio clock
+            // FPS pacing — skip frames if we are running late by more
+            // than 10 frame periods (prevents unbounded catch-up lag)
             uint32_t elapsedMs  = millis() - playStartMs;
             uint32_t expectedMs = frameCount * frameMs;
             if (elapsedMs <= expectedMs + frameMs * 10) {
                 while (millis() - playStartMs < expectedMs) yield();
-
                 int frameSize = frameEnd - frameStart + 1;
                 if (jpeg.openRAM(mjpegBuf + frameStart, frameSize,
                                  jpegDrawCallback)) {
                     jpeg.decode(max(0, (W - jpeg.getWidth())  / 2),
-                                max(0, (H - jpeg.getHeight()) / 2),
-                                0);
+                                max(0, (H - jpeg.getHeight()) / 2), 0);
                     jpeg.close();
                 }
             }
 
-            // Slide unprocessed bytes to the front of the buffer
+            // Slide remaining bytes to the front of the buffer
             int remaining = bytesInBuf - frameEnd - 1;
-            if (remaining > 0) memmove(mjpegBuf, mjpegBuf + frameEnd + 1, remaining);
+            if (remaining > 0)
+                memmove(mjpegBuf, mjpegBuf + frameEnd + 1, remaining);
             bytesInBuf = max(0, remaining);
 
             if (millis() - fpsWindowMs >= 5000) {
-                Serial.printf("[Video] %.1f fps\n", fpsFrames / 5.0f);
-                fpsFrames = 0;  fpsWindowMs = millis();
+                Serial.printf("[Video] %.1f fps  heap=%u\n",
+                              fpsFrames / 5.0f,
+                              heap_caps_get_free_size(MALLOC_CAP_8BIT));
+                fpsFrames = 0; fpsWindowMs = millis();
             }
-            // Yield after every decoded frame — feeds the Task WDT and lets
-            // the WiFi stack service its TX/RX queues between frames.
-            yield();
+            yield();   // feed Task WDT + WiFi stack between frames
 
         } else {
-            // No complete frame in buffer — check for end-of-stream or stall
+            // No complete frame yet — check for end-of-stream or stall
             if ((!vhttp.connected() && vs->available() == 0) ||
                     (millis() - lastByteMs) > VIDEO_STALL_MS) {
                 Serial.println("[Video] Stream ended or stalled");
@@ -2877,11 +2839,13 @@ static bool playVideo() {
             }
             yield();
         }
-    } // end while(g_vidPlaying)
+    } // while (g_vidPlaying)
 
     g_vidPlaying = false;
-    vhttp.end();
-    gVidMjpegCli.stop();
+
+    // ── Clean up ──────────────────────────────────────────────
+    if (hasAudio) { vidDecoded.end(); ahttp.end(); gVidAudioCli.stop(); }
+    vhttp.end(); gVidMjpegCli.stop();
     Serial.printf("[Video] Done — %u frames\n", frameCount);
     return frameCount > 0;
 }
@@ -2895,112 +2859,78 @@ static void enterVideoMode(const char* jobId) {
 
     setState(ST_VIDEO);
 
-    // Stop mic and DG audio streaming for the video duration.
-    // DG WebSocket stays open but just idles (keepalive handled by
-    // maintainDeepgram in exitVideoMode path).
+    // Stop mic — DG WebSocket stays open (idles until exit).
     dgStreaming = false;
-    if (micOk) { mic_stream.end();  micOk = false; }
+    if (micOk) { mic_stream.end(); micOk = false; }
     delay(60);
 
-    // Clear any pending transcript so a voice command from before
-    // the video doesn't fire right after it ends.
-    gDgFinal[0]       = '\0';
-    gDgPartial[0]     = '\0';
-    pendingTranscript = false;
-    dgFinalReceivedAt = 0;
+    // Clear any pending transcript so a pre-video voice command
+    // doesn't fire immediately after playback ends.
+    gDgFinal[0] = '\0'; gDgPartial[0] = '\0';
+    pendingTranscript = false; dgFinalReceivedAt = 0;
 
-    // Fetch display title before consuming the job
+    // Fetch display title before clearing the job
     String title = getJobTitle(jobId);
     if (title.length() > 26) title = title.substring(0, 23) + "...";
 
-    // "Now Playing" splash screen
+    // "Now Playing" splash
     tft.fillScreen(C_BK);
     tft.fillRect(0, 0, W, 30, C_CARD);
     tft.drawFastHLine(0,  0, W, C_PNK);
     tft.drawFastHLine(0, 30, W, dimCol(C_PNK, 3));
-    tft.setTextColor(C_PNK);  tft.setTextSize(1);
-    tft.setCursor(8, 11);     tft.print("\x10 NOW PLAYING");
-    tft.setTextColor(C_WH);   tft.setTextSize(2);
+    tft.setTextColor(C_PNK); tft.setTextSize(1);
+    tft.setCursor(8, 11);    tft.print("\x10 NOW PLAYING");
+    tft.setTextColor(C_WH);  tft.setTextSize(2);
     tft.setCursor(max(0, (W - 5*12) / 2), H/2 - 20);
     tft.print("VIDEO");
     if (title.length() > 0) {
-        tft.setTextSize(1);  tft.setTextColor(C_CY);
+        tft.setTextSize(1); tft.setTextColor(C_CY);
         tft.setCursor(max(0, (W - (int)title.length()*6) / 2), H/2 + 12);
         tft.print(title);
     }
     delay(900);
 
-    // Mark job consumed BEFORE playback starts so a crash mid-video
-    // does not replay the same clip on the next reboot.
+    // Mark job consumed before playback so a mid-video crash does
+    // not replay the same clip on the next boot.
     clearCurrentJob();
 
-    // Copy job ID into global so videoAudioTaskFn can read it
     strncpy(gVidJobId, jobId, sizeof(gVidJobId) - 1);
     gVidJobId[sizeof(gVidJobId) - 1] = '\0';
 
-    // Switch codec to 44100 Hz / mono for MP3 audio task
+    // Init codec to 44100 Hz mono.  audioInitVideo() also reclaims
+    // GPIO 48 from the NeoPixel RMT and enables the PA.
     setCrashPoint("video:audioInit");
     audioInitVideo();
     delay(100);
 
-    // CRITICAL: JPEGDEC outputs RGB565 with bytes in the order
-    // TFT_eSPI's pushImage() expects when setSwapBytes(true).
-    // Failing to toggle this back on exit inverts all UI colours.
+    // JPEGDEC writes RGB565 in big-endian order; setSwapBytes(true)
+    // makes TFT_eSPI accept that.  Must be restored on exit.
     tft.setSwapBytes(true);
+    g_vidPlaying = true;
 
-    // Arm volatile flags before spawning the task
-    g_vidPlaying       = true;
-    g_vidAudioReady    = false;
-    g_vidStartPlayback = false;
-    g_audioTaskRunning = false;
-
-    // Play — blocks until stream ends or stalls
+    // Play — blocks until the MJPEG stream ends or stalls.
+    // Single retry on connection failure; playVideo() cleans up
+    // both HTTP clients before returning false.
     setCrashPoint("video:play");
-    bool ok = playVideo();
-
-    // One automatic retry on connection failure.
-    // CRITICAL: must wait for the previous audio task to fully exit before
-    // retrying — spawning a second task while the first is still running
-    // causes two tasks to write to i2s simultaneously → immediate panic.
-    if (!ok) {
-        g_vidPlaying = false;
-        // Close the audio stream client BEFORE waiting for the task — this
-        // makes the audio task's readBytes() / http.connected() checks fail
-        // immediately, so it exits within milliseconds instead of waiting
-        // for the TCP timeout.  Closing AFTER the wait left the task alive
-        // past the 3-second timeout, causing two tasks to write to i2s.
+    if (!playVideo()) {
         gVidAudioCli.stop();
         gVidMjpegCli.stop();
-        uint32_t wt = millis();
-        while (g_audioTaskRunning && millis() - wt < 4000) vTaskDelay(10);
-        delay(800);
-
+        delay(1000);
         tft.fillScreen(C_BK);
         tft.setTextSize(1); tft.setTextColor(C_YL, C_BK);
         tft.setCursor(W/2 - 30, H/2); tft.print("Retrying...");
-
-        g_vidPlaying       = true;
-        g_vidAudioReady    = false;
-        g_vidStartPlayback = false;
-        g_audioTaskRunning = false;
+        g_vidPlaying = true;
         playVideo();
     }
     clearCrashPoint();
-
     exitVideoMode();
 }
 
 // ── Exit video mode ──────────────────────────────────────────────
 static void exitVideoMode() {
-    // Tell audio task to stop
     g_vidPlaying = false;
-
-    // Wait up to 3 s for Core-0 audio task to exit before touching i2s
-    uint32_t t = millis();
-    while (g_audioTaskRunning && millis() - t < 3000) vTaskDelay(10);
-
-    // Free TLS contexts before reinitialising the codec — each active
-    // WiFiClientSecure holds ~50 KB of heap for its mbedTLS context.
+    // Ensure both TLS contexts are released before reinitialising
+    // the codec — each WiFiClientSecure holds ~50 KB of mbedTLS heap.
     gVidMjpegCli.stop();
     gVidAudioCli.stop();
 
