@@ -1165,8 +1165,13 @@
     /* ── Mobile ── */
     /* ══ SHARED SCROLL BEHAVIOUR ══════════════════════════════ */
     .output-area, .task-list, .steps-list, .files-body,
-    .yt-results, .yt-queue-list, .bronny-tab-body {
+    .yt-results, .yt-queue-list {
       -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
+    }
+    /* bronny-tab-body omitted: -webkit-overflow-scrolling: touch can swallow
+       tap events on iOS, making buttons inside unresponsive. */
+    .bronny-tab-body {
       overscroll-behavior: contain;
     }
 
@@ -1774,6 +1779,14 @@
       -webkit-user-select: none; user-select: none;
     }
 
+    /* Ensure buttons inside the Bronny drawer register taps reliably on iOS.
+       touch-action: manipulation disables double-tap zoom / long-press so the
+       browser fires click immediately instead of waiting to distinguish scroll. */
+    .bronny-btn, .bronny-tab, .np-btn, .bronny-select,
+    .bronny-pill, .party-activate-btn, .media-mode-btn {
+      touch-action: manipulation;
+    }
+
     /* Larger touch area for file delete */
     .file-x { min-width: 28px; min-height: 28px; display: flex; align-items: center; justify-content: center; }
     .task-del-btn { min-width: 26px; min-height: 26px; }
@@ -2098,7 +2111,7 @@
       <button class="icon-btn desktop-only" onclick="toggleTheme()" id="themeBtn" title="Toggle theme">🌙</button>
       <button class="icon-btn desktop-only" onclick="openShortcuts()" title="Keyboard shortcuts (?)">⌨</button>
       <button class="icon-btn" onclick="openSettings()" title="Settings">⚙</button>
-      <button class="icon-btn mobile-only" id="bronnyMobileBtn" onclick="openBronnyPanel()" title="Bronny Control" style="display:none">⬡</button>
+      <button class="icon-btn mobile-only" id="bronnyMobileBtn" onclick="openBronnyPanel()" title="Bronny Control">⬡</button>
       <button class="icon-btn mobile-only" onclick="togglePanel()" aria-label="Detail">⊞</button>
     </div>
   </div>
@@ -3474,10 +3487,11 @@ function setBronnyTab(name, btn) {
 function updateBronnyBadge(online, version) {
   _bronnyOnline  = online;
   _bronnyVersion = version || '';
-  const pill = document.getElementById('bronnyPill');
-  const txt  = document.getElementById('bronnyPillText');
-  const dot  = document.getElementById('bronnyPanelDot');
-  const ver  = document.getElementById('bronnyPanelVersion');
+  const pill      = document.getElementById('bronnyPill');
+  const txt       = document.getElementById('bronnyPillText');
+  const dot       = document.getElementById('bronnyPanelDot');
+  const ver       = document.getElementById('bronnyPanelVersion');
+  const mobileBtn = document.getElementById('bronnyMobileBtn');
   if (!pill) return;
   if (online) {
     pill.className = 'bronny-pill';
@@ -3485,10 +3499,13 @@ function updateBronnyBadge(online, version) {
     pill.title = 'Click to control Bronny';
     if (dot) dot.style.background = '#ff60b0';
     if (ver && version) ver.textContent = `v${version}`;
+    // Show the dedicated mobile icon button when online on narrow screens
+    if (mobileBtn) mobileBtn.style.display = window.innerWidth <= 768 ? 'flex' : 'none';
   } else {
     pill.className = 'bronny-pill offline';
     txt.textContent = 'Bronny offline';
     pill.title = 'Bronny AI offline';
+    if (mobileBtn) mobileBtn.style.display = 'none'; // hide ⬡ btn when offline
     closeBronnyPanel();
   }
 }
@@ -3995,6 +4012,9 @@ document.addEventListener('DOMContentLoaded', () => {
     _ty = e.touches[0].clientY;
   }, { passive: true });
   document.addEventListener('touchend', e => {
+    // Don't hijack swipes when the Bronny control panel is open — the user
+    // may be swiping the horizontally-scrollable tabs row inside the drawer.
+    if (document.getElementById('bronnyPanel')?.classList.contains('open')) return;
     const dx = e.changedTouches[0].clientX - _tx;
     const dy = e.changedTouches[0].clientY - _ty;
     if (Math.abs(dx) < Math.abs(dy) * 1.5) return; // vertical — ignore
