@@ -106,7 +106,7 @@ const char* WIFI_PASS = WIFI_PASS_CFG;
 #define VOL_VIDEO            0.40f
 #define MIC_GAIN_SHIFT       14
 #define TTS_COOLDOWN_MS      800
-#define HEARTBEAT_MS         30000
+#define HEARTBEAT_MS         8000   // 8 s keeps command latency acceptable
 #define DG_KEEPALIVE_MS      8000
 #define DG_RECONNECT_MS      3000
 #define DG_CONNECT_TIMEOUT   8000
@@ -738,7 +738,7 @@ static void sendHeartbeat() {
     http.setTimeout(8000);
     http.addHeader("Content-Type","application/json");
 
-    int code = http.POST("{\"device\":\"bronny\",\"version\":\"2.1\"}");
+    int code = http.POST("{\"device\":\"bronny\",\"version\":\"2.2\"}");
 
     // Always consume the response body so the server's command queue is
     // properly drained.  executeBronnyCommand() guards against executing
@@ -2702,6 +2702,11 @@ static bool playVideo() {
     Serial.printf("[Video] %u fps  frameMs=%u ms\n", streamFps, frameMs);
 
     // ── Pre-fill MJPEG buffer ────────────────────────────────
+    // lastHbVideoMs is initialised HERE (before the slow prefill)
+    // so the 20 s heartbeat timer starts running as soon as the
+    // HTTP streams open, not after the 8 s prefill window.
+    uint32_t lastHbVideoMs = millis();
+
     int bytesInBuf = 0;
     tft.fillScreen(TFT_BLACK);
     tft.setTextSize(2); tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -2711,6 +2716,14 @@ static bool playVideo() {
     int lastPct = -1;
     uint32_t prefillEnd = millis() + 8000;
     while (bytesInBuf < (int)VIDEO_PREFILL_BYTES && millis() < prefillEnd) {
+        // Keep server heartbeat alive during prefill — enterVideoMode()
+        // setup (title fetch, clearJob, codec init) already consumed
+        // several seconds; without this the server can time us out before
+        // the first frame is decoded.
+        if (millis() - lastHbVideoMs >= 20000) {
+            lastHbVideoMs = millis();
+            sendHeartbeat();
+        }
         // Drain audio TCP buffer during pre-fill so it doesn't stall the server
         if (hasAudio && as_) {
             int aa = as_->available();
@@ -2746,12 +2759,11 @@ static bool playVideo() {
     uint32_t lastByteMs    = millis();
     uint32_t fpsFrames     = 0;
     uint32_t fpsWindowMs   = millis();
-    uint32_t lastHbVideoMs = millis();
 
     while (g_vidPlaying) {
 
         // ── Heartbeat (playVideo blocks loop() for the full duration) ──
-        if (millis() - lastHbVideoMs >= 25000) {
+        if (millis() - lastHbVideoMs >= 20000) {
             lastHbVideoMs = millis();
             sendHeartbeat();
         }

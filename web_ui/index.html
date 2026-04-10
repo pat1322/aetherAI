@@ -3527,7 +3527,7 @@ async function bronnyCommand(payload) {
     // Show brief "queued" toast for non-play commands so user knows it was received
     const silent = ['play','stop','pause','resume','seek','next'];
     if (!silent.includes(payload.command)) {
-      showToast(`⬡ ${payload.command} queued — delivering on next heartbeat`, 'info', 2000);
+      showToast(`⬡ ${payload.command} sent to Bronny`, 'info', 1500);
     }
     return await res.json();
   } catch(e) {
@@ -3556,7 +3556,7 @@ async function bronnySetLed() {
 
 // ── Heartbeat countdown ──
 let _lastHbTimestamp  = 0;
-const HB_INTERVAL_MS  = 30000;   // ESP32 heartbeat every 30 s
+const HB_INTERVAL_MS  = 8000;    // ESP32 heartbeat every 8 s
 
 function _startHbTimer() {
   setInterval(() => {
@@ -4109,7 +4109,7 @@ if ('visualViewport' in window) {
         <div class="bronny-title">
           <div class="bronny-online-dot" id="bronnyPanelDot"></div>
           <span class="bronny-title-text">Bronny Control</span>
-          <span class="bronny-version-badge" id="bronnyPanelVersion">v2.0</span>
+          <span class="bronny-version-badge" id="bronnyPanelVersion">—</span>
         </div>
         <button class="bronny-close" onclick="closeBronnyPanel()">✕ Close</button>
       </div>
