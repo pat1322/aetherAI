@@ -4025,14 +4025,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (dx >  60 && !sidebar?.classList.contains('open')) toggleSidebar(); // swipe right opens sidebar from left
     if (dx < -60 && !panel?.classList.contains('open'))   togglePanel();   // swipe left opens panel from right
   }, { passive: true });
-  // Swipe down to close Bronny panel
-  let _bty = 0;
-  document.getElementById('bronnyDrawer')?.addEventListener('touchstart', e => {
-    _bty = e.touches[0].clientY;
-  }, { passive: true });
+  // Swipe down to close Bronny panel.
+  // Uses _ty from the main touchstart tracker above so the start-Y is always
+  // current regardless of where the touch began (overlay or inside the drawer).
   document.addEventListener('touchend', e => {
     if (!document.getElementById('bronnyPanel')?.classList.contains('open')) return;
-    const dy = e.changedTouches[0].clientY - _bty;
+    const dy = e.changedTouches[0].clientY - _ty;
     if (dy > 80) closeBronnyPanel();
   }, { passive: true });
 })();
@@ -4103,7 +4101,7 @@ if ('visualViewport' in window) {
        BRONNY CONTROL PANEL
   ══════════════════════════════════════════════════════════ -->
   <div id="bronnyPanel" onclick="closeBronnyOnBg(event)">
-    <div class="bronny-drawer" id="bronnyDrawer">
+    <div class="bronny-drawer" id="bronnyDrawer" onclick="event.stopPropagation()">
       <div class="bronny-handle"></div>
 
       <!-- Header -->
