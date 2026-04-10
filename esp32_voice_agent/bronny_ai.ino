@@ -2643,18 +2643,35 @@ static void videoAudioTaskFn(void*) {
 
     if (code == 200) {
         taskMp3.begin();
+        // Prime with correct format BEFORE begin() so the internal
+        // setAudioInfo() call uses {44100,2,16} instead of {0,0,0}.
+        // Passing {0,0,0} corrupts the ES8311 codec state and silences audio.
+        taskDecoded.setAudioInfo(ainf_vid);
         taskDecoded.begin();
         WiFiClient* s = http.getStreamPtr();
 
         g_vidAudioReady = true;
         while (!g_vidStartPlayback && g_vidPlaying) vTaskDelay(1);
 
+        // Re-assert volume + PA after the first write: the MP3 decoder fires
+        // setAudioInfo({44100,2,16}) synchronously on the first frame, which
+        // reinitialises the codec and resets the volume register to its
+        // post-reset default (potentially muted). Do this from the audio task
+        // so it happens after the codec re-init, not before.
+        bool volSet = false;
         while (g_vidPlaying) {
             int avail = s->available();
             if (avail > 0) {
                 int got = s->readBytes(audioBuf,
                               min(avail, (int)sizeof(audioBuf)));
-                if (got > 0) taskDecoded.write(audioBuf, got);
+                if (got > 0) {
+                    taskDecoded.write(audioBuf, got);
+                    if (!volSet) {
+                        i2s.setVolume(VOL_VIDEO);
+                        gpio_set_level((gpio_num_t)PIN_PA, 1);
+                        volSet = true;
+                    }
+                }
             } else {
                 if (!http.connected() && s->available() == 0) break;
                 vTaskDelay(1);
